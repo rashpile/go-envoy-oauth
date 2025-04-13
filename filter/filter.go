@@ -2,22 +2,33 @@ package filter
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/envoyproxy/envoy/contrib/golang/common/go/api"
 	"github.com/rashpile/go-envoy-oauth/oauth"
 	"github.com/rashpile/go-envoy-oauth/session"
+	"go.uber.org/zap"
 )
 
-// Filter is the main HTTP filter that performs API key authentication
+// Session represents a user session
+type Session struct {
+	ID        string
+	UserID    string
+	ExpiresAt time.Time
+}
+
+// Filter implements the Envoy HTTP filter
 type Filter struct {
 	config        *OAuthConfig
 	oauthHandler  oauth.OAuthHandler
 	sessionStore  session.SessionStore
 	cookieManager *session.CookieManager
 	callbacks     api.FilterCallbackHandler
+	logger        *zap.Logger
 }
 
 // NewFilter creates a new filter instance
@@ -62,20 +73,40 @@ func NewFilter(config *OAuthConfig, callbacks api.FilterCallbackHandler) (*Filte
 		return nil, fmt.Errorf("failed to create OAuth handler: %v", err)
 	}
 
+	logger := GetLogger()
+	logger.Debug("Creating new OAuth filter",
+		zap.String("issuer_url", config.IssuerURL),
+		zap.String("client_id", config.ClientID),
+		zap.String("redirect_url", config.RedirectURL),
+		zap.Strings("scopes", config.Scopes),
+	)
+
 	return &Filter{
 		config:        config,
 		oauthHandler:  oauthHandler,
 		sessionStore:  sessionStore,
 		cookieManager: cookieManager,
 		callbacks:     callbacks,
+		logger:        logger,
 	}, nil
 }
 
 // DecodeHeaders is called when request headers are received
 func (f *Filter) DecodeHeaders(header api.RequestHeaderMap, endStream bool) api.StatusType {
-	// Get the request path and cluster
+	method, _ := header.Get(":method")
 	path, _ := header.Get(":path")
+	host, _ := header.Get(":authority")
+
+	f.logger.Debug("Processing request headers",
+		zap.String("method", method),
+		zap.String("path", path),
+		zap.String("host", host),
+	)
+
+	// Get the request path and cluster
 	cluster, _ := header.Get(":authority")
+
+	log.Printf("path: %s, cluster: %s", path, cluster)
 
 	// Handle OAuth endpoints
 	if strings.HasPrefix(path, "/oauth/") {
@@ -84,6 +115,8 @@ func (f *Filter) DecodeHeaders(header api.RequestHeaderMap, endStream bool) api.
 
 	// Check if the path should be excluded
 	if f.isPathExcluded(path, cluster) {
+		f.logger.Debug("Path is excluded from authentication",
+			zap.String("path", path))
 		return api.Continue
 	}
 
@@ -103,10 +136,16 @@ func (f *Filter) DecodeHeaders(header api.RequestHeaderMap, endStream bool) api.
 			if err := f.oauthHandler.ValidateSession(session); err == nil {
 				// Add user info to headers
 				header.Set("X-User-ID", session.UserID)
+				f.logger.Debug("Request authenticated successfully",
+					zap.String("session_id", session.ID),
+					zap.String("user_id", session.UserID))
 				return api.Continue
 			}
 		}
 	}
+
+	f.logger.Debug("No valid authentication found, redirecting to login",
+		zap.String("path", path))
 
 	// No valid authentication found, redirect to login
 	header.Set(":status", "302")
@@ -132,6 +171,7 @@ func (f *Filter) handleOAuthEndpoints(header api.RequestHeaderMap, path string) 
 
 // handleLogin initiates the OAuth flow
 func (f *Filter) handleLogin(header api.RequestHeaderMap) api.StatusType {
+	f.logger.Debug("Handling login request")
 	// Get redirect URI from query parameter
 	path, _ := header.Get(":path")
 	if idx := strings.Index(path, "?"); idx != -1 {
@@ -171,6 +211,7 @@ func (f *Filter) handleLogin(header api.RequestHeaderMap) api.StatusType {
 
 // handleCallback processes the OAuth callback
 func (f *Filter) handleCallback(header api.RequestHeaderMap) api.StatusType {
+	f.logger.Debug("Handling OAuth callback")
 	// Get query parameters
 	query, _ := header.Get(":path")
 	if idx := strings.Index(query, "?"); idx != -1 {
@@ -199,6 +240,7 @@ func (f *Filter) handleCallback(header api.RequestHeaderMap) api.StatusType {
 
 // handleLogout processes user logout
 func (f *Filter) handleLogout(header api.RequestHeaderMap) api.StatusType {
+	f.logger.Debug("Handling logout request")
 	err := f.oauthHandler.HandleLogout(header)
 	if err != nil {
 		header.Set(":status", "500")
@@ -264,9 +306,10 @@ func (f *Filter) OnDestroy(reason api.DestroyReason) {
 
 // FilterFactory creates a new Filter instance
 func FilterFactory(c interface{}, callbacks api.FilterCallbackHandler) api.StreamFilter {
-	config, err := ParseConfig(c)
-	if err != nil {
-		panic(fmt.Sprintf("failed to parse config: %v", err))
+	// The configuration comes as a map[string]interface{}
+	config, ok := c.(*OAuthConfig)
+	if !ok {
+		panic("invalid configuration type: expected OAuthConfig")
 	}
 
 	filter, err := NewFilter(config, callbacks)
@@ -315,4 +358,20 @@ func (f *Filter) OnLogDownstreamStart(reqHeaders api.RequestHeaderMap) {
 }
 
 func (f *Filter) OnStreamComplete() {
+}
+
+func (f *Filter) getSession(headers api.RequestHeaderMap) (*session.Session, error) {
+	f.logger.Debug("Attempting to get session from request")
+	sessionID, err := f.cookieManager.GetCookie(headers)
+	if err != nil {
+		return nil, err
+	}
+	return f.sessionStore.Get(sessionID)
+}
+
+func (f *Filter) isValidSession(session *session.Session) bool {
+	f.logger.Debug("Validating session",
+		zap.String("session_id", session.ID),
+		zap.Time("expires_at", session.ExpiresAt))
+	return session.ExpiresAt.After(time.Now())
 }

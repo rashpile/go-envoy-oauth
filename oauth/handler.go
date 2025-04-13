@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -193,6 +194,11 @@ func (h *oauthHandler) getUserInfo(accessToken string) (map[string]interface{}, 
 
 // fetchOIDCConfig retrieves the OpenID Connect configuration from the issuer
 func fetchOIDCConfig(issuerURL string) (*OIDCProvider, error) {
+	// Ensure the issuer URL has a protocol scheme
+	if !strings.HasPrefix(issuerURL, "http://") && !strings.HasPrefix(issuerURL, "https://") {
+		issuerURL = "https://" + issuerURL
+	}
+
 	// Construct well-known configuration URL
 	configURL := issuerURL + "/.well-known/openid-configuration"
 

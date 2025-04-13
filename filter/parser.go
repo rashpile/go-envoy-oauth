@@ -11,108 +11,115 @@ import (
 	xds "github.com/cncf/xds/go/xds/type/v3"
 	"github.com/envoyproxy/envoy/contrib/golang/common/go/api"
 
-	"github.com/rashpile/go-envoy-oauth/auth"
-	"github.com/rashpile/go-envoy-oauth/store"
 	"google.golang.org/protobuf/types/known/anypb"
 )
 
-// Default configuration values
-const (
-	DefaultAPIKeyHeader     = "X-API-Key"
-	DefaultAPIKeyQueryParam = "x-api-key"
-	DefaultAPIKeyCookie     = "api-key"
-	DefaultUsernameHeader   = "X-User-ID"
-	DefaultKeysFile         = "/etc/envoy/api-keys.txt"
-	DefaultCheckInterval    = 60                    // seconds
-	DefaultAuthPriority     = "header,query,cookie" // Priority order for auth methods
-)
-
-// Config holds the filter configuration
-type Config struct {
-	APIKeyHeader     string
-	APIKeyQueryParam string
-	APIKeyCookie     string
-	UsernameHeader   string
-	ExcludePaths     []string
-	KeySource        store.KeySource
-	ClusterConfigs   map[string]*auth.ClusterConfig
-	AuthPriority     []string // Priority order: e.g. ["header", "cookie", "query"]
-	CookieSettings   CookieSettings
+// ClusterConfig represents the configuration for a specific cluster
+type ClusterConfig struct {
+	Exclude      bool
+	ExcludePaths []string
 }
 
-// ClusterConfig holds configuration specific to a cluster
-// type ClusterConfig struct {
-// 	Exclude      bool
-// 	ExcludePaths []string
-// }
+// OAuthConfig represents the OAuth filter configuration
+type OAuthConfig struct {
+	// OpenID Connect configuration
+	IssuerURL    string   `json:"issuer_url"`
+	ClientID     string   `json:"client_id"`
+	ClientSecret string   `json:"client_secret"`
+	RedirectURL  string   `json:"redirect_url"`
+	Scopes       []string `json:"scopes"`
+
+	// Session configuration
+	SessionCookieName string        `json:"session_cookie_name"`
+	SessionMaxAge     time.Duration `json:"session_max_age"`
+	SessionPath       string        `json:"session_path"`
+	SessionDomain     string        `json:"session_domain"`
+	SessionSecure     bool          `json:"session_secure"`
+	SessionHttpOnly   bool          `json:"session_http_only"`
+	SessionSameSite   string        `json:"session_same_site"`
+
+	// Paths that should be excluded from authentication
+	ExcludePaths []string `json:"exclude_paths"`
+
+	// Cluster-specific configurations
+	Clusters map[string]ClusterConfig `json:"clusters"`
+}
 
 // Parser parses the filter configuration
 type Parser struct {
 }
 
-// FilterFactory creates a new Filter instance
-// func FilterFactory(c interface{}, callbacks api.FilterCallbackHandler) api.StreamFilter {
-// 	conf, ok := c.(*Config)
-// 	if !ok {
-// 		panic("unexpected config type")
-// 	}
-// 	return &Filter{
-// 		Callbacks: callbacks,
-// 		Config:    conf,
-// 	}
-// }
-
 // Parse parses the filter configuration from Envoy
 func (p *Parser) Parse(any *anypb.Any, callbacks api.ConfigCallbackHandler) (interface{}, error) {
 	configStruct := &xds.TypedStruct{}
 	if err := any.UnmarshalTo(configStruct); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to unmarshal config: %v", err)
 	}
 
 	v := configStruct.Value
-	conf := &Config{
-		APIKeyHeader:     DefaultAPIKeyHeader,
-		APIKeyQueryParam: DefaultAPIKeyQueryParam,
-		APIKeyCookie:     DefaultAPIKeyCookie,
-		UsernameHeader:   DefaultUsernameHeader,
-		ExcludePaths:     []string{},
-		ClusterConfigs:   make(map[string]*auth.ClusterConfig),
-		AuthPriority:     parseAuthPriority(DefaultAuthPriority),
-		CookieSettings:   DefaultCookieSettings(),
+	conf := &OAuthConfig{
+		Scopes:            []string{"openid", "profile", "email"},
+		SessionCookieName: "session",
+		SessionMaxAge:     24 * time.Hour,
+		SessionPath:       "/",
+		SessionSecure:     true,
+		SessionHttpOnly:   true,
+		SessionSameSite:   "Lax",
+		ExcludePaths:      []string{"/health", "/metrics", "/oauth/login", "/oauth/callback", "/oauth/logout"},
+		Clusters:          make(map[string]ClusterConfig),
 	}
 
-	// Parse API key header name
-	if header, ok := v.AsMap()["api_key_header"].(string); ok {
-		conf.APIKeyHeader = header
+	// Parse OpenID Connect configuration
+	if issuerURL, ok := v.AsMap()["issuer_url"].(string); ok {
+		conf.IssuerURL = issuerURL
+	}
+	if clientID, ok := v.AsMap()["client_id"].(string); ok {
+		conf.ClientID = clientID
+	}
+	if clientSecret, ok := v.AsMap()["client_secret"].(string); ok {
+		conf.ClientSecret = clientSecret
+	}
+	if redirectURL, ok := v.AsMap()["redirect_url"].(string); ok {
+		conf.RedirectURL = redirectURL
+	}
+	if scopes, ok := v.AsMap()["scopes"].([]interface{}); ok {
+		conf.Scopes = make([]string, len(scopes))
+		for i, scope := range scopes {
+			if s, ok := scope.(string); ok {
+				conf.Scopes[i] = s
+			}
+		}
 	}
 
-	// Parse API key query parameter name
-	if queryParam, ok := v.AsMap()["api_key_query_param"].(string); ok {
-		// Empty string is valid to disable query param authentication
-		conf.APIKeyQueryParam = queryParam
+	// Parse session configuration
+	if cookieName, ok := v.AsMap()["session_cookie_name"].(string); ok {
+		conf.SessionCookieName = cookieName
 	}
-
-	// Parse API key cookie name
-	if cookie, ok := v.AsMap()["api_key_cookie"].(string); ok {
-		// Empty string is valid to disable cookie authentication
-		conf.APIKeyCookie = cookie
+	if maxAge, ok := v.AsMap()["session_max_age"].(float64); ok {
+		conf.SessionMaxAge = time.Duration(maxAge) * time.Second
 	}
-
-	// Parse authentication priority
-	if priority, ok := v.AsMap()["auth_priority"].(string); ok && priority != "" {
-		conf.AuthPriority = parseAuthPriority(priority)
+	if path, ok := v.AsMap()["session_path"].(string); ok {
+		conf.SessionPath = path
 	}
-
-	// Parse username header name
-	if header, ok := v.AsMap()["username_header"].(string); ok && header != "" {
-		conf.UsernameHeader = header
+	if domain, ok := v.AsMap()["session_domain"].(string); ok {
+		conf.SessionDomain = domain
+	}
+	if secure, ok := v.AsMap()["session_secure"].(bool); ok {
+		conf.SessionSecure = secure
+	}
+	if httpOnly, ok := v.AsMap()["session_http_only"].(bool); ok {
+		conf.SessionHttpOnly = httpOnly
+	}
+	if sameSite, ok := v.AsMap()["session_same_site"].(string); ok {
+		conf.SessionSameSite = sameSite
 	}
 
 	// Parse exclude paths
 	if excludes, ok := v.AsMap()["exclude_paths"].([]interface{}); ok {
-		for _, exclude := range excludes {
+		conf.ExcludePaths = make([]string, len(excludes))
+		for i, exclude := range excludes {
 			if path, ok := exclude.(string); ok {
-				conf.ExcludePaths = append(conf.ExcludePaths, path)
+				conf.ExcludePaths[i] = path
 			}
 		}
 	}
@@ -121,48 +128,41 @@ func (p *Parser) Parse(any *anypb.Any, callbacks api.ConfigCallbackHandler) (int
 	if clusters, ok := v.AsMap()["clusters"].(map[string]interface{}); ok {
 		for clusterName, clusterConfig := range clusters {
 			if config, ok := clusterConfig.(map[string]interface{}); ok {
-				clusterConf := &auth.ClusterConfig{
+				clusterConf := ClusterConfig{
 					ExcludePaths: []string{},
-					Exclude:      false,
 				}
 				if exclude, ok := config["exclude"].(bool); ok {
 					clusterConf.Exclude = exclude
 				}
-				// Parse cluster-specific exclude paths
 				if excludes, ok := config["exclude_paths"].([]interface{}); ok {
-					for _, exclude := range excludes {
+					clusterConf.ExcludePaths = make([]string, len(excludes))
+					for i, exclude := range excludes {
 						if path, ok := exclude.(string); ok {
-							clusterConf.ExcludePaths = append(clusterConf.ExcludePaths, path)
+							clusterConf.ExcludePaths[i] = path
 						}
 					}
 				}
-
-				conf.ClusterConfigs[clusterName] = clusterConf
+				conf.Clusters[clusterName] = clusterConf
 			}
 		}
 	}
 
-	// Parse keys file path
-	keysFile := DefaultKeysFile
-	if file, ok := v.AsMap()["keys_file"].(string); ok && file != "" {
-		keysFile = file
+	// Validate required fields
+	if conf.IssuerURL == "" {
+		return nil, fmt.Errorf("issuer_url is required")
+	}
+	if conf.ClientID == "" {
+		return nil, fmt.Errorf("client_id is required")
+	}
+	if conf.ClientSecret == "" {
+		return nil, fmt.Errorf("client_secret is required")
+	}
+	if conf.RedirectURL == "" {
+		return nil, fmt.Errorf("redirect_url is required")
 	}
 
-	// Parse check interval
-	checkInterval := DefaultCheckInterval
-	if interval, ok := v.AsMap()["check_interval"].(float64); ok && interval >= 0 {
-		checkInterval = int(interval)
-	}
-
-	// Create the key source
-	keySource, err := store.NewFileKeySource(keysFile, time.Duration(checkInterval)*time.Second)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create key source: %w", err)
-	}
-	conf.KeySource = keySource
-
-	log.Printf("Parsed config: API key header=%s, API key query param=%s, API key cookie=%s, Username header=%s, Keys file=%s, Excluded paths=%v, Auth priority=%v",
-		conf.APIKeyHeader, conf.APIKeyQueryParam, conf.APIKeyCookie, conf.UsernameHeader, keysFile, conf.ExcludePaths, conf.AuthPriority)
+	log.Printf("Parsed OAuth config: issuer_url=%s, client_id=%s, redirect_url=%s, scopes=%v",
+		conf.IssuerURL, conf.ClientID, conf.RedirectURL, conf.Scopes)
 
 	return conf, nil
 }
@@ -183,65 +183,84 @@ func parseAuthPriority(priority string) []string {
 
 // Merge merges parent and child configurations
 func (p *Parser) Merge(parent interface{}, child interface{}) interface{} {
-	parentConfig := parent.(*Config)
-	childConfig := child.(*Config)
+	parentConfig := parent.(*OAuthConfig)
+	childConfig := child.(*OAuthConfig)
 
 	// Create a new config to avoid modifying the parent
-	newConfig := &Config{
-		APIKeyHeader:     parentConfig.APIKeyHeader,
-		APIKeyQueryParam: parentConfig.APIKeyQueryParam,
-		APIKeyCookie:     parentConfig.APIKeyCookie,
-		UsernameHeader:   parentConfig.UsernameHeader,
-		AuthPriority:     slices.Clone(parentConfig.AuthPriority),
-		KeySource:        parentConfig.KeySource,
-		ExcludePaths:     slices.Clone(parentConfig.ExcludePaths),
-		ClusterConfigs:   make(map[string]*auth.ClusterConfig),
+	newConfig := &OAuthConfig{
+		IssuerURL:         parentConfig.IssuerURL,
+		ClientID:          parentConfig.ClientID,
+		ClientSecret:      parentConfig.ClientSecret,
+		RedirectURL:       parentConfig.RedirectURL,
+		Scopes:            slices.Clone(parentConfig.Scopes),
+		SessionCookieName: parentConfig.SessionCookieName,
+		SessionMaxAge:     parentConfig.SessionMaxAge,
+		SessionPath:       parentConfig.SessionPath,
+		SessionDomain:     parentConfig.SessionDomain,
+		SessionSecure:     parentConfig.SessionSecure,
+		SessionHttpOnly:   parentConfig.SessionHttpOnly,
+		SessionSameSite:   parentConfig.SessionSameSite,
+		ExcludePaths:      slices.Clone(parentConfig.ExcludePaths),
+		Clusters:          make(map[string]ClusterConfig),
 	}
 
 	// Override with child values if specified
-	if childConfig.APIKeyHeader != "" {
-		newConfig.APIKeyHeader = childConfig.APIKeyHeader
+	if childConfig.IssuerURL != "" {
+		newConfig.IssuerURL = childConfig.IssuerURL
+	}
+	if childConfig.ClientID != "" {
+		newConfig.ClientID = childConfig.ClientID
+	}
+	if childConfig.ClientSecret != "" {
+		newConfig.ClientSecret = childConfig.ClientSecret
+	}
+	if childConfig.RedirectURL != "" {
+		newConfig.RedirectURL = childConfig.RedirectURL
+	}
+	if len(childConfig.Scopes) > 0 {
+		newConfig.Scopes = slices.Clone(childConfig.Scopes)
 	}
 
-	if childConfig.APIKeyQueryParam != parentConfig.APIKeyQueryParam {
-		// Use child query param even if it's empty (to disable query param auth)
-		newConfig.APIKeyQueryParam = childConfig.APIKeyQueryParam
+	// Override session settings if specified
+	if childConfig.SessionCookieName != "" {
+		newConfig.SessionCookieName = childConfig.SessionCookieName
+	}
+	if childConfig.SessionMaxAge != 0 {
+		newConfig.SessionMaxAge = childConfig.SessionMaxAge
+	}
+	if childConfig.SessionPath != "" {
+		newConfig.SessionPath = childConfig.SessionPath
+	}
+	if childConfig.SessionDomain != "" {
+		newConfig.SessionDomain = childConfig.SessionDomain
+	}
+	if childConfig.SessionSecure != parentConfig.SessionSecure {
+		newConfig.SessionSecure = childConfig.SessionSecure
+	}
+	if childConfig.SessionHttpOnly != parentConfig.SessionHttpOnly {
+		newConfig.SessionHttpOnly = childConfig.SessionHttpOnly
+	}
+	if childConfig.SessionSameSite != "" {
+		newConfig.SessionSameSite = childConfig.SessionSameSite
 	}
 
-	if childConfig.APIKeyCookie != parentConfig.APIKeyCookie {
-		// Use child cookie even if it's empty (to disable cookie auth)
-		newConfig.APIKeyCookie = childConfig.APIKeyCookie
-	}
-
-	if childConfig.UsernameHeader != "" {
-		newConfig.UsernameHeader = childConfig.UsernameHeader
-	}
-
-	// Override auth priority if it's different
-	if len(childConfig.AuthPriority) > 0 && !slices.Equal(childConfig.AuthPriority, parentConfig.AuthPriority) {
-		newConfig.AuthPriority = slices.Clone(childConfig.AuthPriority)
-	}
-
-	if childConfig.KeySource != nil {
-		newConfig.KeySource = childConfig.KeySource
-	}
-
+	// Merge exclude paths
 	if len(childConfig.ExcludePaths) > 0 {
 		newConfig.ExcludePaths = append(newConfig.ExcludePaths, childConfig.ExcludePaths...)
 	}
 
 	// Copy parent cluster configs first
-	for clusterName, parentClusterConfig := range parentConfig.ClusterConfigs {
-		newClusterConfig := &auth.ClusterConfig{
+	for clusterName, parentClusterConfig := range parentConfig.Clusters {
+		newClusterConfig := ClusterConfig{
 			ExcludePaths: slices.Clone(parentClusterConfig.ExcludePaths),
 			Exclude:      parentClusterConfig.Exclude,
 		}
-		newConfig.ClusterConfigs[clusterName] = newClusterConfig
+		newConfig.Clusters[clusterName] = newClusterConfig
 	}
 
 	// Merge child cluster configs
-	for clusterName, childClusterConfig := range childConfig.ClusterConfigs {
-		if parentClusterConfig, exists := newConfig.ClusterConfigs[clusterName]; exists {
+	for clusterName, childClusterConfig := range childConfig.Clusters {
+		if parentClusterConfig, exists := newConfig.Clusters[clusterName]; exists {
 			// Merge with existing cluster config
 			parentClusterConfig.ExcludePaths = append(parentClusterConfig.ExcludePaths, childClusterConfig.ExcludePaths...)
 			// Override exclude flag if different from parent
@@ -250,12 +269,13 @@ func (p *Parser) Merge(parent interface{}, child interface{}) interface{} {
 			}
 		} else {
 			// Add new cluster config
-			newClusterConfig := &auth.ClusterConfig{
+			newClusterConfig := ClusterConfig{
 				ExcludePaths: slices.Clone(childClusterConfig.ExcludePaths),
 				Exclude:      childClusterConfig.Exclude,
 			}
-			newConfig.ClusterConfigs[clusterName] = newClusterConfig
+			newConfig.Clusters[clusterName] = newClusterConfig
 		}
 	}
+
 	return newConfig
 }
