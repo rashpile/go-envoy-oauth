@@ -10,6 +10,7 @@ import (
 
 	xds "github.com/cncf/xds/go/xds/type/v3"
 	"github.com/envoyproxy/envoy/contrib/golang/common/go/api"
+	"github.com/rashpile/go-envoy-oauth/oauth"
 	"github.com/rashpile/go-envoy-oauth/session"
 
 	"google.golang.org/protobuf/types/known/anypb"
@@ -55,6 +56,8 @@ type OAuthConfig struct {
 
 	// Session store
 	SessionStore session.SessionStore
+
+	OAuthHandler oauth.OAuthHandler
 }
 
 // Parser parses the filter configuration
@@ -78,7 +81,7 @@ func (p *Parser) Parse(any *anypb.Any, callbacks api.ConfigCallbackHandler) (int
 		SessionHttpOnly:    true,
 		SessionSameSite:    "Lax",
 		CookieConfig:       "",
-		ExcludePaths:       []string{"/health", "/metrics", "/oauth/login", "/oauth/callback", "/oauth/logout"},
+		ExcludePaths:       []string{"/health"},
 		Clusters:           make(map[string]ClusterConfig),
 		SessionStore:       session.NewInMemorySessionStore(),
 		SkipAuthHeaderName: "",

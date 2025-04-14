@@ -94,7 +94,7 @@ http_filters:
         skip_auth_header_name: "X-Skip-Auth"
 
         # Paths that should be excluded from authentication
-        exclude_paths: ["/health", "/metrics", "/oauth/login", "/oauth/callback", "/oauth/logout"]
+        exclude_paths: ["/health"]
 ```
 
 ### OAuth Provider Configuration

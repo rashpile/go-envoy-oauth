@@ -45,7 +45,7 @@ func DefaultOAuthConfig() *OAuthConfig {
 		SessionSecure:     true,
 		SessionHttpOnly:   true,
 		SessionSameSite:   "Lax",
-		ExcludePaths:      []string{"/health", "/metrics", "/oauth/login", "/oauth/callback", "/oauth/logout"},
+		ExcludePaths:      []string{"/health"},
 		Clusters:          make(map[string]ClusterConfig),
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/envoyproxy/envoy/contrib/golang/common/go/api"
@@ -28,6 +29,7 @@ type Filter struct {
 	cookieManager *session.CookieManager
 	callbacks     api.FilterCallbackHandler
 	logger        *zap.Logger
+	mu            sync.Mutex
 }
 
 // NewFilter creates a new filter instance
@@ -58,8 +60,25 @@ func NewFilter(config *OAuthConfig, callbacks api.FilterCallbackHandler) (*Filte
 			zap.Error(err))
 		return nil, fmt.Errorf("failed to create cookie manager: %v", err)
 	}
-	logger.Debug("Cookie manager created successfully")
 
+	logger.Debug("Creating new OAuth filter",
+		zap.String("issuer_url", config.IssuerURL),
+		zap.String("client_id", config.ClientID),
+		zap.String("redirect_url", config.RedirectURL),
+		zap.Strings("scopes", config.Scopes),
+	)
+
+	return &Filter{
+		config:        config,
+		oauthHandler:  config.OAuthHandler,
+		sessionStore:  config.SessionStore,
+		cookieManager: cookieManager,
+		callbacks:     callbacks,
+		logger:        logger,
+	}, nil
+}
+
+func (f *Filter) createOAuthHandler(config *OAuthConfig, cookieManager *session.CookieManager) (oauth.OAuthHandler, error) {
 	// Create OAuth handler
 	oauthConfig := &oauth.OIDCConfig{
 		IssuerURL:    config.IssuerURL,
@@ -77,22 +96,10 @@ func NewFilter(config *OAuthConfig, callbacks api.FilterCallbackHandler) (*Filte
 			zap.String("client_id", config.ClientID))
 		return nil, fmt.Errorf("failed to create OAuth handler: %v", err)
 	}
+	config.OAuthHandler = oauthHandler
+	f.oauthHandler = config.OAuthHandler
 
-	logger.Debug("Creating new OAuth filter",
-		zap.String("issuer_url", config.IssuerURL),
-		zap.String("client_id", config.ClientID),
-		zap.String("redirect_url", config.RedirectURL),
-		zap.Strings("scopes", config.Scopes),
-	)
-
-	return &Filter{
-		config:        config,
-		oauthHandler:  oauthHandler,
-		sessionStore:  config.SessionStore,
-		cookieManager: cookieManager,
-		callbacks:     callbacks,
-		logger:        logger,
-	}, nil
+	return oauthHandler, nil
 }
 
 // handleAuthFailure creates appropriate response for authentication failures
@@ -251,17 +258,34 @@ func (f *Filter) DecodeHeaders(header api.RequestHeaderMap, endStream bool) api.
 		}
 	}
 
-	// Handle OAuth endpoints
-	if strings.HasPrefix(path, "/oauth/") {
-		return f.handleOAuthEndpoints(header, path)
-	}
-
 	// Check if the path should be excluded
 	if f.isPathExcluded(path, cluster) {
 		f.logger.Debug("Path is excluded from authentication",
 			zap.String("path", path),
 			zap.String("trace_id", traceID))
 		return api.Continue
+	}
+
+	if f.oauthHandler == nil {
+		f.mu.Lock()
+		// Double check after acquiring lock
+		if f.oauthHandler == nil {
+			f.logger.Debug("Creating OAuth handler",
+				zap.String("trace_id", traceID))
+			_, err := f.createOAuthHandler(f.config, f.cookieManager)
+			if err != nil {
+				f.mu.Unlock()
+				f.logger.Error("Failed to create OAuth handler",
+					zap.Error(err))
+				return f.handleAuthFailure(500, "Internal Server Error: Failed to create OAuth handler")
+			}
+		}
+		f.mu.Unlock()
+	}
+
+	// Handle OAuth endpoints
+	if strings.HasPrefix(path, "/oauth/") {
+		return f.handleOAuthEndpoints(header, path)
 	}
 
 	// Check for bearer token

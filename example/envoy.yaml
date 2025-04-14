@@ -63,7 +63,7 @@ static_resources:
                       skip_auth_header_name: "X-Skip-Auth"  # Header to check for skipping auth
 
                       # Paths that should be excluded from authentication
-                      # exclude_paths: ["/health", "/metrics", "/oauth/login", "/oauth/callback", "/oauth/logout"]
+                      # exclude_paths: ["/health"]
 
                       # Cluster-specific configurations
                       clusters:

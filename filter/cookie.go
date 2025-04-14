@@ -65,25 +65,6 @@ func (h *CookieHelper) ParseCookies(cookieHeader string) map[string]string {
 	return cookies
 }
 
-// GetCookieAPIKey extracts the API key from cookies
-// func (h *CookieHelper) GetCookieAPIKey(config *Config, header api.RequestHeaderMap) (string, bool) {
-// 	// Skip if cookie auth is disabled
-// 	if config.APIKeyCookie == "" {
-// 		return "", false
-// 	}
-
-// 	// Get Cookie header
-// 	cookieHeader, exists := header.Get("Cookie")
-// 	if !exists || cookieHeader == "" {
-// 		return "", false
-// 	}
-
-// 	// Parse cookies
-// 	cookies := h.ParseCookies(cookieHeader)
-// 	value, exists := cookies[config.APIKeyCookie]
-// 	return value, exists && value != ""
-// }
-
 // SetCookie adds or updates a cookie in the response headers
 func (h *CookieHelper) SetCookie(header api.ResponseHeaderMap, name, value string) {
 	if !h.settings.Enabled {
