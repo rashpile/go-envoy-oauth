@@ -17,8 +17,8 @@ services:
     volumes:
       - ./envoy.yaml:/etc/envoy/envoy.yaml
       - ./api-keys.txt:/etc/envoy/api-keys.txt
-      - ../dist/go-envoy-oauth.so:/app/go-envoy-oauth.so
-      - ../dist/go-envoy-keyauth.so:/app/go-envoy-keyauth.so
+      - ../../dist/go-envoy-oauth.so:/app/go-envoy-oauth.so
+      - ../../dist/go-envoy-keyauth.so:/app/go-envoy-keyauth.so
     environment:
       - LOG_LEVEL=TRACE
       - COOKIE_CONFIG=HTTPOnly; SameSite=Lax

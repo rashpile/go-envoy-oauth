@@ -1,35 +1,39 @@
 # go-envoy-oauth
 
-A Go-based HTTP filter for Envoy Proxy that provides API key authentication. This filter allows you to secure your APIs by validating requests against a configured set of API keys before they reach your backend services. The filter validates API keys and maps them to usernames, simplifying the authentication process for clients.
+A Go-based HTTP filter for Envoy Proxy that provides OAuth 2.0 and OpenID Connect authentication. This filter allows you to secure your APIs by authenticating requests against an OAuth provider before they reach your backend services.
 
 ## Features
 
-- Simple API key authentication via HTTP headers or query parameters
-- Flexible precedence rules when both header and query parameter contain keys
-- API key to username mapping
-- Flexible key source interface for different storage backends
-- Easy integration with Envoy Proxy's filter chain
-- Configurable paths for authentication bypass
-- Customizable header names and authentication schemes
+- OAuth 2.0 and OpenID Connect authentication
+- Session management with configurable cookie settings
+- Support for multiple OAuth providers
+- Flexible path-based authentication rules
+- Cluster-specific authentication configurations
+- User information propagation via headers
+- Secure cookie handling with configurable attributes
+- Support for token refresh
+- Configurable authentication bypass options
 
 ## How It Works
 
 The filter intercepts incoming HTTP requests at the Envoy gateway and:
 
-1. Extracts the API key from either request headers or query parameters (based on configuration)
-2. Validates the key against a configured key source
-3. Maps the API key to a username
-4. Adds the username to request headers for downstream services
-5. Allows valid requests to proceed to backend services
-6. Rejects invalid requests with appropriate HTTP status codes
+1. Checks if the request path is excluded from authentication
+2. Validates the session cookie if present
+3. For unauthenticated requests, redirects to the OAuth provider's login page
+4. Handles OAuth callbacks and creates sessions
+5. Adds user information to request headers for downstream services
+6. Allows valid requests to proceed to backend services
+7. Rejects invalid requests with appropriate HTTP status codes
 
 ## Quick Start
 
 ### Prerequisites
 
 - Docker
-- Go 1.22+
+- Go 1.23+
 - Envoy Proxy (v1.33+)
+- OAuth provider (e.g., Keycloak, Auth0, etc.)
 
 ### Building the Filter
 
@@ -46,14 +50,8 @@ This will create the filter shared object file in the `dist` directory.
 # Start the example Envoy configuration
 make start
 
-# Test an authenticated request with header
-curl -H "X-API-Key: 12345" http://localhost:10000/get
-
-# Test an authenticated request with query parameter
-curl "http://localhost:10000/get?x-api-key=12345"
-
-# Test an unauthenticated request (should be rejected)
-curl http://localhost:10000/get
+# Access your application through the Envoy proxy
+curl http://localhost:8080/your-endpoint
 ```
 
 ## Configuration
@@ -67,110 +65,82 @@ http_filters:
 - name: envoy.filters.http.golang
   typed_config:
     "@type": type.googleapis.com/envoy.extensions.filters.http.golang.v3alpha.Config
-    library_id: go-envoy-keyauth
-    library_path: "/app/go-envoy-keyauth.so"
-    plugin_name: go-envoy-keyauth
+    library_id: gateway-auth
+    library_path: "/app/go-envoy-oauth.so"
+    plugin_name: gateway-auth
     plugin_config:
       "@type": type.googleapis.com/xds.type.v3.TypedStruct
       value:
-        # API key header configuration
-        api_key_header: "X-API-Key"    # Header to extract API key from
+        # OpenID Connect configuration
+        issuer_url: "https://your-oauth-provider.com"
+        client_id: "your-client-id"
+        client_secret: "your-client-secret"
+        redirect_url: "http://localhost:8080/oauth/callback"
+        scopes: ["openid", "profile", "email"]
 
-        # API key query parameter configuration
-        api_key_query_param: "x-api-key"  # Query parameter to extract API key from (set to empty string to disable)
-        header_precedence: true  # If true, header takes precedence when both are present
+        # Session configuration
+        session_cookie_name: "session"
+        session_max_age: 86400  # 24 hours in seconds
+        session_path: "/"
+        session_domain: "localhost"
+        session_secure: true
+        session_http_only: true
+        session_same_site: "Lax"
 
-        # Username configuration
-        username_header: "X-User-ID"  # Header to set with username for backend services
+        # Header configuration
+        user_id_header_name: "X-User-ID"
+        user_email_header_name: "X-User-Email"
+        user_username_header_name: "X-User-Username"
+        skip_auth_header_name: "X-Skip-Auth"
 
-        # Key source configuration
-        keys_file: "/etc/envoy/api-keys.txt"  # Path to API keys file
-        check_interval: 60  # How often to check for file changes (in seconds)
-
-        # Authentication bypass configuration
-        exclude_paths: ["/health", "/metrics"]  # Paths to exclude from auth
+        # Paths that should be excluded from authentication
+        exclude_paths: ["/health", "/metrics", "/oauth/login", "/oauth/callback", "/oauth/logout"]
 ```
 
-### API Key Configuration
+### OAuth Provider Configuration
 
-Create a file with key:username pairs, one per line:
+You'll need to configure your OAuth provider with:
+- Client ID and Secret
+- Redirect URL (matching the `redirect_url` in the Envoy config)
+- Required scopes (typically "openid", "profile", "email")
 
-```
-12345:admin
-abc123456key:username1
-xyz789012key:username2
-```
+## Authentication Flow
 
-The filter will:
-1. Extract the API key from the request (header or query parameter)
-2. Look up the corresponding username
-3. Add the username to the request headers for backend services
+1. **Initial Request**: User accesses a protected resource
+2. **Session Check**: Filter checks for valid session cookie
+3. **Authentication**:
+   - If no valid session, redirects to OAuth provider
+   - User authenticates with provider
+   - Provider redirects back to callback URL
+4. **Session Creation**: Filter creates session and sets cookie
+5. **Request Processing**: Filter adds user info to headers and forwards request
 
-## Authentication Options
+## Session Management
 
-### Header-based Authentication
-
-The filter will look for the API key in the configured HTTP header (default: `X-API-Key`).
-
-Example:
-```bash
-curl -H "X-API-Key: 12345" http://localhost:10000/get
-```
-
-### Query Parameter Authentication
-
-The filter will look for the API key in the configured query parameter (default: `x-api-key`).
-
-Example:
-```bash
-curl "http://localhost:10000/get?x-api-key=12345"
-```
-
-### Authentication Precedence
-
-When both header and query parameter contain API keys, the `header_precedence` configuration determines which one is used:
-
-- `header_precedence: true` (default): Header takes precedence over query parameter
-- `header_precedence: false`: Query parameter takes precedence over header
-
-### Disabling Query Parameter Authentication
-
-To disable query parameter authentication completely, set `api_key_query_param` to an empty string:
-
-```yaml
-api_key_query_param: ""  # Disables query parameter authentication
-```
-
-## Extending
-
-### Implementing a Custom Key Source
-
-You can implement the `KeySource` interface to support different key storage backends:
-
-```go
-type CustomKeySource struct {
-    // Your fields here
-}
-
-func (s *CustomKeySource) GetUsername(apiKey string) (string, error) {
-    // Your implementation here that returns username for the given API key
-    // Return empty string and error if key is invalid
-}
-```
+The filter provides configurable session management with:
+- Secure cookie settings
+- Session expiration
+- Token refresh support
+- Configurable cookie attributes (domain, path, secure, etc.)
 
 ## Development
 
 ### Project Structure
 
-- `auth/` - Authentication interfaces and implementations
 - `filter/` - Envoy filter implementation
-- `example/` - Example configuration for testing
+- `oauth/` - OAuth handler implementation
+- `session/` - Session management
+- `config/` - Configuration types and parsing
+- `example/` - Example configurations
 
 ### Testing
 
 ```bash
 # Run tests
-go test ./...
+make test
+
+# Run tests with coverage
+make test-coverage
 ```
 
 ## License

@@ -7,7 +7,6 @@ toolchain go1.24.2
 require (
 	github.com/cncf/xds/go v0.0.0-20250121191232-2f005788dc42
 	github.com/envoyproxy/envoy v1.33.2
-	github.com/gorilla/securecookie v1.1.2
 	go.uber.org/zap v1.27.0
 	golang.org/x/oauth2 v0.29.0
 	google.golang.org/protobuf v1.36.1

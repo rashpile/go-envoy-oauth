@@ -236,7 +236,8 @@ func (f *Filter) DecodeHeaders(header api.RequestHeaderMap, endStream bool) api.
 	)
 
 	// Get the request path and cluster
-	cluster, _ := header.Get(":authority")
+	// cluster, _ := header.Get(":authority")
+	cluster := getClusterName(f.callbacks)
 
 	f.logger.Debug(fmt.Sprintf("path: %s, cluster: %s, trace_id: %s", path, cluster, traceID))
 
@@ -547,4 +548,13 @@ func (f *Filter) isValidSession(session *session.Session) bool {
 			zap.Time("expires_at", session.ExpiresAt))
 	}
 	return isValid
+}
+
+func getClusterName(callbacks api.FilterCallbackHandler) string {
+	streamInfo := callbacks.StreamInfo()
+	clusterName, exists := streamInfo.UpstreamClusterName()
+	if !exists {
+		return ""
+	}
+	return clusterName
 }
