@@ -3,6 +3,7 @@ package filter
 import (
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"time"
 
@@ -101,6 +102,19 @@ func (p *Parser) Parse(any *anypb.Any, callbacks api.ConfigCallbackHandler) (int
 	if redirectURL, ok := v.AsMap()["redirect_url"].(string); ok {
 		conf.RedirectURL = redirectURL
 	}
+	if os.Getenv("CLIENT_SECRET") != "" {
+		conf.ClientSecret = os.Getenv("CLIENT_SECRET")
+	}
+	if os.Getenv("CLIENT_ID") != "" {
+		conf.ClientID = os.Getenv("CLIENT_ID")
+	}
+	if os.Getenv("ISSUER_URL") != "" {
+		conf.IssuerURL = os.Getenv("ISSUER_URL")
+	}
+	if os.Getenv("REDIRECT_URL") != "" {
+		conf.RedirectURL = os.Getenv("REDIRECT_URL")
+	}
+
 	if scopes, ok := v.AsMap()["scopes"].([]interface{}); ok {
 		conf.Scopes = make([]string, len(scopes))
 		for i, scope := range scopes {

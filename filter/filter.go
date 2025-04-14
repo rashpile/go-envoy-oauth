@@ -285,7 +285,11 @@ func (f *Filter) DecodeHeaders(header api.RequestHeaderMap, endStream bool) api.
 
 	// Handle OAuth endpoints
 	if strings.HasPrefix(path, "/oauth/") {
-		return f.handleOAuthEndpoints(header, path)
+		go func() {
+			status := f.handleOAuthEndpoints(header, path)
+			f.callbacks.DecoderFilterCallbacks().Continue(status)
+		}()
+		return api.Running
 	}
 
 	// Check for bearer token
