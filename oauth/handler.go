@@ -50,7 +50,6 @@ type oauthHandler struct {
 	oauth2Config  *oauth2.Config
 	sessionStore  session.SessionStore
 	cookieManager *session.CookieManager
-	stateStore    map[string]time.Time
 	mu            sync.Mutex
 }
 
@@ -80,16 +79,30 @@ func NewOAuthHandler(config *OIDCConfig, sessionStore session.SessionStore, cook
 		oauth2Config:  oauth2Config,
 		sessionStore:  sessionStore,
 		cookieManager: cookieManager,
-		stateStore:    make(map[string]time.Time),
 	}, nil
 }
 
 func (h *oauthHandler) HandleAuthRedirect(header api.RequestHeaderMap, redirectURI string) error {
 	// Generate a random state and combine it with the original request path
 	state := generateRandomState() + "|" + redirectURI
-	h.mu.Lock()
-	h.stateStore[state] = time.Now().Add(5 * time.Minute)
-	h.mu.Unlock()
+
+	// Store the state in a temporary session
+	session := &session.Session{
+		ID:        state,
+		UserID:    "",
+		Token:     "",
+		Claims:    nil,
+		CreatedAt: time.Now(),
+		ExpiresAt: time.Now().Add(5 * time.Minute),
+	}
+	if err := h.sessionStore.Store(session); err != nil {
+		return fmt.Errorf("failed to store state: %v", err)
+	}
+
+	// Set the state in a cookie
+	if err := h.cookieManager.SetCookie(header, state); err != nil {
+		return fmt.Errorf("failed to set state cookie: %v", err)
+	}
 
 	// Use the configured RedirectURL from oauth2Config
 	authURL := h.oauth2Config.AuthCodeURL(state)
@@ -103,19 +116,26 @@ func (h *oauthHandler) HandleCallback(header api.RequestHeaderMap, query string)
 		return err
 	}
 
-	// URL decode the state parameter
-	state, err := url.QueryUnescape(values.Get("state"))
-	if err != nil {
-		return fmt.Errorf("failed to decode state parameter: %v", err)
+	// Get the raw state parameter
+	state := values.Get("state")
+	if state == "" {
+		return fmt.Errorf("state parameter not found")
 	}
 
-	h.mu.Lock()
-	expiry, exists := h.stateStore[state]
-	delete(h.stateStore, state)
-	h.mu.Unlock()
-
-	if !exists || time.Now().After(expiry) {
+	// Get the state from the session store
+	stateSession, err := h.sessionStore.Get(state)
+	if err != nil {
 		return fmt.Errorf("invalid or expired state parameter")
+	}
+
+	// Validate the state session
+	if time.Now().After(stateSession.ExpiresAt) {
+		return fmt.Errorf("state parameter expired")
+	}
+
+	// Delete the state session
+	if err := h.sessionStore.Delete(state); err != nil {
+		return fmt.Errorf("failed to delete state: %v", err)
 	}
 
 	// Extract the original request path from the state parameter
@@ -145,7 +165,15 @@ func (h *oauthHandler) HandleCallback(header api.RequestHeaderMap, query string)
 		return fmt.Errorf("invalid user info: sub claim not found")
 	}
 
-	session := session.NewSession(sub, token.AccessToken, userInfo, time.Now().Add(24*time.Hour))
+	// Create a new session for the authenticated user
+	session := &session.Session{
+		ID:        generateRandomState(), // Use a new random ID for the user session
+		UserID:    sub,
+		Token:     token.AccessToken,
+		Claims:    userInfo,
+		CreatedAt: time.Now(),
+		ExpiresAt: time.Now().Add(24 * time.Hour),
+	}
 	if err := h.sessionStore.Store(session); err != nil {
 		return err
 	}

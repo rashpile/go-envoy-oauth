@@ -10,6 +10,7 @@ import (
 
 	xds "github.com/cncf/xds/go/xds/type/v3"
 	"github.com/envoyproxy/envoy/contrib/golang/common/go/api"
+	"github.com/rashpile/go-envoy-oauth/session"
 
 	"google.golang.org/protobuf/types/known/anypb"
 )
@@ -37,12 +38,16 @@ type OAuthConfig struct {
 	SessionSecure     bool          `json:"session_secure"`
 	SessionHttpOnly   bool          `json:"session_http_only"`
 	SessionSameSite   string        `json:"session_same_site"`
+	CookieConfig      string        `json:"cookie_config"`
 
 	// Paths that should be excluded from authentication
 	ExcludePaths []string `json:"exclude_paths"`
 
 	// Cluster-specific configurations
 	Clusters map[string]ClusterConfig `json:"clusters"`
+
+	// Session store
+	SessionStore session.SessionStore
 }
 
 // Parser parses the filter configuration
@@ -65,8 +70,10 @@ func (p *Parser) Parse(any *anypb.Any, callbacks api.ConfigCallbackHandler) (int
 		SessionSecure:     true,
 		SessionHttpOnly:   true,
 		SessionSameSite:   "Lax",
+		CookieConfig:      "",
 		ExcludePaths:      []string{"/health", "/metrics", "/oauth/login", "/oauth/callback", "/oauth/logout"},
 		Clusters:          make(map[string]ClusterConfig),
+		SessionStore:      session.NewInMemorySessionStore(),
 	}
 
 	// Parse OpenID Connect configuration
@@ -122,6 +129,11 @@ func (p *Parser) Parse(any *anypb.Any, callbacks api.ConfigCallbackHandler) (int
 				conf.ExcludePaths[i] = path
 			}
 		}
+	}
+
+	// Parse cookie configuration
+	if cookieConfig, ok := v.AsMap()["cookie_config"].(string); ok {
+		conf.CookieConfig = cookieConfig
 	}
 
 	// Parse cluster-specific configurations
@@ -202,6 +214,7 @@ func (p *Parser) Merge(parent interface{}, child interface{}) interface{} {
 		SessionSameSite:   parentConfig.SessionSameSite,
 		ExcludePaths:      slices.Clone(parentConfig.ExcludePaths),
 		Clusters:          make(map[string]ClusterConfig),
+		SessionStore:      parentConfig.SessionStore,
 	}
 
 	// Override with child values if specified

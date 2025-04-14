@@ -43,9 +43,12 @@ static_resources:
                       session_max_age: 86400  # 24 hours in seconds
                       session_path: "/"
                       session_domain: "localhost"
-                      session_secure: true
+                      session_secure: false   # Set to false for HTTP testing
                       session_http_only: true
                       session_same_site: "Lax"
+                      cookie_config: "HttpOnly; SameSite=Lax"  # Cookie configuration string
+                      cookie_hash_key: "your-32-byte-hash-key-here"
+                      cookie_block_key: "your-32-byte-block-key-here"
 
                       # Paths that should be excluded from authentication
                       # exclude_paths: ["/health", "/metrics", "/oauth/login", "/oauth/callback", "/oauth/logout"]

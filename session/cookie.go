@@ -3,19 +3,16 @@ package session
 import (
 	"crypto/rand"
 	"encoding/base64"
-	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 
 	"github.com/envoyproxy/envoy/contrib/golang/common/go/api"
-	"github.com/gorilla/securecookie"
 )
 
-// CookieManager handles secure cookie operations
+// CookieManager handles cookie operations
 type CookieManager struct {
-	secureCookie *securecookie.SecureCookie
-	config       *CookieConfig
+	config *CookieConfig
 }
 
 // CookieConfig holds cookie configuration
@@ -43,29 +40,43 @@ func DefaultCookieConfig() *CookieConfig {
 
 // NewCookieManager creates a new cookie manager
 func NewCookieManager(hashKey, blockKey []byte, config *CookieConfig) (*CookieManager, error) {
-	if len(hashKey) == 0 {
-		return nil, errors.New("hash key is required")
-	}
-
 	if config == nil {
 		config = DefaultCookieConfig()
 	}
 
-	sc := securecookie.New(hashKey, blockKey)
 	return &CookieManager{
-		secureCookie: sc,
-		config:       config,
+		config: config,
 	}, nil
 }
 
-// SetCookie sets a secure cookie with the session ID
+// SetCookie sets a cookie with the session ID
 func (cm *CookieManager) SetCookie(header api.RequestHeaderMap, value string) error {
-	encoded, err := cm.secureCookie.Encode(cm.config.Name, value)
-	if err != nil {
-		return err
+	// Build cookie string with configuration
+	cookie := fmt.Sprintf("%s=%s; Path=%s; Max-Age=%d",
+		cm.config.Name, value, cm.config.Path, cm.config.MaxAge)
+
+	// Add cookie attributes based on configuration
+	if cm.config.HTTPOnly {
+		cookie += "; HttpOnly"
+	}
+	if cm.config.Secure {
+		cookie += "; Secure"
+	}
+	if cm.config.SameSite != 0 {
+		switch cm.config.SameSite {
+		case http.SameSiteLaxMode:
+			cookie += "; SameSite=Lax"
+		case http.SameSiteStrictMode:
+			cookie += "; SameSite=Strict"
+		case http.SameSiteNoneMode:
+			cookie += "; SameSite=None"
+		}
+	}
+	if cm.config.Domain != "" {
+		cookie += "; Domain=" + cm.config.Domain
 	}
 
-	header.Set("set-cookie", cm.formatCookie(encoded))
+	header.Set("set-cookie", cookie)
 	return nil
 }
 
@@ -81,11 +92,7 @@ func (cm *CookieManager) GetCookie(header api.RequestHeaderMap) (string, error) 
 		c = strings.TrimSpace(c)
 		if strings.HasPrefix(c, cm.config.Name+"=") {
 			value := strings.TrimPrefix(c, cm.config.Name+"=")
-			var decoded string
-			if err := cm.secureCookie.Decode(cm.config.Name, value, &decoded); err != nil {
-				return "", err
-			}
-			return decoded, nil
+			return value, nil
 		}
 	}
 

@@ -33,16 +33,15 @@ type Filter struct {
 
 // NewFilter creates a new filter instance
 func NewFilter(config *OAuthConfig, callbacks api.FilterCallbackHandler) (*Filter, error) {
-	// Create session store and cookie manager
-	sessionStore := session.NewInMemorySessionStore()
-	hashKey, err := session.GenerateRandomKey(32)
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate hash key: %v", err)
-	}
-	blockKey, err := session.GenerateRandomKey(32)
-	if err != nil {
-		return nil, fmt.Errorf("failed to generate block key: %v", err)
-	}
+	logger := GetLogger()
+	logger.Debug("Setting up cookie configuration",
+		zap.String("cookie_name", config.SessionCookieName),
+		zap.String("cookie_path", config.SessionPath),
+		zap.String("cookie_domain", config.SessionDomain),
+		zap.Int("cookie_max_age", int(config.SessionMaxAge.Seconds())),
+		zap.Bool("cookie_secure", config.SessionSecure),
+		zap.Bool("cookie_http_only", config.SessionHttpOnly),
+		zap.String("cookie_same_site", config.SessionSameSite))
 
 	cookieConfig := &session.CookieConfig{
 		Name:     config.SessionCookieName,
@@ -54,10 +53,13 @@ func NewFilter(config *OAuthConfig, callbacks api.FilterCallbackHandler) (*Filte
 		SameSite: convertSameSite(config.SessionSameSite),
 	}
 
-	cookieManager, err := session.NewCookieManager(hashKey, blockKey, cookieConfig)
+	cookieManager, err := session.NewCookieManager(nil, nil, cookieConfig)
 	if err != nil {
+		logger.Error("Failed to create cookie manager",
+			zap.Error(err))
 		return nil, fmt.Errorf("failed to create cookie manager: %v", err)
 	}
+	logger.Debug("Cookie manager created successfully")
 
 	// Create OAuth handler
 	oauthConfig := &oauth.OIDCConfig{
@@ -68,12 +70,15 @@ func NewFilter(config *OAuthConfig, callbacks api.FilterCallbackHandler) (*Filte
 		Scopes:       config.Scopes,
 	}
 
-	oauthHandler, err := oauth.NewOAuthHandler(oauthConfig, sessionStore, cookieManager)
+	oauthHandler, err := oauth.NewOAuthHandler(oauthConfig, config.SessionStore, cookieManager)
 	if err != nil {
+		logger.Error("Failed to create OAuth handler",
+			zap.Error(err),
+			zap.String("issuer_url", config.IssuerURL),
+			zap.String("client_id", config.ClientID))
 		return nil, fmt.Errorf("failed to create OAuth handler: %v", err)
 	}
 
-	logger := GetLogger()
 	logger.Debug("Creating new OAuth filter",
 		zap.String("issuer_url", config.IssuerURL),
 		zap.String("client_id", config.ClientID),
@@ -84,7 +89,7 @@ func NewFilter(config *OAuthConfig, callbacks api.FilterCallbackHandler) (*Filte
 	return &Filter{
 		config:        config,
 		oauthHandler:  oauthHandler,
-		sessionStore:  sessionStore,
+		sessionStore:  config.SessionStore,
 		cookieManager: cookieManager,
 		callbacks:     callbacks,
 		logger:        logger,
@@ -93,6 +98,10 @@ func NewFilter(config *OAuthConfig, callbacks api.FilterCallbackHandler) (*Filte
 
 // handleAuthFailure creates appropriate response for authentication failures
 func (f *Filter) handleAuthFailure(statusCode int, message string) api.StatusType {
+	f.logger.Debug("Authentication failure",
+		zap.Int("status_code", statusCode),
+		zap.String("message", message))
+
 	headers := createAuthErrorHeaders()
 
 	f.callbacks.DecoderFilterCallbacks().SendLocalReply(
@@ -131,6 +140,10 @@ func createAuthErrorHeaders() map[string][]string {
 
 // handleRedirect creates a redirect response using SendLocalReply
 func (f *Filter) handleRedirect(url string, cookieValue string) api.StatusType {
+	f.logger.Debug("Handling redirect",
+		zap.String("url", url),
+		zap.Bool("has_cookie", cookieValue != ""))
+
 	headers := map[string][]string{
 		"Location":     {url},
 		"Content-Type": {"text/html"},
@@ -157,6 +170,31 @@ func (f *Filter) getTraceID(header api.RequestHeaderMap) string {
 		traceID, _ = header.Get("x-request-id")
 	}
 	return traceID
+}
+
+// isBrowserRequest checks if the request is from a browser based on Accept header
+func (f *Filter) isBrowserRequest(header api.RequestHeaderMap) bool {
+	accept, _ := header.Get("accept")
+	return strings.Contains(accept, "text/html") ||
+		strings.Contains(accept, "application/xhtml+xml") ||
+		strings.Contains(accept, "application/xml")
+}
+
+// handleUnauthenticatedRequest handles unauthenticated requests based on request type
+func (f *Filter) handleUnauthenticatedRequest(header api.RequestHeaderMap, path string, traceID string, err error, context string) api.StatusType {
+	if f.isBrowserRequest(header) {
+		f.logger.Debug(fmt.Sprintf("Unauthenticated browser request: %s", context),
+			zap.String("path", path),
+			zap.String("trace_id", traceID),
+			zap.Error(err))
+		return f.handleRedirect("/oauth/login?redirect_uri="+url.QueryEscape(path), "")
+	} else {
+		f.logger.Debug(fmt.Sprintf("Unauthenticated API request: %s", context),
+			zap.String("path", path),
+			zap.String("trace_id", traceID),
+			zap.Error(err))
+		return f.handleAuthFailure(401, fmt.Sprintf("Unauthorized: %s", context))
+	}
 }
 
 // DecodeHeaders is called when request headers are received
@@ -201,31 +239,17 @@ func (f *Filter) DecodeHeaders(header api.RequestHeaderMap, endStream bool) api.
 	// Check for session cookie
 	sessionID, err := f.cookieManager.GetCookie(header)
 	if err != nil {
-		f.logger.Debug("No session cookie found, redirecting to login",
-			zap.String("path", path),
-			zap.String("trace_id", traceID))
-		// Redirect to login with the current path as redirect_uri
-		return f.handleRedirect("/oauth/login?redirect_uri="+url.QueryEscape(path), "")
+		return f.handleUnauthenticatedRequest(header, path, traceID, err, "No valid session or token found")
 	}
 
 	session, err := f.sessionStore.Get(sessionID)
 	if err != nil {
-		f.logger.Debug("Invalid session ID, redirecting to login",
-			zap.String("session_id", sessionID),
-			zap.String("trace_id", traceID),
-			zap.Error(err))
-		// Redirect to login with the current path as redirect_uri
-		return f.handleRedirect("/oauth/login?redirect_uri="+url.QueryEscape(path), "")
+		return f.handleUnauthenticatedRequest(header, path, traceID, err, "Invalid session")
 	}
 
 	// Validate and refresh session if needed
 	if err := f.oauthHandler.ValidateSession(session); err != nil {
-		f.logger.Debug("Session validation failed, redirecting to login",
-			zap.String("session_id", session.ID),
-			zap.String("trace_id", traceID),
-			zap.Error(err))
-		// Redirect to login with the current path as redirect_uri
-		return f.handleRedirect("/oauth/login?redirect_uri="+url.QueryEscape(path), "")
+		return f.handleUnauthenticatedRequest(header, path, traceID, err, "Session validation failed")
 	}
 
 	return f.handleAuthSuccess(header, session)
@@ -313,14 +337,22 @@ func (f *Filter) handleCallback(header api.RequestHeaderMap) api.StatusType {
 		return f.handleAuthFailure(400, "Bad Request: Invalid OAuth callback")
 	}
 
-	// Redirect to the original URL or home page
-	redirectURI := "/"
-	if state, _ := header.Get("state"); state != "" {
-		// TODO: Validate state and get original URL
-		redirectURI = state
+	// Get the session ID from the set-cookie header
+	sessionID, exists := header.Get("set-cookie")
+	if !exists || sessionID == "" {
+		f.logger.Error("Failed to get session cookie",
+			zap.String("trace_id", traceID),
+			zap.Error(err))
+		return f.handleAuthFailure(500, "Internal Server Error: Failed to get session cookie")
 	}
 
-	return f.handleRedirect(redirectURI, "")
+	// Get the redirect URI from the location header
+	redirectURI, exists := header.Get("location")
+	if !exists || redirectURI == "" {
+		redirectURI = "/"
+	}
+
+	return f.handleRedirect(redirectURI, sessionID)
 }
 
 // handleLogout processes user logout
@@ -450,14 +482,35 @@ func (f *Filter) getSession(headers api.RequestHeaderMap) (*session.Session, err
 	f.logger.Debug("Attempting to get session from request")
 	sessionID, err := f.cookieManager.GetCookie(headers)
 	if err != nil {
+		f.logger.Debug("Failed to get session cookie", zap.Error(err))
 		return nil, err
 	}
-	return f.sessionStore.Get(sessionID)
+	f.logger.Debug("Retrieved session ID from cookie", zap.String("session_id", sessionID))
+
+	session, err := f.sessionStore.Get(sessionID)
+	if err != nil {
+		f.logger.Debug("Failed to get session from store",
+			zap.String("session_id", sessionID),
+			zap.Error(err))
+		return nil, err
+	}
+	f.logger.Debug("Successfully retrieved session from store",
+		zap.String("session_id", session.ID),
+		zap.String("user_id", session.UserID),
+		zap.Time("expires_at", session.ExpiresAt))
+	return session, nil
 }
 
 func (f *Filter) isValidSession(session *session.Session) bool {
 	f.logger.Debug("Validating session",
 		zap.String("session_id", session.ID),
 		zap.Time("expires_at", session.ExpiresAt))
-	return session.ExpiresAt.After(time.Now())
+
+	isValid := session.ExpiresAt.After(time.Now())
+	if !isValid {
+		f.logger.Debug("Session is expired",
+			zap.String("session_id", session.ID),
+			zap.Time("expires_at", session.ExpiresAt))
+	}
+	return isValid
 }
