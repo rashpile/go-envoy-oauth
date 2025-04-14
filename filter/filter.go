@@ -259,7 +259,7 @@ func (f *Filter) DecodeHeaders(header api.RequestHeaderMap, endStream bool) api.
 	}
 
 	// Check if the path should be excluded
-	if f.isPathExcluded(path, cluster) {
+	if !strings.HasPrefix(path, "/oauth/") && f.isPathExcluded(path, cluster) {
 		f.logger.Debug("Path is excluded from authentication",
 			zap.String("path", path),
 			zap.String("trace_id", traceID))
