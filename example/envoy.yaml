@@ -11,6 +11,16 @@ static_resources:
             typed_config:
               "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
               stat_prefix: ingress_http
+              tracing:
+                provider:
+                  name: envoy.tracers.zipkin
+                  typed_config:
+                    "@type": type.googleapis.com/envoy.config.trace.v3.ZipkinConfig
+                    collector_cluster: zipkin
+                    collector_endpoint: "/api/v2/spans"
+                    collector_endpoint_version: HTTP_JSON
+                    shared_span_context: false
+                    trace_id_128bit: true
               http_filters:
               - name: envoy.filters.http.golang
                 typed_config:
@@ -24,7 +34,7 @@ static_resources:
                       # OpenID Connect configuration
                       issuer_url: "https://idp.rashpile.net/auth/realms/test"
                       client_id: "envoy-proxy"
-                      client_secret: "your-client-secret"
+                      client_secret: "S3fE09t7RsbDnBK2Q7KLbQ7KYklegd5o"
                       redirect_url: "http://localhost:8080/oauth/callback"
                       scopes: ["openid", "profile", "email"]
 
@@ -38,7 +48,7 @@ static_resources:
                       session_same_site: "Lax"
 
                       # Paths that should be excluded from authentication
-                      exclude_paths: ["/health", "/metrics", "/oauth/login", "/oauth/callback", "/oauth/logout"]
+                      # exclude_paths: ["/health", "/metrics", "/oauth/login", "/oauth/callback", "/oauth/logout"]
 
                       # Cluster-specific configurations
                       clusters:
@@ -102,3 +112,16 @@ static_resources:
             typed_config:
               "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
               sni: httpbin.org
+    - name: zipkin
+      type: STRICT_DNS
+      dns_lookup_family: V4_ONLY
+      lb_policy: ROUND_ROBIN
+      load_assignment:
+        cluster_name: zipkin
+        endpoints:
+        - lb_endpoints:
+          - endpoint:
+              address:
+                socket_address:
+                  address: zipkin
+                  port_value: 9411

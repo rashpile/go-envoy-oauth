@@ -91,22 +91,92 @@ func NewFilter(config *OAuthConfig, callbacks api.FilterCallbackHandler) (*Filte
 	}, nil
 }
 
+// handleAuthFailure creates appropriate response for authentication failures
+func (f *Filter) handleAuthFailure(statusCode int, message string) api.StatusType {
+	headers := createAuthErrorHeaders()
+
+	f.callbacks.DecoderFilterCallbacks().SendLocalReply(
+		statusCode,     // responseCode
+		message,        // bodyText
+		headers,        // headers
+		-1,             // grpcStatus
+		"auth_failure", // details
+	)
+
+	return api.LocalReply
+}
+
+// handleAuthSuccess processes a successful authentication
+func (f *Filter) handleAuthSuccess(header api.RequestHeaderMap, session *session.Session) api.StatusType {
+	traceID := f.getTraceID(header)
+
+	// Add user info to headers for downstream services
+	header.Set("X-User-ID", session.UserID)
+	f.logger.Debug("Request authenticated successfully",
+		zap.String("session_id", session.ID),
+		zap.String("user_id", session.UserID),
+		zap.String("trace_id", traceID))
+
+	// Authentication successful, continue the filter chain
+	return api.Continue
+}
+
+// createAuthErrorHeaders creates standard headers for authentication errors
+func createAuthErrorHeaders() map[string][]string {
+	headers := make(map[string][]string)
+	headers["content-type"] = []string{"text/plain"}
+	headers["www-authenticate"] = []string{"Bearer"}
+	return headers
+}
+
+// handleRedirect creates a redirect response using SendLocalReply
+func (f *Filter) handleRedirect(url string, cookieValue string) api.StatusType {
+	headers := map[string][]string{
+		"Location":     {url},
+		"Content-Type": {"text/html"},
+	}
+	if cookieValue != "" {
+		headers["Set-Cookie"] = []string{cookieValue}
+	}
+
+	f.callbacks.DecoderFilterCallbacks().SendLocalReply(
+		http.StatusFound, // 302
+		"",               // empty body
+		headers,
+		0,  // no grpc status
+		"", // no details
+	)
+
+	return api.LocalReply
+}
+
+// getTraceID extracts the trace ID from the request headers
+func (f *Filter) getTraceID(header api.RequestHeaderMap) string {
+	traceID, _ := header.Get("x-b3-traceid")
+	if traceID == "" {
+		traceID, _ = header.Get("x-request-id")
+	}
+	return traceID
+}
+
 // DecodeHeaders is called when request headers are received
 func (f *Filter) DecodeHeaders(header api.RequestHeaderMap, endStream bool) api.StatusType {
 	method, _ := header.Get(":method")
 	path, _ := header.Get(":path")
 	host, _ := header.Get(":authority")
+	traceID := f.getTraceID(header)
 
 	f.logger.Debug("Processing request headers",
 		zap.String("method", method),
 		zap.String("path", path),
 		zap.String("host", host),
+		zap.String("trace_id", traceID),
 	)
 
 	// Get the request path and cluster
 	cluster, _ := header.Get(":authority")
 
-	log.Printf("path: %s, cluster: %s", path, cluster)
+	log.Printf("path: %s, cluster: %s, trace_id: %s", path, cluster, traceID)
 
 	// Handle OAuth endpoints
 	if strings.HasPrefix(path, "/oauth/") {
@@ -116,7 +186,8 @@ func (f *Filter) DecodeHeaders(header api.RequestHeaderMap, endStream bool) api.
 	// Check if the path should be excluded
 	if f.isPathExcluded(path, cluster) {
 		f.logger.Debug("Path is excluded from authentication",
-			zap.String("path", path))
+			zap.String("path", path),
+			zap.String("trace_id", traceID))
 		return api.Continue
 	}
 
@@ -129,33 +200,53 @@ func (f *Filter) DecodeHeaders(header api.RequestHeaderMap, endStream bool) api.
 
 	// Check for session cookie
 	sessionID, err := f.cookieManager.GetCookie(header)
-	if err == nil {
-		session, err := f.sessionStore.Get(sessionID)
-		if err == nil {
-			// Validate and refresh session if needed
-			if err := f.oauthHandler.ValidateSession(session); err == nil {
-				// Add user info to headers
-				header.Set("X-User-ID", session.UserID)
-				f.logger.Debug("Request authenticated successfully",
-					zap.String("session_id", session.ID),
-					zap.String("user_id", session.UserID))
-				return api.Continue
-			}
-		}
+	if err != nil {
+		f.logger.Debug("No session cookie found, redirecting to login",
+			zap.String("path", path),
+			zap.String("trace_id", traceID))
+		// Redirect to login with the current path as redirect_uri
+		return f.handleRedirect("/oauth/login?redirect_uri="+url.QueryEscape(path), "")
 	}
 
-	f.logger.Debug("No valid authentication found, redirecting to login",
-		zap.String("path", path))
+	session, err := f.sessionStore.Get(sessionID)
+	if err != nil {
+		f.logger.Debug("Invalid session ID, redirecting to login",
+			zap.String("session_id", sessionID),
+			zap.String("trace_id", traceID),
+			zap.Error(err))
+		// Redirect to login with the current path as redirect_uri
+		return f.handleRedirect("/oauth/login?redirect_uri="+url.QueryEscape(path), "")
+	}
 
-	// No valid authentication found, redirect to login
-	header.Set(":status", "302")
-	header.Set("location", "/oauth/login?redirect_uri="+url.QueryEscape(path))
-	return api.LocalReply
+	// Validate and refresh session if needed
+	if err := f.oauthHandler.ValidateSession(session); err != nil {
+		f.logger.Debug("Session validation failed, redirecting to login",
+			zap.String("session_id", session.ID),
+			zap.String("trace_id", traceID),
+			zap.Error(err))
+		// Redirect to login with the current path as redirect_uri
+		return f.handleRedirect("/oauth/login?redirect_uri="+url.QueryEscape(path), "")
+	}
+
+	return f.handleAuthSuccess(header, session)
 }
 
 // handleOAuthEndpoints processes OAuth-related endpoints
 func (f *Filter) handleOAuthEndpoints(header api.RequestHeaderMap, path string) api.StatusType {
-	switch path {
+	// Extract the base path without query parameters
+	basePath := path
+	if idx := strings.Index(path, "?"); idx != -1 {
+		basePath = path[:idx]
+	}
+
+	traceID := f.getTraceID(header)
+
+	f.logger.Debug("Handling OAuth endpoint",
+		zap.String("base_path", basePath),
+		zap.String("full_path", path),
+		zap.String("trace_id", traceID))
+
+	switch basePath {
 	case "/oauth/login":
 		return f.handleLogin(header)
 	case "/oauth/callback":
@@ -163,67 +254,63 @@ func (f *Filter) handleOAuthEndpoints(header api.RequestHeaderMap, path string) 
 	case "/oauth/logout":
 		return f.handleLogout(header)
 	default:
-		// Return 404 for unknown OAuth endpoints
-		header.Set(":status", "404")
-		return api.LocalReply
+		return f.handleAuthFailure(404, "Not Found: Unknown OAuth endpoint")
 	}
 }
 
 // handleLogin initiates the OAuth flow
 func (f *Filter) handleLogin(header api.RequestHeaderMap) api.StatusType {
-	f.logger.Debug("Handling login request")
+	traceID := f.getTraceID(header)
+
+	f.logger.Debug("Handling login request",
+		zap.String("trace_id", traceID))
 	// Get redirect URI from query parameter
 	path, _ := header.Get(":path")
-	if idx := strings.Index(path, "?"); idx != -1 {
-		query := path[idx+1:]
-		values, err := url.ParseQuery(query)
-		if err != nil {
-			header.Set(":status", "400")
-			header.Set("content-type", "text/plain")
-			return api.LocalReply
-		}
-		redirectURI := values.Get("redirect_uri")
-		if redirectURI == "" {
-			redirectURI = "/"
-		}
-
-		// Start OAuth flow
-		err = f.oauthHandler.HandleAuthRedirect(header, redirectURI)
-		if err != nil {
-			header.Set(":status", "500")
-			header.Set("content-type", "text/plain")
-			return api.LocalReply
-		}
-
-		return api.LocalReply
-	}
-
-	// If no redirect URI is provided, use the root path
-	err := f.oauthHandler.HandleAuthRedirect(header, "/")
+	values, err := url.ParseQuery(path[strings.Index(path, "?")+1:])
 	if err != nil {
-		header.Set(":status", "500")
-		header.Set("content-type", "text/plain")
-		return api.LocalReply
+		return f.handleAuthFailure(400, "Bad Request: Invalid query parameters")
 	}
 
-	return api.LocalReply
+	redirectURI := values.Get("redirect_uri")
+	if redirectURI == "" {
+		redirectURI = "/"
+	}
+
+	// Start OAuth flow
+	err = f.oauthHandler.HandleAuthRedirect(header, redirectURI)
+	if err != nil {
+		f.logger.Error("Failed to handle auth redirect",
+			zap.String("trace_id", traceID),
+			zap.Error(err))
+		return f.handleAuthFailure(500, "Internal Server Error: Failed to initiate OAuth flow")
+	}
+
+	// Get the authorization URL from the location header
+	authURL, _ := header.Get("location")
+	if authURL == "" {
+		return f.handleAuthFailure(500, "Internal Server Error: No authorization URL generated")
+	}
+
+	return f.handleRedirect(authURL, "")
 }
 
 // handleCallback processes the OAuth callback
 func (f *Filter) handleCallback(header api.RequestHeaderMap) api.StatusType {
-	f.logger.Debug("Handling OAuth callback")
+	traceID := f.getTraceID(header)
+
+	f.logger.Debug("Handling OAuth callback",
+		zap.String("trace_id", traceID))
 	// Get query parameters
-	query, _ := header.Get(":path")
-	if idx := strings.Index(query, "?"); idx != -1 {
-		query = query[idx+1:]
-	}
+	path, _ := header.Get(":path")
+	query := path[strings.Index(path, "?")+1:]
 
 	// Process the callback
 	err := f.oauthHandler.HandleCallback(header, query)
 	if err != nil {
-		header.Set(":status", "400")
-		header.Set("content-type", "text/plain")
-		return api.LocalReply
+		f.logger.Error("Failed to handle OAuth callback",
+			zap.String("trace_id", traceID),
+			zap.Error(err))
+		return f.handleAuthFailure(400, "Bad Request: Invalid OAuth callback")
 	}
 
 	// Redirect to the original URL or home page
@@ -233,25 +320,24 @@ func (f *Filter) handleCallback(header api.RequestHeaderMap) api.StatusType {
 		redirectURI = state
 	}
 
-	header.Set(":status", "302")
-	header.Set("location", redirectURI)
-	return api.LocalReply
+	return f.handleRedirect(redirectURI, "")
 }
 
 // handleLogout processes user logout
 func (f *Filter) handleLogout(header api.RequestHeaderMap) api.StatusType {
-	f.logger.Debug("Handling logout request")
+	traceID := f.getTraceID(header)
+
+	f.logger.Debug("Handling logout request",
+		zap.String("trace_id", traceID))
 	err := f.oauthHandler.HandleLogout(header)
 	if err != nil {
-		header.Set(":status", "500")
-		header.Set("content-type", "text/plain")
-		return api.LocalReply
+		f.logger.Error("Failed to handle logout",
+			zap.String("trace_id", traceID),
+			zap.Error(err))
+		return f.handleAuthFailure(500, "Internal Server Error: Failed to process logout")
 	}
 
-	// Redirect to home page after logout
-	header.Set(":status", "302")
-	header.Set("location", "/")
-	return api.LocalReply
+	return f.handleRedirect("/", "")
 }
 
 // EncodeHeaders is called when response headers are being sent

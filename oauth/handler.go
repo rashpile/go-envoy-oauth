@@ -85,13 +85,14 @@ func NewOAuthHandler(config *OIDCConfig, sessionStore session.SessionStore, cook
 }
 
 func (h *oauthHandler) HandleAuthRedirect(header api.RequestHeaderMap, redirectURI string) error {
-	state := generateRandomState()
+	// Generate a random state and combine it with the original request path
+	state := generateRandomState() + "|" + redirectURI
 	h.mu.Lock()
 	h.stateStore[state] = time.Now().Add(5 * time.Minute)
 	h.mu.Unlock()
 
-	authURL := h.oauth2Config.AuthCodeURL(state, oauth2.SetAuthURLParam("redirect_uri", redirectURI))
-	header.Set(":status", "302")
+	// Use the configured RedirectURL from oauth2Config
+	authURL := h.oauth2Config.AuthCodeURL(state)
 	header.Set("location", authURL)
 	return nil
 }
@@ -102,7 +103,12 @@ func (h *oauthHandler) HandleCallback(header api.RequestHeaderMap, query string)
 		return err
 	}
 
-	state := values.Get("state")
+	// URL decode the state parameter
+	state, err := url.QueryUnescape(values.Get("state"))
+	if err != nil {
+		return fmt.Errorf("failed to decode state parameter: %v", err)
+	}
+
 	h.mu.Lock()
 	expiry, exists := h.stateStore[state]
 	delete(h.stateStore, state)
@@ -111,6 +117,13 @@ func (h *oauthHandler) HandleCallback(header api.RequestHeaderMap, query string)
 	if !exists || time.Now().After(expiry) {
 		return fmt.Errorf("invalid or expired state parameter")
 	}
+
+	// Extract the original request path from the state parameter
+	parts := strings.Split(state, "|")
+	if len(parts) != 2 {
+		return fmt.Errorf("invalid state parameter format")
+	}
+	originalPath := parts[1]
 
 	code := values.Get("code")
 	if code == "" {
@@ -141,6 +154,8 @@ func (h *oauthHandler) HandleCallback(header api.RequestHeaderMap, query string)
 		return err
 	}
 
+	// Set the original request path in the location header
+	header.Set("location", originalPath)
 	return nil
 }
 
@@ -230,7 +245,8 @@ func generateRandomState() string {
 	if _, err := rand.Read(b); err != nil {
 		panic(err)
 	}
-	return base64.URLEncoding.EncodeToString(b)
+	// Use base64.RawURLEncoding to avoid padding and make it URL-safe
+	return base64.RawURLEncoding.EncodeToString(b)
 }
 
 // RefreshToken attempts to refresh an expired access token
