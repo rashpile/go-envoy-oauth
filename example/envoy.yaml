@@ -22,6 +22,16 @@ static_resources:
                     shared_span_context: false
                     trace_id_128bit: true
               http_filters:
+              - name: envoy.filters.http.header_to_metadata
+                typed_config:
+                  "@type": type.googleapis.com/envoy.extensions.filters.http.header_to_metadata.v3.Config
+                  request_rules:
+                  - header: x-skip-auth
+                    on_header_present:
+                      metadata_namespace: envoy.filters.http.header_to_metadata
+                      key: x_skip_auth
+                      type: STRING
+                    remove: true
               - name: envoy.filters.http.golang
                 typed_config:
                   "@type": type.googleapis.com/envoy.extensions.filters.http.golang.v3alpha.Config
@@ -47,8 +57,10 @@ static_resources:
                       session_http_only: true
                       session_same_site: "Lax"
                       cookie_config: "HttpOnly; SameSite=Lax"  # Cookie configuration string
-                      cookie_hash_key: "your-32-byte-hash-key-here"
-                      cookie_block_key: "your-32-byte-block-key-here"
+                      user_id_header_name: "X-User-ID"
+                      user_email_header_name: "X-User-Email"
+                      user_username_header_name: "X-User"
+                      skip_auth_header_name: "X-Skip-Auth"  # Header to check for skipping auth
 
                       # Paths that should be excluded from authentication
                       # exclude_paths: ["/health", "/metrics", "/oauth/login", "/oauth/callback", "/oauth/logout"]

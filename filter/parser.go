@@ -40,6 +40,13 @@ type OAuthConfig struct {
 	SessionSameSite   string        `json:"session_same_site"`
 	CookieConfig      string        `json:"cookie_config"`
 
+	// Header configuration
+	UserIDHeaderName       string   `json:"user_id_header_name"`
+	UserEmailHeaderName    string   `json:"user_email_header_name"`
+	UserUsernameHeaderName string   `json:"user_username_header_name"`
+	SkipAuthHeaderName     string   `json:"skip_auth_header_name"`
+	RemoveHeaders          []string `json:"remove_headers"`
+
 	// Paths that should be excluded from authentication
 	ExcludePaths []string `json:"exclude_paths"`
 
@@ -63,17 +70,19 @@ func (p *Parser) Parse(any *anypb.Any, callbacks api.ConfigCallbackHandler) (int
 
 	v := configStruct.Value
 	conf := &OAuthConfig{
-		Scopes:            []string{"openid", "profile", "email"},
-		SessionCookieName: "session",
-		SessionMaxAge:     24 * time.Hour,
-		SessionPath:       "/",
-		SessionSecure:     true,
-		SessionHttpOnly:   true,
-		SessionSameSite:   "Lax",
-		CookieConfig:      "",
-		ExcludePaths:      []string{"/health", "/metrics", "/oauth/login", "/oauth/callback", "/oauth/logout"},
-		Clusters:          make(map[string]ClusterConfig),
-		SessionStore:      session.NewInMemorySessionStore(),
+		Scopes:             []string{"openid", "profile", "email"},
+		SessionCookieName:  "session",
+		SessionMaxAge:      24 * time.Hour,
+		SessionPath:        "/",
+		SessionSecure:      true,
+		SessionHttpOnly:    true,
+		SessionSameSite:    "Lax",
+		CookieConfig:       "",
+		ExcludePaths:       []string{"/health", "/metrics", "/oauth/login", "/oauth/callback", "/oauth/logout"},
+		Clusters:           make(map[string]ClusterConfig),
+		SessionStore:       session.NewInMemorySessionStore(),
+		SkipAuthHeaderName: "",
+		RemoveHeaders:      []string{"X-User-ID", "X-User-Email", "X-User-Username"},
 	}
 
 	// Parse OpenID Connect configuration
@@ -134,6 +143,29 @@ func (p *Parser) Parse(any *anypb.Any, callbacks api.ConfigCallbackHandler) (int
 	// Parse cookie configuration
 	if cookieConfig, ok := v.AsMap()["cookie_config"].(string); ok {
 		conf.CookieConfig = cookieConfig
+	}
+
+	// Parse header configuration
+	if userIDHeaderName, ok := v.AsMap()["user_id_header_name"].(string); ok {
+		conf.UserIDHeaderName = userIDHeaderName
+	}
+	if userEmailHeaderName, ok := v.AsMap()["user_email_header_name"].(string); ok {
+		conf.UserEmailHeaderName = userEmailHeaderName
+	}
+	if userUsernameHeaderName, ok := v.AsMap()["user_username_header_name"].(string); ok {
+		conf.UserUsernameHeaderName = userUsernameHeaderName
+	}
+	if skipAuthHeaderName, ok := v.AsMap()["skip_auth_header_name"].(string); ok {
+		conf.SkipAuthHeaderName = skipAuthHeaderName
+	}
+
+	if removeHeaders, ok := v.AsMap()["remove_headers"].([]interface{}); ok {
+		conf.RemoveHeaders = make([]string, len(removeHeaders))
+		for i, header := range removeHeaders {
+			if h, ok := header.(string); ok {
+				conf.RemoveHeaders[i] = h
+			}
+		}
 	}
 
 	// Parse cluster-specific configurations

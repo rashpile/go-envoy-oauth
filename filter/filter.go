@@ -2,7 +2,6 @@ package filter
 
 import (
 	"fmt"
-	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -119,8 +118,33 @@ func (f *Filter) handleAuthFailure(statusCode int, message string) api.StatusTyp
 func (f *Filter) handleAuthSuccess(header api.RequestHeaderMap, session *session.Session) api.StatusType {
 	traceID := f.getTraceID(header)
 
+	// Get header names from config or use defaults
+	userIDHeader := f.config.UserIDHeaderName
+	if userIDHeader == "" {
+		userIDHeader = "X-User-ID"
+	}
+	userEmailHeader := f.config.UserEmailHeaderName
+	if userEmailHeader == "" {
+		userEmailHeader = "X-User-Email"
+	}
+	userUsernameHeader := f.config.UserUsernameHeaderName
+	if userUsernameHeader == "" {
+		userUsernameHeader = "X-User-Username"
+	}
+
 	// Add user info to headers for downstream services
-	header.Set("X-User-ID", session.UserID)
+	header.Set(userIDHeader, session.UserID)
+
+	// Add user email from claims if available
+	if email, ok := session.Claims["email"].(string); ok {
+		header.Set(userEmailHeader, email)
+	}
+
+	// Add username from claims if available
+	if username, ok := session.Claims["preferred_username"].(string); ok {
+		header.Set(userUsernameHeader, username)
+	}
+
 	f.logger.Debug("Request authenticated successfully",
 		zap.String("session_id", session.ID),
 		zap.String("user_id", session.UserID),
@@ -214,7 +238,17 @@ func (f *Filter) DecodeHeaders(header api.RequestHeaderMap, endStream bool) api.
 	// Get the request path and cluster
 	cluster, _ := header.Get(":authority")
 
-	log.Printf("path: %s, cluster: %s, trace_id: %s", path, cluster, traceID)
+	f.logger.Debug(fmt.Sprintf("path: %s, cluster: %s, trace_id: %s", path, cluster, traceID))
+
+	if f.config.SkipAuthHeaderName != "" {
+		if username, exists := header.Get(f.config.SkipAuthHeaderName); exists && username != "" {
+			f.logger.Debug("Skipping authentication - header already exists",
+				zap.String("header", f.config.SkipAuthHeaderName),
+				zap.String("username", username),
+				zap.String("trace_id", traceID))
+			return api.Continue
+		}
+	}
 
 	// Handle OAuth endpoints
 	if strings.HasPrefix(path, "/oauth/") {
