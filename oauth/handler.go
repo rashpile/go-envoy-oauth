@@ -82,6 +82,44 @@ func NewOAuthHandler(config *OIDCConfig, sessionStore session.SessionStore, cook
 	}, nil
 }
 
+// getAbsoluteRedirectURL returns an absolute redirect URL based on the request headers
+func (h *oauthHandler) getAbsoluteRedirectURL(header api.RequestHeaderMap) string {
+	// Get the host from the request
+	host, _ := header.Get(":authority")
+	if host == "" {
+		host, _ = header.Get("host")
+	}
+
+	// Ensure the redirect URL is absolute and properly formatted
+	redirectURL := h.oauth2Config.RedirectURL
+	if !strings.HasPrefix(redirectURL, "http://") && !strings.HasPrefix(redirectURL, "https://") {
+		// If no scheme is specified, use the same scheme as the request
+		scheme := "http"
+		if forwardedProto, _ := header.Get("x-forwarded-proto"); forwardedProto == "https" {
+			scheme = "https"
+		}
+		// Ensure the redirect URL starts with a slash
+		if !strings.HasPrefix(redirectURL, "/") {
+			redirectURL = "/" + redirectURL
+		}
+		redirectURL = fmt.Sprintf("%s://%s%s", scheme, host, redirectURL)
+	}
+
+	return redirectURL
+}
+
+// getOAuthConfig returns a new OAuth2 config with the absolute redirect URL
+func (h *oauthHandler) getOAuthConfig(header api.RequestHeaderMap) *oauth2.Config {
+	redirectURL := h.getAbsoluteRedirectURL(header)
+	return &oauth2.Config{
+		ClientID:     h.oauth2Config.ClientID,
+		ClientSecret: h.oauth2Config.ClientSecret,
+		RedirectURL:  redirectURL,
+		Scopes:       h.oauth2Config.Scopes,
+		Endpoint:     h.oauth2Config.Endpoint,
+	}
+}
+
 func (h *oauthHandler) HandleAuthRedirect(header api.RequestHeaderMap, redirectURI string) error {
 	// Generate a random state and combine it with the original request path
 	state := generateRandomState() + "|" + redirectURI
@@ -105,7 +143,8 @@ func (h *oauthHandler) HandleAuthRedirect(header api.RequestHeaderMap, redirectU
 	}
 
 	// Use the configured RedirectURL from oauth2Config
-	authURL := h.oauth2Config.AuthCodeURL(state)
+	oauth2Config := h.getOAuthConfig(header)
+	authURL := oauth2Config.AuthCodeURL(state)
 	header.Set("location", authURL)
 	return nil
 }
@@ -150,7 +189,9 @@ func (h *oauthHandler) HandleCallback(header api.RequestHeaderMap, query string)
 		return fmt.Errorf("authorization code not found")
 	}
 
-	token, err := h.oauth2Config.Exchange(context.Background(), code)
+	// Use the configured RedirectURL from oauth2Config
+	oauth2Config := h.getOAuthConfig(header)
+	token, err := oauth2Config.Exchange(context.Background(), code)
 	if err != nil {
 		return err
 	}

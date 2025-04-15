@@ -18,6 +18,7 @@ services:
       - ./envoy.yaml:/etc/envoy/envoy.yaml
       - ../dist/go-envoy-oauth.so:/app/go-envoy-oauth.so
     environment:
+      - CLIENT_SECRET=${CLIENT_SECRET}
       - LOG_LEVEL=TRACE
       - COOKIE_CONFIG=HTTPOnly; SameSite=Lax
     ports:

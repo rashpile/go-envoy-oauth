@@ -44,8 +44,8 @@ static_resources:
                       # OpenID Connect configuration
                       issuer_url: "https://idp.rashpile.net/auth/realms/test"
                       client_id: "envoy-proxy"
-                      client_secret: "S3fE09t7RsbDnBK2Q7KLbQ7KYklegd5o"
-                      redirect_url: "http://localhost:8080/oauth/callback"
+                      client_secret: ""
+                      redirect_url: "/oauth/callback"
                       scopes: ["openid", "profile", "email"]
 
                       # Session configuration

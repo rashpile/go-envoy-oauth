@@ -100,6 +100,7 @@ func (p *Parser) Parse(any *anypb.Any, callbacks api.ConfigCallbackHandler) (int
 		conf.ClientSecret = clientSecret
 	}
 	if redirectURL, ok := v.AsMap()["redirect_url"].(string); ok {
+		// If redirect URL is relative, it will be handled by the OAuth handler
 		conf.RedirectURL = redirectURL
 	}
 	if os.Getenv("CLIENT_SECRET") != "" {
