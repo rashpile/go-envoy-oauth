@@ -71,6 +71,8 @@ static_resources:
                           exclude_paths: ["/status/200", "/status/201"]
                         admin_cluster:
                           exclude: true
+                        test_app_cluster:
+                          exclude_paths: ["/api/public"]
               - name: envoy.filters.http.router
                 typed_config:
                   "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
@@ -88,8 +90,13 @@ static_resources:
                   - match:
                       prefix: "/"
                     route:
-                      cluster: echo_service_cluster
-                      host_rewrite_literal: httpbin.org
+                      cluster: test_app_cluster
+                      host_rewrite_literal: host.docker.internal:3000
+                  # - match:
+                  #     prefix: "/"
+                  #   route:
+                  #     cluster: echo_service_cluster
+                  #     host_rewrite_literal: httpbin.org
   clusters:
     - name: echo_service_cluster
       type: STRICT_DNS
@@ -98,17 +105,12 @@ static_resources:
       load_assignment:
         cluster_name: echo_service_cluster
         endpoints:
-        - lb_endpoints:
-          - endpoint:
-              address:
-                socket_address:
-                  address: httpbin.org
-                  port_value: 443
-      transport_socket:
-            name: envoy.transport_sockets.tls
-            typed_config:
-              "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
-              sni: httpbin.org
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: httpbin.org
+                      port_value: 80
     - name: admin_cluster
       type: STRICT_DNS
       dns_lookup_family: V4_ONLY
@@ -116,17 +118,26 @@ static_resources:
       load_assignment:
         cluster_name: admin_cluster
         endpoints:
-        - lb_endpoints:
-          - endpoint:
-              address:
-                socket_address:
-                  address: httpbin.org
-                  port_value: 443
-      transport_socket:
-            name: envoy.transport_sockets.tls
-            typed_config:
-              "@type": type.googleapis.com/envoy.extensions.transport_sockets.tls.v3.UpstreamTlsContext
-              sni: httpbin.org
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: httpbin.org
+                      port_value: 80
+    - name: test_app_cluster
+      type: STRICT_DNS
+      dns_lookup_family: V4_ONLY
+      lb_policy: ROUND_ROBIN
+      connect_timeout: 5s
+      load_assignment:
+        cluster_name: test_app_cluster
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: host.docker.internal
+                      port_value: 3000
     - name: zipkin
       type: STRICT_DNS
       dns_lookup_family: V4_ONLY
@@ -134,9 +145,16 @@ static_resources:
       load_assignment:
         cluster_name: zipkin
         endpoints:
-        - lb_endpoints:
-          - endpoint:
-              address:
-                socket_address:
-                  address: zipkin
-                  port_value: 9411
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: zipkin
+                      port_value: 9411
+
+admin:
+  access_log_path: "/dev/stdout"
+  address:
+    socket_address:
+      address: 0.0.0.0
+      port_value: 9901

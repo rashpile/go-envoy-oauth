@@ -26,6 +26,7 @@ go.work
 .vscode/
 *.swp
 *.swo
+**/node_modules/
 
 # OS specific files
 .DS_Store

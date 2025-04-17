@@ -1,6 +1,7 @@
 package filter
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -333,6 +334,11 @@ func (f *Filter) handleOAuthEndpoints(header api.RequestHeaderMap, path string) 
 		zap.String("full_path", path),
 		zap.String("trace_id", traceID))
 
+	// Handle API key callback with the correct path
+	if strings.HasPrefix(basePath, "/oauth/callback/apikey/callback") {
+		return f.handleApiKeyCallback(header)
+	}
+
 	switch basePath {
 	case "/oauth/login":
 		return f.handleLogin(header)
@@ -340,6 +346,10 @@ func (f *Filter) handleOAuthEndpoints(header api.RequestHeaderMap, path string) 
 		return f.handleCallback(header)
 	case "/oauth/logout":
 		return f.handleLogout(header)
+	case "/oauth/userinfo":
+		return f.handleUserInfo(header)
+	case "/oauth/apikey":
+		return f.handleApiKey(header)
 	default:
 		return f.handleAuthFailure(404, "Not Found: Unknown OAuth endpoint")
 	}
@@ -585,4 +595,126 @@ func getClusterName(callbacks api.FilterCallbackHandler) string {
 		return ""
 	}
 	return clusterName
+}
+
+func (f *Filter) handleUserInfo(header api.RequestHeaderMap) api.StatusType {
+	session, err := f.getSession(header)
+	if err != nil {
+		return f.handleUnauthenticatedRequest(header, "/oauth/userinfo", f.getTraceID(header), err, "userinfo")
+	}
+
+	if !f.isValidSession(session) {
+		return f.handleUnauthenticatedRequest(header, "/oauth/userinfo", f.getTraceID(header), fmt.Errorf("invalid session"), "userinfo")
+	}
+
+	// Get user info from session claims
+	userInfo := session.Claims
+	if userInfo == nil {
+		f.logger.Error("No user info available in session",
+			zap.String("trace_id", f.getTraceID(header)))
+		return f.handleAuthFailure(http.StatusInternalServerError, "No user info available")
+	}
+
+	// Convert user info to JSON
+	jsonData, err := json.Marshal(userInfo)
+	if err != nil {
+		f.logger.Error("Failed to marshal user info",
+			zap.Error(err),
+			zap.String("trace_id", f.getTraceID(header)))
+		return f.handleAuthFailure(http.StatusInternalServerError, "Failed to marshal user info")
+	}
+
+	// Set response headers
+	headers := map[string][]string{
+		"content-type":  {"application/json"},
+		"cache-control": {"no-store"},
+		"pragma":        {"no-cache"},
+	}
+
+	// Send response using the correct Envoy API method
+	f.callbacks.DecoderFilterCallbacks().SendLocalReply(
+		http.StatusOK,    // responseCode
+		string(jsonData), // bodyText
+		headers,          // headers
+		-1,               // grpcStatus
+		"userinfo",       // details
+	)
+
+	return api.LocalReply
+}
+
+func (f *Filter) handleApiKey(header api.RequestHeaderMap) api.StatusType {
+	// Get the session from the request
+	session, err := f.getSession(header)
+	if err != nil {
+		return f.handleUnauthenticatedRequest(header, "/oauth/apikey", f.getTraceID(header), err, "api_key")
+	}
+
+	// Validate the session
+	if !f.isValidSession(session) {
+		return f.handleUnauthenticatedRequest(header, "/oauth/apikey", f.getTraceID(header), fmt.Errorf("invalid session"), "api_key")
+	}
+
+	// Start the API key OAuth flow
+	err = f.oauthHandler.HandleApiKeyAuth(header)
+	if err != nil {
+		f.logger.Error("Failed to start API key flow",
+			zap.Error(err),
+			zap.String("trace_id", f.getTraceID(header)))
+		return f.handleAuthFailure(http.StatusInternalServerError, "Failed to start API key flow")
+	}
+
+	// Get the authorization URL from the location header
+	authURL, _ := header.Get("location")
+	if authURL == "" {
+		return f.handleAuthFailure(http.StatusInternalServerError, "No authorization URL generated")
+	}
+
+	return f.handleRedirect(authURL, "")
+}
+
+func (f *Filter) handleApiKeyCallback(header api.RequestHeaderMap) api.StatusType {
+	// Get query parameters
+	path, _ := header.Get(":path")
+	query := path[strings.Index(path, "?")+1:]
+
+	// Process the callback
+	token, err := f.oauthHandler.HandleApiKeyCallback(header, query)
+	if err != nil {
+		f.logger.Error("Failed to handle API key callback",
+			zap.Error(err),
+			zap.String("trace_id", f.getTraceID(header)))
+		return f.handleAuthFailure(http.StatusBadRequest, "Invalid API key callback")
+	}
+
+	// Return the refresh token in the response
+	response := map[string]string{
+		"refresh_token": token.RefreshToken,
+	}
+	jsonResponse, err := json.Marshal(response)
+	if err != nil {
+		f.logger.Error("Failed to marshal response",
+			zap.Error(err),
+			zap.String("trace_id", f.getTraceID(header)))
+		return f.handleAuthFailure(http.StatusInternalServerError, "Failed to generate response")
+	}
+
+	// Set response headers
+	headers := map[string][]string{
+		"Content-Type":        {"application/json"},
+		"Cache-Control":       {"no-store"},
+		"Pragma":              {"no-cache"},
+		"Content-Disposition": {"attachment; filename=\"api-key.json\""},
+	}
+
+	// Send the response
+	f.callbacks.DecoderFilterCallbacks().SendLocalReply(
+		http.StatusOK,
+		string(jsonResponse),
+		headers,
+		0,
+		"api_key",
+	)
+
+	return api.LocalReply
 }

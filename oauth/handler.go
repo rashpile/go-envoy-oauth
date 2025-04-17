@@ -42,6 +42,10 @@ type OAuthHandler interface {
 	HandleCallback(header api.RequestHeaderMap, query string) error
 	HandleLogout(header api.RequestHeaderMap) error
 	ValidateSession(session *session.Session) error
+	RefreshToken(session *session.Session, additionalScopes ...string) error
+	HandleApiKeyAuth(header api.RequestHeaderMap) error
+	HandleApiKeyCallback(header api.RequestHeaderMap, query string) (*oauth2.Token, error)
+	GetProvider() *OIDCProvider
 }
 
 type oauthHandler struct {
@@ -110,14 +114,19 @@ func (h *oauthHandler) getAbsoluteRedirectURL(header api.RequestHeaderMap) strin
 
 // getOAuthConfig returns a new OAuth2 config with the absolute redirect URL
 func (h *oauthHandler) getOAuthConfig(header api.RequestHeaderMap) *oauth2.Config {
+	// Get the absolute redirect URL
 	redirectURL := h.getAbsoluteRedirectURL(header)
-	return &oauth2.Config{
+
+	// Create a new OAuth2 config with the absolute redirect URL
+	config := &oauth2.Config{
 		ClientID:     h.oauth2Config.ClientID,
 		ClientSecret: h.oauth2Config.ClientSecret,
 		RedirectURL:  redirectURL,
-		Scopes:       h.oauth2Config.Scopes,
+		Scopes:       h.oauth2Config.Scopes, // Use original scopes without offline_access
 		Endpoint:     h.oauth2Config.Endpoint,
 	}
+
+	return config
 }
 
 func (h *oauthHandler) HandleAuthRedirect(header api.RequestHeaderMap, redirectURI string) error {
@@ -208,12 +217,13 @@ func (h *oauthHandler) HandleCallback(header api.RequestHeaderMap, query string)
 
 	// Create a new session for the authenticated user
 	session := &session.Session{
-		ID:        generateRandomState(), // Use a new random ID for the user session
-		UserID:    sub,
-		Token:     token.AccessToken,
-		Claims:    userInfo,
-		CreatedAt: time.Now(),
-		ExpiresAt: time.Now().Add(24 * time.Hour),
+		ID:           generateRandomState(), // Use a new random ID for the user session
+		UserID:       sub,
+		Token:        token.AccessToken,
+		RefreshToken: token.RefreshToken,
+		Claims:       userInfo,
+		CreatedAt:    time.Now(),
+		ExpiresAt:    time.Now().Add(24 * time.Hour),
 	}
 	if err := h.sessionStore.Store(session); err != nil {
 		return err
@@ -318,15 +328,30 @@ func generateRandomState() string {
 	return base64.RawURLEncoding.EncodeToString(b)
 }
 
-// RefreshToken attempts to refresh an expired access token
-func (h *oauthHandler) RefreshToken(session *session.Session) error {
+// RefreshToken attempts to refresh an expired access token with optional additional scopes
+func (h *oauthHandler) RefreshToken(session *session.Session, additionalScopes ...string) error {
 	if session.Token == "" {
 		return fmt.Errorf("no token available")
 	}
 
+	// Create a new OAuth2 config with additional scopes if provided
+	config := h.oauth2Config
+	if len(additionalScopes) > 0 {
+		// For API key requests, we want to get a new token with offline_access
+		// Don't include the original scopes to get a clean token
+		config = &oauth2.Config{
+			ClientID:     config.ClientID,
+			ClientSecret: config.ClientSecret,
+			RedirectURL:  config.RedirectURL,
+			Scopes:       []string{"offline_access"}, // Only request offline_access scope
+			Endpoint:     config.Endpoint,
+		}
+	}
+
 	// Get new token using refresh token
-	token, err := h.oauth2Config.TokenSource(context.Background(), &oauth2.Token{
-		AccessToken: session.Token,
+	token, err := config.TokenSource(context.Background(), &oauth2.Token{
+		AccessToken:  session.Token,
+		RefreshToken: session.RefreshToken,
 	}).Token()
 	if err != nil {
 		return err
@@ -334,8 +359,124 @@ func (h *oauthHandler) RefreshToken(session *session.Session) error {
 
 	// Update session with new token
 	session.Token = token.AccessToken
+	session.RefreshToken = token.RefreshToken
 	session.ExpiresAt = time.Now().Add(24 * time.Hour)
 
 	// Store updated session
 	return h.sessionStore.Store(session)
+}
+
+func (h *oauthHandler) HandleApiKeyAuth(header api.RequestHeaderMap) error {
+	// Generate a random state
+	state := generateRandomState()
+
+	// Store the state in a temporary session
+	stateSession := &session.Session{
+		ID:        state,
+		CreatedAt: time.Now(),
+		ExpiresAt: time.Now().Add(5 * time.Minute),
+	}
+	if err := h.sessionStore.Store(stateSession); err != nil {
+		return fmt.Errorf("failed to store state: %v", err)
+	}
+
+	// Get the absolute redirect URL
+	redirectURL := h.getAbsoluteRedirectURL(header)
+	if !strings.HasPrefix(redirectURL, "http") {
+		// If the redirect URL is relative, make it absolute
+		host, _ := header.Get(":authority")
+		if host == "" {
+			host, _ = header.Get("host")
+		}
+		scheme := "http"
+		if forwardedProto, _ := header.Get("x-forwarded-proto"); forwardedProto == "https" {
+			scheme = "https"
+		}
+		redirectURL = fmt.Sprintf("%s://%s%s", scheme, host, redirectURL)
+	}
+
+	// Create OAuth2 config with only offline_access scope
+	config := &oauth2.Config{
+		ClientID:     h.oauth2Config.ClientID,
+		ClientSecret: h.oauth2Config.ClientSecret,
+		RedirectURL:  redirectURL + "/apikey/callback",
+		Scopes:       []string{"offline_access"},
+		Endpoint:     h.oauth2Config.Endpoint,
+	}
+
+	// Generate the authorization URL
+	authURL := config.AuthCodeURL(state)
+	header.Set("location", authURL)
+	return nil
+}
+
+func (h *oauthHandler) HandleApiKeyCallback(header api.RequestHeaderMap, query string) (*oauth2.Token, error) {
+	values, err := url.ParseQuery(query)
+	if err != nil {
+		return nil, err
+	}
+
+	// Get the state parameter
+	state := values.Get("state")
+	if state == "" {
+		return nil, fmt.Errorf("state parameter not found")
+	}
+
+	// Get the state from the session store
+	stateSession, err := h.sessionStore.Get(state)
+	if err != nil {
+		return nil, fmt.Errorf("invalid or expired state parameter")
+	}
+
+	// Validate the state session
+	if time.Now().After(stateSession.ExpiresAt) {
+		return nil, fmt.Errorf("state parameter expired")
+	}
+
+	// Delete the state session
+	if err := h.sessionStore.Delete(state); err != nil {
+		return nil, fmt.Errorf("failed to delete state: %v", err)
+	}
+
+	code := values.Get("code")
+	if code == "" {
+		return nil, fmt.Errorf("authorization code not found")
+	}
+
+	// Get the absolute redirect URL
+	redirectURL := h.getAbsoluteRedirectURL(header)
+	if !strings.HasPrefix(redirectURL, "http") {
+		// If the redirect URL is relative, make it absolute
+		host, _ := header.Get(":authority")
+		if host == "" {
+			host, _ = header.Get("host")
+		}
+		scheme := "http"
+		if forwardedProto, _ := header.Get("x-forwarded-proto"); forwardedProto == "https" {
+			scheme = "https"
+		}
+		redirectURL = fmt.Sprintf("%s://%s%s", scheme, host, redirectURL)
+	}
+
+	// Create OAuth2 config with only offline_access scope
+	config := &oauth2.Config{
+		ClientID:     h.oauth2Config.ClientID,
+		ClientSecret: h.oauth2Config.ClientSecret,
+		RedirectURL:  redirectURL + "/apikey/callback",
+		Scopes:       []string{"offline_access"},
+		Endpoint:     h.oauth2Config.Endpoint,
+	}
+	fmt.Println("RedirectURL", config.RedirectURL)
+
+	// Exchange the code for a token
+	token, err := config.Exchange(context.Background(), code)
+	if err != nil {
+		return nil, err
+	}
+
+	return token, nil
+}
+
+func (h *oauthHandler) GetProvider() *OIDCProvider {
+	return h.provider
 }
