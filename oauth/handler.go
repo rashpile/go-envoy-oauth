@@ -90,6 +90,10 @@ func (h *oauthHandler) getAbsoluteRedirectURL(header api.RequestHeaderMap) strin
 		host, _ = header.Get("host")
 	}
 
+	if forwardedHost, _ := header.Get("x-forwarded-host"); forwardedHost != "" {
+		host = forwardedHost
+	}
+
 	// Ensure the redirect URL is absolute and properly formatted
 	redirectURL := h.oauth2Config.RedirectURL
 	if !strings.HasPrefix(redirectURL, "http://") && !strings.HasPrefix(redirectURL, "https://") {
