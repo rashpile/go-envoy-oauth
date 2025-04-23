@@ -292,12 +292,19 @@ func (f *Filter) DecodeHeaders(header api.RequestHeaderMap, endStream bool) api.
 		return api.Running
 	}
 
-	// Check for bearer token
-	token := f.extractBearerToken(header)
-	if token != "" {
-		// TODO: Validate bearer token
-		return api.Continue
-	}
+   // Block unvalidated bearer-token authentication until proper validation is implemented
+   token := f.extractBearerToken(header)
+   if token != "" {
+       f.logger.Debug("Blocking bearer-token authentication; validation not implemented",
+           zap.String("trace_id", traceID))
+       return f.handleUnauthenticatedRequest(
+           header,
+           path,
+           traceID,
+           fmt.Errorf("bearer token auth not supported"),
+           "Bearer token authentication not supported",
+       )
+   }
 
 	// Check for session cookie
 	sessionID, err := f.cookieManager.GetCookie(header)
