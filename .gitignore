@@ -1,6 +1,7 @@
 dist
 tmp
 .env
+.plan
 
 # Binaries for programs and plugins
 *.exe
@@ -38,3 +39,4 @@ Thumbs.db
 
 **/node_modules/
 **/.codex
+**/.claude

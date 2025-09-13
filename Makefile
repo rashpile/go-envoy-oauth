@@ -8,6 +8,9 @@ LDFLAGS := -X main.GitCommit=$(GIT_COMMIT) -X main.BuildDate=$(BUILD_DATE)
 build:
 	docker build -t go-envoy-oauth-builder . && docker run --rm -v "$$PWD/dist:/output" go-envoy-oauth-builder
 
+build-xds:
+	cd xds && docker build -t go-envoy-xds-builder . && docker run --rm -v "$$PWD/../dist:/output" go-envoy-xds-builder
+
 test:
 	go test -v ./plugin/...
 

@@ -2,11 +2,15 @@ version: "3.8"
 
 services:
   envoy:
-    image: envoyproxy/envoy:contrib-v1.33.2
+    image: envoyproxy/envoy:contrib-v1.35.2
     container_name: envoy-gateway
     volumes:
-      - ./envoy.yaml:/etc/envoy/envoy.yaml
+      # - ./envoy.yaml:/etc/envoy/envoy.yaml
+      - ../../dist/envoy-xds.yaml:/etc/envoy/envoy.yaml
       - ../../dist/go-envoy-oauth.so:/app/go-envoy-oauth.so
+      - ./standalone.sh:/app/standalone.sh
+      - ./gateway-auth.yaml:/app/gateway-auth.yaml
+      - ../../dist/xds-server:/app/xds-server
     environment:
       - CLIENT_SECRET=${CLIENT_SECRET}
       - LOG_LEVEL=TRACE
@@ -14,6 +18,7 @@ services:
     ports:
       - "8081:8080"
       - "127.0.0.1:9901:9901"
+    command: /app/standalone.sh
     networks:
       - envoy-network
 

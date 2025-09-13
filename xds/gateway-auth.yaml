@@ -1,9 +1,9 @@
 plugin:
   library_path: /app/go-envoy-oauth.so
 oauth:
-  issuer_url: ""
-  client_id: "envoy-proxy"
-  client_secret: ""
+  issuer_url: "https://your_issuer_url_here"
+  client_id: "your_client_id_here"
+  client_secret: "your_client_secret_here"
   redirect_url: "/oauth/callback" #default "/oauth/callback"
 clients:
   - id: admin_cluster #required
