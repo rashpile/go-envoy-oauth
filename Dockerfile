@@ -17,7 +17,7 @@ COPY . .
 ENV GOFLAGS=-buildvcs=false
 
 # Build the Go project with c-shared mode to produce a shared object file
-RUN go build -o /output/go-envoy-oauth.so -buildmode=c-shared ./libgolang
+RUN go build -o /output/go-envoy-oauth.so -buildmode=c-shared ./plugin/libgolang
 
 # Final stage
 FROM alpine:3.19

@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/envoyproxy/envoy/contrib/golang/common/go/api"
-	"github.com/rashpile/go-envoy-oauth/session"
+	"github.com/rashpile/go-envoy-oauth/plugin/session"
 	"golang.org/x/oauth2"
 )
 

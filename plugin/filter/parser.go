@@ -11,8 +11,8 @@ import (
 
 	xds "github.com/cncf/xds/go/xds/type/v3"
 	"github.com/envoyproxy/envoy/contrib/golang/common/go/api"
-	"github.com/rashpile/go-envoy-oauth/oauth"
-	"github.com/rashpile/go-envoy-oauth/session"
+	"github.com/rashpile/go-envoy-oauth/plugin/oauth"
+	"github.com/rashpile/go-envoy-oauth/plugin/session"
 
 	"google.golang.org/protobuf/types/known/anypb"
 )
