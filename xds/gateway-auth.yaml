@@ -1,5 +1,5 @@
 plugin:
-  library_path: /app/go-envoy-oauth.so
+  library_path: /app/go-envoy-oauth.so # optional, default: /app/go-envoy-oauth.so
 oauth:
   issuer_url: "https://your_issuer_url_here"
   client_id: "your_client_id_here"

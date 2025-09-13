@@ -1,10 +1,3 @@
-plugin:
-  library_path: /app/go-envoy-oauth.so
-oauth:
-  issuer_url: ""
-  client_id: "envoy-proxy"
-  client_secret: ""
-  redirect_url: "/oauth/callback" #default "/oauth/callback"
 clients:
   - id: admin_cluster #required
     address: httpbin.org # required

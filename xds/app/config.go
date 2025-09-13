@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -35,6 +36,31 @@ type ClientConfig struct {
 	ExcludePaths []string `yaml:"exclude_paths,omitempty"`
 }
 
+// overrideFromEnv overrides configuration values from environment variables
+func overrideFromEnv(config *GatewayConfig) {
+	// Plugin config overrides
+	if val := os.Getenv("PLUGIN_LIBRARYPATH"); val != "" {
+		config.Plugin.LibraryPath = val
+	}
+
+	// OAuth config overrides
+	if val := os.Getenv("OAUTH_ISSUERURL"); val != "" {
+		config.OAuth.IssuerURL = val
+	}
+	if val := os.Getenv("OAUTH_CLIENTID"); val != "" {
+		config.OAuth.ClientID = val
+	}
+	if val := os.Getenv("OAUTH_CLIENTSECRET"); val != "" {
+		config.OAuth.ClientSecret = val
+	}
+	if val := os.Getenv("OAUTH_REDIRECTURL"); val != "" {
+		config.OAuth.RedirectURL = val
+	}
+	if val := os.Getenv("OAUTH_SCOPES"); val != "" {
+		config.OAuth.Scopes = strings.Split(val, ",")
+	}
+}
+
 func LoadConfig(path string) (*GatewayConfig, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -46,7 +72,14 @@ func LoadConfig(path string) (*GatewayConfig, error) {
 		return nil, fmt.Errorf("failed to parse config: %w", err)
 	}
 
+	// Override from environment variables
+	overrideFromEnv(&config)
+
 	// Set defaults
+	if config.Plugin.LibraryPath == "" {
+		config.Plugin.LibraryPath = "/app/go-envoy-oauth.so"
+	}
+
 	if config.OAuth.RedirectURL == "" {
 		config.OAuth.RedirectURL = "/oauth/callback"
 	}
@@ -65,9 +98,6 @@ func LoadConfig(path string) (*GatewayConfig, error) {
 	}
 
 	// Validate required fields
-	if config.Plugin.LibraryPath == "" {
-		return nil, fmt.Errorf("plugin.library_path is required")
-	}
 	if config.OAuth.IssuerURL == "" {
 		return nil, fmt.Errorf("oauth.issuer_url is required")
 	}
