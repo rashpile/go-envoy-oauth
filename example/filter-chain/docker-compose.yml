@@ -24,7 +24,7 @@ services:
       - LOG_LEVEL=TRACE
       - COOKIE_CONFIG=HTTPOnly; SameSite=Lax
     ports:
-      - "8080:8080"
+      - "8081:8080"
       - "127.0.0.1:9901:9901"
     # depends_on:
     #   - zipkin

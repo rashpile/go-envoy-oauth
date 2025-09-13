@@ -1,0 +1,26 @@
+plugin:
+  library_path: /app/go-envoy-oauth.so
+oauth:
+  issuer_url: "https://your_issuer_url_here"
+  client_id: "your_client_id_here"
+  client_secret: "your_client_secret_here"
+  redirect_url: "/oauth/callback" #default "/oauth/callback"
+clients:
+  - id: admin_cluster #required
+    address: httpbin.org # required
+    port: 443 # default 8080
+    ssl: true # default false
+    exclude: true # default false
+    prefix: /ip #default /
+    exclude_paths: # optional
+      - /healthz
+      - /metrics
+  - id: echo_service_cluster
+    address: httpbin.org
+    port: 443
+    ssl: true
+    exclude: false
+    prefix: /
+    exclude_paths:
+      - /status/200
+      - /status/201

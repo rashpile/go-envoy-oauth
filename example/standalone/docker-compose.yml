@@ -1,34 +1,22 @@
-version: '3.8'
+version: "3.8"
 
 services:
-  zipkin:
-    image: openzipkin/zipkin:latest
-    container_name: zipkin
-    ports:
-      - "9411:9411"
-    environment:
-      - STORAGE_TYPE=mem
-    networks:
-      - envoy-network
-
   envoy:
     image: envoyproxy/envoy:contrib-v1.33.2
     container_name: envoy-gateway
     volumes:
       - ./envoy.yaml:/etc/envoy/envoy.yaml
-      - ../dist/go-envoy-oauth.so:/app/go-envoy-oauth.so
+      - ../../dist/go-envoy-oauth.so:/app/go-envoy-oauth.so
     environment:
       - CLIENT_SECRET=${CLIENT_SECRET}
       - LOG_LEVEL=TRACE
       - COOKIE_CONFIG=HTTPOnly; SameSite=Lax
     ports:
-      - "8080:8080"
+      - "8081:8080"
       - "127.0.0.1:9901:9901"
-    depends_on:
-      - zipkin
     networks:
       - envoy-network
 
 networks:
   envoy-network:
-    driver: bridge 
+    driver: bridge

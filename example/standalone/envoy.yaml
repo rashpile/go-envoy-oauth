@@ -16,34 +16,12 @@ static_resources:
                     typed_config:
                       "@type": type.googleapis.com/envoy.extensions.filters.http.header_to_metadata.v3.Config
                       request_rules:
-                        - header: x-user
+                        - header: x-skip-auth
                           on_header_present:
                             metadata_namespace: envoy.filters.http.header_to_metadata
-                            key: x-user
+                            key: x_skip_auth
                             type: STRING
                           remove: true
-                  - name: envoy.filters.http.golang
-                    typed_config:
-                      "@type": type.googleapis.com/envoy.extensions.filters.http.golang.v3alpha.Config
-                      library_id: go-envoy-keyauth
-                      library_path: "/app/go-envoy-keyauth.so"
-                      plugin_name: go-envoy-keyauth
-                      plugin_config:
-                        "@type": type.googleapis.com/xds.type.v3.TypedStruct
-                        value:
-                          api_key_header: "X-API-Key"
-                          api_key_query_param: "x-api-key"
-                          api_key_cookie: "x_api_key"
-                          username_header: "X-User"
-                          keys_file: "/etc/envoy/api-keys.txt"
-                          check_interval: 60
-                          exclude_paths: ["/health", "/metrics"] # Global exclude paths
-                          permissive_mode: true
-                          clusters:
-                            echo_service_cluster: # Configuration specific to echo_service_cluster
-                              exclude_paths: ["/status/200", "/status/201"]
-                            admin_cluster: # Configuration specific to admin_cluster
-                              exclude: true
                   - name: envoy.filters.http.golang
                     typed_config:
                       "@type": type.googleapis.com/envoy.extensions.filters.http.golang.v3alpha.Config
@@ -57,7 +35,7 @@ static_resources:
                           issuer_url: "https://idp.rashpile.net/auth/realms/test"
                           client_id: "envoy-proxy"
                           client_secret: ""
-                          redirect_url: "http://localhost:8080/oauth/callback"
+                          redirect_url: "/oauth/callback"
                           scopes: ["openid", "profile", "email"]
 
                           # Session configuration
@@ -72,7 +50,7 @@ static_resources:
                           user_id_header_name: "X-User-ID"
                           user_email_header_name: "X-User-Email"
                           user_username_header_name: "X-User"
-                          skip_auth_header_name: "X-User" # Header to check for skipping auth
+                          skip_auth_header_name: "X-Skip-Auth" # Header to check for skipping auth
 
                           # Paths that should be excluded from authentication
                           # exclude_paths: ["/health"]
