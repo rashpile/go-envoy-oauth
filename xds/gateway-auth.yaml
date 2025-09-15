@@ -1,3 +1,7 @@
+# Template configuration (optional)
+# Can be specified here or via --template CLI flag
+# template: example-template.yaml
+
 plugin:
   library_path: /app/go-envoy-oauth.so # optional, default: /app/go-envoy-oauth.so
 oauth:

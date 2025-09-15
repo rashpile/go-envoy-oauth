@@ -1,3 +1,4 @@
+template: /app/gateway-base.yaml
 clients:
   - id: admin_cluster #required
     address: httpbin.org # required

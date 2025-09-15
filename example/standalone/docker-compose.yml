@@ -10,6 +10,7 @@ services:
       - ../../dist/go-envoy-oauth.so:/app/go-envoy-oauth.so
       - ./standalone.sh:/app/standalone.sh
       - ./gateway-auth.yaml:/app/gateway-auth.yaml
+      - ./envoy.yaml:/app/gateway-base.yaml
       - ../../dist/xds-server:/app/xds-server
     environment:
       - OAUTH_CLIENTSECRET=${CLIENT_SECRET}

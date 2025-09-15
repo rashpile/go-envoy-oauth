@@ -9,9 +9,10 @@ import (
 )
 
 type GatewayConfig struct {
-	Plugin  PluginConfig  `yaml:"plugin"`
-	OAuth   OAuthConfig   `yaml:"oauth"`
-	Clients []ClientConfig `yaml:"clients"`
+	Plugin   PluginConfig   `yaml:"plugin"`
+	OAuth    OAuthConfig    `yaml:"oauth"`
+	Clients  []ClientConfig `yaml:"clients"`
+	Template string         `yaml:"template,omitempty"` // Path to template config file
 }
 
 type PluginConfig struct {
