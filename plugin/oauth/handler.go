@@ -44,7 +44,7 @@ type OAuthHandler interface {
 	ValidateSession(session *session.Session) error
 }
 
-type oauthHandler struct {
+type OAuthHandlerImpl struct {
 	config        *OIDCConfig
 	provider      *OIDCProvider
 	oauth2Config  *oauth2.Config
@@ -54,7 +54,7 @@ type oauthHandler struct {
 }
 
 // NewOAuthHandler creates a new OAuth handler
-func NewOAuthHandler(config *OIDCConfig, sessionStore session.SessionStore, cookieManager *session.CookieManager) (*oauthHandler, error) {
+func NewOAuthHandler(config *OIDCConfig, sessionStore session.SessionStore, cookieManager *session.CookieManager) (OAuthHandler, error) {
 	// Fetch OpenID Connect configuration
 	provider, err := fetchOIDCConfig(config.IssuerURL)
 	if err != nil {
@@ -73,7 +73,7 @@ func NewOAuthHandler(config *OIDCConfig, sessionStore session.SessionStore, cook
 		},
 	}
 
-	return &oauthHandler{
+	return &OAuthHandlerImpl{
 		config:        config,
 		provider:      provider,
 		oauth2Config:  oauth2Config,
@@ -82,8 +82,8 @@ func NewOAuthHandler(config *OIDCConfig, sessionStore session.SessionStore, cook
 	}, nil
 }
 
-// getAbsoluteRedirectURL returns an absolute redirect URL based on the request headers
-func (h *oauthHandler) getAbsoluteRedirectURL(header api.RequestHeaderMap) string {
+// GetAbsoluteRedirectURL returns an absolute redirect URL based on the request headers
+func (h *OAuthHandlerImpl) GetAbsoluteRedirectURL(header api.RequestHeaderMap) string {
 	// Get the host from the request
 	host, _ := header.Get(":authority")
 	if host == "" {
@@ -112,9 +112,9 @@ func (h *oauthHandler) getAbsoluteRedirectURL(header api.RequestHeaderMap) strin
 	return redirectURL
 }
 
-// getOAuthConfig returns a new OAuth2 config with the absolute redirect URL
-func (h *oauthHandler) getOAuthConfig(header api.RequestHeaderMap) *oauth2.Config {
-	redirectURL := h.getAbsoluteRedirectURL(header)
+// GetOAuthConfig returns a new OAuth2 config with the absolute redirect URL
+func (h *OAuthHandlerImpl) GetOAuthConfig(header api.RequestHeaderMap) *oauth2.Config {
+	redirectURL := h.GetAbsoluteRedirectURL(header)
 	return &oauth2.Config{
 		ClientID:     h.oauth2Config.ClientID,
 		ClientSecret: h.oauth2Config.ClientSecret,
@@ -124,7 +124,7 @@ func (h *oauthHandler) getOAuthConfig(header api.RequestHeaderMap) *oauth2.Confi
 	}
 }
 
-func (h *oauthHandler) HandleAuthRedirect(header api.RequestHeaderMap, redirectURI string) error {
+func (h *OAuthHandlerImpl) HandleAuthRedirect(header api.RequestHeaderMap, redirectURI string) error {
 	// Generate a random state and combine it with the original request path
 	state := generateRandomState() + "|" + redirectURI
 
@@ -147,13 +147,13 @@ func (h *oauthHandler) HandleAuthRedirect(header api.RequestHeaderMap, redirectU
 	}
 
 	// Use the configured RedirectURL from oauth2Config
-	oauth2Config := h.getOAuthConfig(header)
+	oauth2Config := h.GetOAuthConfig(header)
 	authURL := oauth2Config.AuthCodeURL(state)
 	header.Set("location", authURL)
 	return nil
 }
 
-func (h *oauthHandler) HandleCallback(header api.RequestHeaderMap, query string) error {
+func (h *OAuthHandlerImpl) HandleCallback(header api.RequestHeaderMap, query string) error {
 	values, err := url.ParseQuery(query)
 	if err != nil {
 		return err
@@ -194,7 +194,7 @@ func (h *oauthHandler) HandleCallback(header api.RequestHeaderMap, query string)
 	}
 
 	// Use the configured RedirectURL from oauth2Config
-	oauth2Config := h.getOAuthConfig(header)
+	oauth2Config := h.GetOAuthConfig(header)
 	token, err := oauth2Config.Exchange(context.Background(), code)
 	if err != nil {
 		return err
@@ -232,7 +232,7 @@ func (h *oauthHandler) HandleCallback(header api.RequestHeaderMap, query string)
 	return nil
 }
 
-func (h *oauthHandler) HandleLogout(header api.RequestHeaderMap) error {
+func (h *OAuthHandlerImpl) HandleLogout(header api.RequestHeaderMap) error {
 	sessionID, err := h.cookieManager.GetCookie(header)
 	if err != nil {
 		return err
@@ -246,7 +246,7 @@ func (h *oauthHandler) HandleLogout(header api.RequestHeaderMap) error {
 	return nil
 }
 
-func (h *oauthHandler) ValidateSession(session *session.Session) error {
+func (h *OAuthHandlerImpl) ValidateSession(session *session.Session) error {
 	if time.Now().After(session.ExpiresAt) {
 		return h.RefreshToken(session)
 	}
@@ -254,7 +254,7 @@ func (h *oauthHandler) ValidateSession(session *session.Session) error {
 }
 
 // getUserInfo retrieves user information from the OpenID Connect provider
-func (h *oauthHandler) getUserInfo(accessToken string) (map[string]interface{}, error) {
+func (h *OAuthHandlerImpl) getUserInfo(accessToken string) (map[string]interface{}, error) {
 	client := &http.Client{}
 	req, err := http.NewRequest("GET", h.provider.UserInfoEndpoint, nil)
 	if err != nil {
@@ -323,7 +323,7 @@ func generateRandomState() string {
 }
 
 // RefreshToken attempts to refresh an expired access token
-func (h *oauthHandler) RefreshToken(session *session.Session) error {
+func (h *OAuthHandlerImpl) RefreshToken(session *session.Session) error {
 	if session.Token == "" {
 		return fmt.Errorf("no token available")
 	}
@@ -342,4 +342,9 @@ func (h *oauthHandler) RefreshToken(session *session.Session) error {
 
 	// Store updated session
 	return h.sessionStore.Store(session)
+}
+
+// GetSessionStore returns the session store
+func (h *OAuthHandlerImpl) GetSessionStore() session.SessionStore {
+	return h.sessionStore
 }
