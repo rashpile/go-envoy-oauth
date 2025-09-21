@@ -32,6 +32,7 @@ func MakeListener(config *GatewayConfig) ([]types.Resource, error) {
 		"client_id":                 config.OAuth.ClientID,
 		"client_secret":             config.OAuth.ClientSecret,
 		"redirect_url":              config.OAuth.RedirectURL,
+		"enable_api_key":            config.OAuth.EnableAPIKey,
 		"session_cookie_name":       "session",
 		"session_max_age":           86400,
 		"session_path":              "/",

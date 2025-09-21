@@ -16,6 +16,7 @@ services:
       - OAUTH_CLIENTSECRET=${CLIENT_SECRET}
       - OAUTH_CLIENTID=${CLIENT_ID}
       - OAUTH_ISSUERURL=${ISSUER_URL}
+      - OAUTH_ENABLE_API_KEY=true
       - LOG_LEVEL=TRACE
       - COOKIE_CONFIG=HTTPOnly; SameSite=Lax
     ports:

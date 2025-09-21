@@ -9,6 +9,7 @@ oauth:
   client_id: "your_client_id_here"
   client_secret: "your_client_secret_here"
   redirect_url: "/oauth/callback" #default "/oauth/callback"
+  enable_api_key: false # optional, default: false - Enable API key generation feature
 clients:
   - id: admin_cluster #required
     address: httpbin.org # required

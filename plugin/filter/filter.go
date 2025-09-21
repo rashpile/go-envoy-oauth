@@ -23,13 +23,14 @@ type Session struct {
 
 // Filter implements the Envoy HTTP filter
 type Filter struct {
-	config        *OAuthConfig
-	oauthHandler  oauth.OAuthHandler
-	sessionStore  session.SessionStore
-	cookieManager *session.CookieManager
-	callbacks     api.FilterCallbackHandler
-	logger        *zap.Logger
-	mu            sync.Mutex
+	config              *OAuthConfig
+	oauthHandler        oauth.OAuthHandler
+	offlineTokenHandler *oauth.OfflineTokenHandler
+	sessionStore        session.SessionStore
+	cookieManager       *session.CookieManager
+	callbacks           api.FilterCallbackHandler
+	logger              *zap.Logger
+	mu                  sync.Mutex
 }
 
 // NewFilter creates a new filter instance
@@ -68,14 +69,73 @@ func NewFilter(config *OAuthConfig, callbacks api.FilterCallbackHandler) (*Filte
 		zap.Strings("scopes", config.Scopes),
 	)
 
-	return &Filter{
-		config:        config,
-		oauthHandler:  config.OAuthHandler,
-		sessionStore:  config.SessionStore,
-		cookieManager: cookieManager,
-		callbacks:     callbacks,
-		logger:        logger,
-	}, nil
+	filter := &Filter{
+		config:              config,
+		oauthHandler:        config.OAuthHandler,
+		offlineTokenHandler: nil, // Will be initialized when OAuth handler is created
+		sessionStore:        config.SessionStore,
+		cookieManager:       cookieManager,
+		callbacks:           callbacks,
+		logger:              logger,
+	}
+
+	// If OAuth handler already exists and API key feature is enabled, try to create offline handler
+	if config.EnableAPIKey && filter.oauthHandler != nil && filter.offlineTokenHandler == nil {
+		if oauthHandlerImpl, ok := filter.oauthHandler.(*oauth.OAuthHandlerImpl); ok {
+			logger.Debug("Creating offline token handler during filter initialization (API key feature enabled)")
+			offlineHandler, err := oauth.NewOfflineTokenHandler(oauthHandlerImpl, logger)
+			if err != nil {
+				logger.Error("Failed to create offline token handler during initialization", zap.Error(err))
+			} else {
+				filter.offlineTokenHandler = offlineHandler
+				logger.Debug("Offline token handler created successfully during initialization")
+			}
+		} else {
+			logger.Warn("OAuth handler exists but is not OAuthHandlerImpl type",
+				zap.String("actual_type", fmt.Sprintf("%T", filter.oauthHandler)))
+		}
+	} else if config.EnableAPIKey {
+		logger.Debug("API key feature is enabled, handler will be created when OAuth handler is initialized")
+	} else {
+		logger.Debug("API key feature is disabled in configuration")
+	}
+
+	return filter, nil
+}
+
+// ensureHandlersInitialized makes sure OAuth and offline handlers are initialized
+func (f *Filter) ensureHandlersInitialized() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	// Create OAuth handler if needed
+	if f.oauthHandler == nil {
+		f.logger.Debug("Creating OAuth handler from ensureHandlersInitialized")
+		_, err := f.createOAuthHandler(f.config, f.cookieManager)
+		if err != nil {
+			return fmt.Errorf("failed to create OAuth handler: %v", err)
+		}
+	}
+
+	// Create offline handler if needed and if API key feature is enabled
+	if f.config.EnableAPIKey && f.offlineTokenHandler == nil && f.oauthHandler != nil {
+		if oauthHandlerImpl, ok := f.oauthHandler.(*oauth.OAuthHandlerImpl); ok {
+			f.logger.Debug("Creating offline token handler separately (API key feature enabled)")
+			offlineHandler, err := oauth.NewOfflineTokenHandler(oauthHandlerImpl, f.logger)
+			if err != nil {
+				f.logger.Error("Failed to create offline token handler", zap.Error(err))
+				// Non-fatal: offline token functionality will be disabled
+			} else {
+				f.offlineTokenHandler = offlineHandler
+				f.logger.Debug("Offline token handler created successfully in ensureHandlersInitialized")
+			}
+		} else {
+			f.logger.Error("Failed to cast OAuth handler to OAuthHandlerImpl in ensureHandlersInitialized",
+				zap.String("actual_type", fmt.Sprintf("%T", f.oauthHandler)))
+		}
+	}
+
+	return nil
 }
 
 func (f *Filter) createOAuthHandler(config *OAuthConfig, cookieManager *session.CookieManager) (oauth.OAuthHandler, error) {
@@ -98,6 +158,26 @@ func (f *Filter) createOAuthHandler(config *OAuthConfig, cookieManager *session.
 	}
 	config.OAuthHandler = oauthHandler
 	f.oauthHandler = config.OAuthHandler
+
+	// Create offline token handler if API key feature is enabled
+	if config.EnableAPIKey {
+		if oauthHandlerImpl, ok := oauthHandler.(*oauth.OAuthHandlerImpl); ok {
+			f.logger.Debug("Creating offline token handler (API key feature enabled)")
+			offlineHandler, err := oauth.NewOfflineTokenHandler(oauthHandlerImpl, f.logger)
+			if err != nil {
+				f.logger.Error("Failed to create offline token handler", zap.Error(err))
+				// Non-fatal: offline token functionality will be disabled
+			} else {
+				f.offlineTokenHandler = offlineHandler
+				f.logger.Debug("Offline token handler created successfully")
+			}
+		} else {
+			f.logger.Error("Failed to cast OAuth handler to OAuthHandlerImpl",
+				zap.String("actual_type", fmt.Sprintf("%T", oauthHandler)))
+		}
+	} else {
+		f.logger.Debug("API key feature is disabled, skipping offline token handler creation")
+	}
 
 	return oauthHandler, nil
 }
@@ -266,6 +346,7 @@ func (f *Filter) DecodeHeaders(header api.RequestHeaderMap, endStream bool) api.
 		return api.Continue
 	}
 
+	// Initialize OAuth handler if needed (before handling any OAuth endpoints)
 	if f.oauthHandler == nil {
 		f.mu.Lock()
 		// Double check after acquiring lock
@@ -289,19 +370,19 @@ func (f *Filter) DecodeHeaders(header api.RequestHeaderMap, endStream bool) api.
 		return status
 	}
 
-   // Block unvalidated bearer-token authentication until proper validation is implemented
-   token := f.extractBearerToken(header)
-   if token != "" {
-       f.logger.Debug("Blocking bearer-token authentication; validation not implemented",
-           zap.String("trace_id", traceID))
-       return f.handleUnauthenticatedRequest(
-           header,
-           path,
-           traceID,
-           fmt.Errorf("bearer token auth not supported"),
-           "Bearer token authentication not supported",
-       )
-   }
+	// Block unvalidated bearer-token authentication until proper validation is implemented
+	token := f.extractBearerToken(header)
+	if token != "" {
+		f.logger.Debug("Blocking bearer-token authentication; validation not implemented",
+			zap.String("trace_id", traceID))
+		return f.handleUnauthenticatedRequest(
+			header,
+			path,
+			traceID,
+			fmt.Errorf("bearer token auth not supported"),
+			"Bearer token authentication not supported",
+		)
+	}
 
 	// Check for session cookie
 	sessionID, err := f.cookieManager.GetCookie(header)
@@ -344,6 +425,12 @@ func (f *Filter) handleOAuthEndpoints(header api.RequestHeaderMap, path string) 
 		return f.handleCallback(header)
 	case "/oauth/logout":
 		return f.handleLogout(header)
+	case "/oauth/consent":
+		return f.handleOfflineConsent(header)
+	case "/oauth/offline":
+		return f.handleOfflineRedirect(header)
+	case "/oauth/offline-callback":
+		return f.handleOfflineCallback(header, path)
 	default:
 		return f.handleAuthFailure(404, "Not Found: Unknown OAuth endpoint")
 	}
@@ -589,4 +676,91 @@ func getClusterName(callbacks api.FilterCallbackHandler) string {
 		return ""
 	}
 	return clusterName
+}
+
+// handleOfflineConsent displays the consent page for API key generation
+func (f *Filter) handleOfflineConsent(header api.RequestHeaderMap) api.StatusType {
+	// Check if API key feature is enabled
+	if !f.config.EnableAPIKey {
+		return f.handleAuthFailure(404, "API key generation feature is disabled")
+	}
+
+	// Ensure handlers are initialized
+	if err := f.ensureHandlersInitialized(); err != nil {
+		return f.handleAuthFailure(500, fmt.Sprintf("Failed to initialize handlers: %v", err))
+	}
+
+	if f.offlineTokenHandler == nil {
+		return f.handleAuthFailure(500, "API key generation feature not available")
+	}
+
+	statusCode, body, headers := f.offlineTokenHandler.HandleConsentPage(header)
+	f.callbacks.DecoderFilterCallbacks().SendLocalReply(
+		statusCode,
+		body,
+		headers,
+		0,
+		"",
+	)
+	return api.LocalReply
+}
+
+// handleOfflineRedirect initiates OAuth flow for API key generation
+func (f *Filter) handleOfflineRedirect(header api.RequestHeaderMap) api.StatusType {
+	// Check if API key feature is enabled
+	if !f.config.EnableAPIKey {
+		return f.handleAuthFailure(404, "API key generation feature is disabled")
+	}
+
+	// Ensure handlers are initialized
+	if err := f.ensureHandlersInitialized(); err != nil {
+		return f.handleAuthFailure(500, fmt.Sprintf("Failed to initialize handlers: %v", err))
+	}
+
+	if f.offlineTokenHandler == nil {
+		return f.handleAuthFailure(500, "API key generation feature not available")
+	}
+
+	statusCode, body, headers := f.offlineTokenHandler.HandleOfflineAuthRedirect(header)
+	f.callbacks.DecoderFilterCallbacks().SendLocalReply(
+		statusCode,
+		body,
+		headers,
+		0,
+		"",
+	)
+	return api.LocalReply
+}
+
+// handleOfflineCallback processes OAuth callback for API key generation
+func (f *Filter) handleOfflineCallback(header api.RequestHeaderMap, path string) api.StatusType {
+	// Check if API key feature is enabled
+	if !f.config.EnableAPIKey {
+		return f.handleAuthFailure(404, "API key generation feature is disabled")
+	}
+
+	// Ensure handlers are initialized
+	if err := f.ensureHandlersInitialized(); err != nil {
+		return f.handleAuthFailure(500, fmt.Sprintf("Failed to initialize handlers: %v", err))
+	}
+
+	if f.offlineTokenHandler == nil {
+		return f.handleAuthFailure(500, "API key generation feature not available")
+	}
+
+	// Extract query parameters
+	query := ""
+	if idx := strings.Index(path, "?"); idx != -1 {
+		query = path[idx+1:]
+	}
+
+	statusCode, body, headers := f.offlineTokenHandler.HandleOfflineCallback(header, query)
+	f.callbacks.DecoderFilterCallbacks().SendLocalReply(
+		statusCode,
+		body,
+		headers,
+		0,
+		"",
+	)
+	return api.LocalReply
 }

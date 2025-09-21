@@ -1,4 +1,8 @@
 template: /app/gateway-base.yaml
+# Note: OAuth configuration is in gateway-base.yaml or via environment variables
+# To enable API key generation feature, set:
+# oauth.enable_api_key: true
+# or environment variable: OAUTH_ENABLE_API_KEY=true
 clients:
   - id: admin_cluster #required
     address: httpbin.org # required
