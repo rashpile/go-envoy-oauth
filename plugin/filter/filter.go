@@ -375,8 +375,9 @@ func (f *Filter) DecodeHeaders(header api.RequestHeaderMap, endStream bool) api.
 	if f.config.EnableAPIKey && f.config.EnableBearerToken {
 		apiToken := f.extractAPIToken(header)
 		if apiToken != "" {
-			f.logger.Debug("API token found, exchanging for access token",
+			f.logger.Debug("API token found",
 				zap.Int("token_length", len(apiToken)),
+				zap.Bool("from_query", f.isAPITokenFromQuery(header)),
 				zap.String("trace_id", traceID))
 
 			// Ensure handlers are initialized
@@ -395,10 +396,58 @@ func (f *Filter) DecodeHeaders(header api.RequestHeaderMap, endStream bool) api.
 					zap.Error(err))
 				// Don't fail here, let it continue to check for other auth methods
 			} else {
-				// Successfully exchanged, inject as bearer token
+				// Successfully exchanged
 				f.logger.Debug("Successfully exchanged API token for access token",
 					zap.String("trace_id", traceID))
-				header.Set("authorization", "Bearer "+accessToken)
+
+				// If API token came from query parameter, create session and redirect
+				if f.isAPITokenFromQuery(header) {
+					// Validate the access token to get user info
+					sess, err := f.oauthHandler.ValidateBearerToken(context.Background(), accessToken)
+					if err != nil {
+						f.logger.Error("Failed to validate access token for session creation",
+							zap.String("trace_id", traceID),
+							zap.Error(err))
+						// Fall back to injecting as bearer token
+						header.Set("authorization", "Bearer "+accessToken)
+					} else {
+						// Store the refresh token in the session for future use
+						sess.RefreshToken = apiToken
+						sess.Token = accessToken
+
+						// Store the session
+						if err := f.config.SessionStore.Store(sess); err != nil {
+							f.logger.Error("Failed to store session",
+								zap.String("trace_id", traceID),
+								zap.Error(err))
+							// Fall back to injecting as bearer token
+							header.Set("authorization", "Bearer "+accessToken)
+						} else {
+							// Set session cookie
+							if err := f.cookieManager.SetCookie(header, sess.ID); err != nil {
+								f.logger.Error("Failed to set session cookie",
+									zap.String("trace_id", traceID),
+									zap.Error(err))
+								// Fall back to injecting as bearer token
+								header.Set("authorization", "Bearer "+accessToken)
+							} else {
+								// Redirect to clean URL without the API key parameter
+								cleanPath := removeQueryParam(path, "auth-api-key")
+								// Format the cookie properly for the redirect
+								cookieStr := f.cookieManager.FormatCookie(sess.ID)
+								f.logger.Info("API key authenticated, creating session and redirecting",
+									zap.String("from", sanitizePathForLogging(path)),
+									zap.String("to", cleanPath),
+									zap.String("session_id", sess.ID[:8]+"..."),
+									zap.String("trace_id", traceID))
+								return f.handleRedirect(cleanPath, cookieStr)
+							}
+						}
+					}
+				} else {
+					// API token from header, just inject as bearer token
+					header.Set("authorization", "Bearer "+accessToken)
+				}
 			}
 		}
 	}
@@ -708,6 +757,47 @@ func sanitizePathForLogging(path string) string {
 	sanitizedQuery := values.Encode()
 	if sanitizedQuery != "" {
 		return basePath + "?" + sanitizedQuery
+	}
+	return basePath
+}
+
+// isAPITokenFromQuery checks if API token came from query parameter
+func (f *Filter) isAPITokenFromQuery(header api.RequestHeaderMap) bool {
+	path, _ := header.Get(":path")
+	if path == "" {
+		return false
+	}
+	return strings.Contains(path, "auth-api-key=")
+}
+
+// removeQueryParam removes a specific query parameter from the path
+func removeQueryParam(path string, paramToRemove string) string {
+	if path == "" {
+		return path
+	}
+
+	// Split path and query string
+	idx := strings.Index(path, "?")
+	if idx < 0 {
+		return path // No query string
+	}
+
+	basePath := path[:idx]
+	query := path[idx+1:]
+
+	// Parse query parameters
+	values, err := url.ParseQuery(query)
+	if err != nil {
+		return basePath // Return base path if query parsing fails
+	}
+
+	// Remove the parameter
+	values.Del(paramToRemove)
+
+	// Rebuild the path
+	newQuery := values.Encode()
+	if newQuery != "" {
+		return basePath + "?" + newQuery
 	}
 	return basePath
 }

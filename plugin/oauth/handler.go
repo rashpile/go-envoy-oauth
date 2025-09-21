@@ -236,12 +236,13 @@ func (h *OAuthHandlerImpl) HandleCallback(header api.RequestHeaderMap, query str
 
 	// Create a new session for the authenticated user
 	session := &session.Session{
-		ID:        generateRandomState(), // Use a new random ID for the user session
-		UserID:    sub,
-		Token:     token.AccessToken,
-		Claims:    userInfo,
-		CreatedAt: time.Now(),
-		ExpiresAt: time.Now().Add(24 * time.Hour),
+		ID:           generateRandomState(), // Use a new random ID for the user session
+		UserID:       sub,
+		Token:        token.AccessToken,
+		RefreshToken: token.RefreshToken, // Store refresh token for future use
+		Claims:       userInfo,
+		CreatedAt:    time.Now(),
+		ExpiresAt:    time.Now().Add(24 * time.Hour),
 	}
 	if err := h.sessionStore.Store(session); err != nil {
 		return err

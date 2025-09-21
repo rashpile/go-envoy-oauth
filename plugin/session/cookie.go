@@ -104,6 +104,11 @@ func (cm *CookieManager) DeleteCookie(header api.RequestHeaderMap) {
 	header.Set("set-cookie", cm.formatCookie(""))
 }
 
+// FormatCookie returns a formatted cookie string for use in Set-Cookie headers
+func (cm *CookieManager) FormatCookie(value string) string {
+	return cm.formatCookie(value)
+}
+
 func (cm *CookieManager) formatCookie(value string) string {
 	cookie := fmt.Sprintf("%s=%s", cm.config.Name, value)
 	if cm.config.Domain != "" {
