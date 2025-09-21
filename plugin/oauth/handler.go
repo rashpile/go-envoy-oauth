@@ -15,6 +15,7 @@ import (
 
 	"github.com/envoyproxy/envoy/contrib/golang/common/go/api"
 	"github.com/rashpile/go-envoy-oauth/plugin/session"
+	"go.uber.org/zap"
 	"golang.org/x/oauth2"
 )
 
@@ -42,15 +43,17 @@ type OAuthHandler interface {
 	HandleCallback(header api.RequestHeaderMap, query string) error
 	HandleLogout(header api.RequestHeaderMap) error
 	ValidateSession(session *session.Session) error
+	ValidateBearerToken(ctx context.Context, token string) (*session.Session, error)
 }
 
 type OAuthHandlerImpl struct {
-	config        *OIDCConfig
-	provider      *OIDCProvider
-	oauth2Config  *oauth2.Config
-	sessionStore  session.SessionStore
-	cookieManager *session.CookieManager
-	mu            sync.Mutex
+	config         *OIDCConfig
+	provider       *OIDCProvider
+	oauth2Config   *oauth2.Config
+	sessionStore   session.SessionStore
+	cookieManager  *session.CookieManager
+	tokenValidator *TokenValidator
+	mu             sync.Mutex
 }
 
 // NewOAuthHandler creates a new OAuth handler
@@ -73,12 +76,24 @@ func NewOAuthHandler(config *OIDCConfig, sessionStore session.SessionStore, cook
 		},
 	}
 
+	// Create token validator for bearer token authentication
+	var tokenValidator *TokenValidator
+	tokenValidator, err = NewTokenValidator(config.IssuerURL, config.ClientID, GetLogger())
+	if err != nil {
+		// Log error but don't fail - bearer token auth will be disabled
+		GetLogger().Error("Failed to create token validator, bearer token auth will be disabled",
+			zap.Error(err),
+			zap.String("issuer_url", config.IssuerURL))
+		tokenValidator = nil
+	}
+
 	return &OAuthHandlerImpl{
-		config:        config,
-		provider:      provider,
-		oauth2Config:  oauth2Config,
-		sessionStore:  sessionStore,
-		cookieManager: cookieManager,
+		config:         config,
+		provider:       provider,
+		oauth2Config:   oauth2Config,
+		sessionStore:   sessionStore,
+		cookieManager:  cookieManager,
+		tokenValidator: tokenValidator,
 	}, nil
 }
 
@@ -347,4 +362,51 @@ func (h *OAuthHandlerImpl) RefreshToken(session *session.Session) error {
 // GetSessionStore returns the session store
 func (h *OAuthHandlerImpl) GetSessionStore() session.SessionStore {
 	return h.sessionStore
+}
+
+// ValidateBearerToken validates a bearer token and returns a session
+func (h *OAuthHandlerImpl) ValidateBearerToken(ctx context.Context, token string) (*session.Session, error) {
+	if h.tokenValidator == nil {
+		return nil, fmt.Errorf("bearer token validation not available")
+	}
+
+	// Try to validate as access token (more lenient)
+	claims, err := h.tokenValidator.ValidateAccessToken(ctx, token)
+	if err != nil {
+		// If access token validation fails, try as ID token
+		claims, err = h.tokenValidator.ValidateToken(ctx, token)
+		if err != nil {
+			return nil, fmt.Errorf("token validation failed: %v", err)
+		}
+	}
+
+	// Create a session from the token claims
+	sess := &session.Session{
+		ID:     generateRandomState(), // Generate a unique session ID
+		UserID: claims.Subject,
+		Token:  token,
+		Claims: map[string]interface{}{
+			"email":              claims.Email,
+			"email_verified":     claims.EmailVerified,
+			"name":               claims.Name,
+			"preferred_username": claims.PreferredUsername,
+			"given_name":         claims.GivenName,
+			"family_name":        claims.FamilyName,
+			"iss":                claims.Issuer,
+			"aud":                claims.Audience,
+			"azp":                claims.AuthorizedParty,
+			"scope":              claims.Scopes,
+		},
+		CreatedAt: time.Now(),
+		ExpiresAt: time.Unix(claims.ExpiresAt, 0),
+	}
+
+	// Remove nil values from claims
+	for k, v := range sess.Claims {
+		if v == nil || v == "" {
+			delete(sess.Claims, k)
+		}
+	}
+
+	return sess, nil
 }

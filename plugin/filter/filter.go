@@ -1,6 +1,7 @@
 package filter
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -370,18 +371,51 @@ func (f *Filter) DecodeHeaders(header api.RequestHeaderMap, endStream bool) api.
 		return status
 	}
 
-	// Block unvalidated bearer-token authentication until proper validation is implemented
-	token := f.extractBearerToken(header)
-	if token != "" {
-		f.logger.Debug("Blocking bearer-token authentication; validation not implemented",
+	// Check for bearer token authentication if enabled
+	f.logger.Debug("Checking bearer token authentication",
+		zap.Bool("enabled", f.config.EnableBearerToken),
+		zap.String("trace_id", traceID))
+
+	if f.config.EnableBearerToken {
+		token := f.extractBearerToken(header)
+		f.logger.Debug("Extracted bearer token",
+			zap.Bool("has_token", token != ""),
+			zap.Int("token_length", len(token)),
 			zap.String("trace_id", traceID))
-		return f.handleUnauthenticatedRequest(
-			header,
-			path,
-			traceID,
-			fmt.Errorf("bearer token auth not supported"),
-			"Bearer token authentication not supported",
-		)
+
+		if token != "" {
+			// Ensure handlers are initialized before validating bearer token
+			if err := f.ensureHandlersInitialized(); err != nil {
+				f.logger.Error("Failed to initialize handlers for bearer token validation",
+					zap.String("trace_id", traceID),
+					zap.Error(err))
+				return f.handleAuthFailure(500, fmt.Sprintf("Failed to initialize handlers: %v", err))
+			}
+
+			f.logger.Debug("Bearer token found, attempting validation",
+				zap.String("trace_id", traceID))
+
+			// Validate the bearer token
+			session, err := f.oauthHandler.ValidateBearerToken(context.Background(), token)
+			if err != nil {
+				f.logger.Debug("Bearer token validation failed",
+					zap.String("trace_id", traceID),
+					zap.Error(err))
+				return f.handleUnauthenticatedRequest(
+					header,
+					path,
+					traceID,
+					err,
+					"Invalid bearer token",
+				)
+			}
+
+			f.logger.Debug("Bearer token validated successfully",
+				zap.String("user_id", session.UserID),
+				zap.String("trace_id", traceID))
+
+			return f.handleAuthSuccess(header, session)
+		}
 	}
 
 	// Check for session cookie

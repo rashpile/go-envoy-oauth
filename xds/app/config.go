@@ -20,12 +20,13 @@ type PluginConfig struct {
 }
 
 type OAuthConfig struct {
-	IssuerURL     string   `yaml:"issuer_url"`
-	ClientID      string   `yaml:"client_id"`
-	ClientSecret  string   `yaml:"client_secret"`
-	RedirectURL   string   `yaml:"redirect_url"`
-	Scopes        []string `yaml:"scopes,omitempty"`
-	EnableAPIKey  bool     `yaml:"enable_api_key,omitempty"`
+	IssuerURL         string   `yaml:"issuer_url"`
+	ClientID          string   `yaml:"client_id"`
+	ClientSecret      string   `yaml:"client_secret"`
+	RedirectURL       string   `yaml:"redirect_url"`
+	Scopes            []string `yaml:"scopes,omitempty"`
+	EnableAPIKey      bool     `yaml:"enable_api_key,omitempty"`
+	EnableBearerToken bool     `yaml:"enable_bearer_token,omitempty"`
 }
 
 type ClientConfig struct {
@@ -64,6 +65,9 @@ func overrideFromEnv(config *GatewayConfig) {
 	if val := os.Getenv("OAUTH_ENABLE_API_KEY"); val != "" {
 		config.OAuth.EnableAPIKey = val == "true" || val == "1"
 	}
+	if val := os.Getenv("OAUTH_ENABLE_BEARER_TOKEN"); val != "" {
+		config.OAuth.EnableBearerToken = val == "true" || val == "1"
+	}
 }
 
 func LoadConfig(path string) (*GatewayConfig, error) {
@@ -73,6 +77,10 @@ func LoadConfig(path string) (*GatewayConfig, error) {
 	}
 
 	var config GatewayConfig
+
+	// Set defaults BEFORE unmarshaling to handle missing fields
+	config.OAuth.EnableBearerToken = true  // Default to true
+
 	if err := yaml.Unmarshal(data, &config); err != nil {
 		return nil, fmt.Errorf("failed to parse config: %w", err)
 	}
