@@ -11,12 +11,13 @@ import (
 
 // Session represents a user session
 type Session struct {
-	ID        string                 // Unique session ID
-	UserID    string                 // User identifier from OAuth provider
-	Token     string                 // OAuth access token
-	Claims    map[string]interface{} // Additional claims from token
-	CreatedAt time.Time              // When the session was created
-	ExpiresAt time.Time              // When the session expires
+	ID           string                 // Unique session ID
+	UserID       string                 // User identifier from OAuth provider
+	Token        string                 // OAuth access token
+	RefreshToken string                 // OAuth refresh token (API key)
+	Claims       map[string]interface{} // Additional claims from token
+	CreatedAt    time.Time              // When the session was created
+	ExpiresAt    time.Time              // When the session expires
 }
 
 // IsExpired checks if the session has expired

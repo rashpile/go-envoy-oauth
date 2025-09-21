@@ -296,13 +296,13 @@ func (f *Filter) isBrowserRequest(header api.RequestHeaderMap) bool {
 func (f *Filter) handleUnauthenticatedRequest(header api.RequestHeaderMap, path string, traceID string, err error, context string) api.StatusType {
 	if f.isBrowserRequest(header) {
 		f.logger.Debug(fmt.Sprintf("Unauthenticated browser request: %s", context),
-			zap.String("path", path),
+			zap.String("path", sanitizePathForLogging(path)),
 			zap.String("trace_id", traceID),
 			zap.Error(err))
 		return f.handleRedirect("/oauth/login?redirect_uri="+url.QueryEscape(path), "")
 	} else {
 		f.logger.Debug(fmt.Sprintf("Unauthenticated API request: %s", context),
-			zap.String("path", path),
+			zap.String("path", sanitizePathForLogging(path)),
 			zap.String("trace_id", traceID),
 			zap.Error(err))
 		return f.handleAuthFailure(401, fmt.Sprintf("Unauthorized: %s", context))
@@ -318,7 +318,7 @@ func (f *Filter) DecodeHeaders(header api.RequestHeaderMap, endStream bool) api.
 
 	f.logger.Debug("Processing request headers",
 		zap.String("method", method),
-		zap.String("path", path),
+		zap.String("path", sanitizePathForLogging(path)),
 		zap.String("host", host),
 		zap.String("trace_id", traceID),
 	)
@@ -327,7 +327,7 @@ func (f *Filter) DecodeHeaders(header api.RequestHeaderMap, endStream bool) api.
 	// cluster, _ := header.Get(":authority")
 	cluster := getClusterName(f.callbacks)
 
-	f.logger.Debug(fmt.Sprintf("path: %s, cluster: %s, trace_id: %s", path, cluster, traceID))
+	f.logger.Debug(fmt.Sprintf("path: %s, cluster: %s, trace_id: %s", sanitizePathForLogging(path), cluster, traceID))
 
 	if f.config.SkipAuthHeaderName != "" {
 		if username, exists := header.Get(f.config.SkipAuthHeaderName); exists && username != "" {
@@ -342,7 +342,7 @@ func (f *Filter) DecodeHeaders(header api.RequestHeaderMap, endStream bool) api.
 	// Check if the path should be excluded
 	if !strings.HasPrefix(path, "/oauth/") && f.isPathExcluded(path, cluster) {
 		f.logger.Debug("Path is excluded from authentication",
-			zap.String("path", path),
+			zap.String("path", sanitizePathForLogging(path)),
 			zap.String("trace_id", traceID))
 		return api.Continue
 	}
@@ -369,6 +369,87 @@ func (f *Filter) DecodeHeaders(header api.RequestHeaderMap, endStream bool) api.
 	if strings.HasPrefix(path, "/oauth/") {
 		status := f.handleOAuthEndpoints(header, path)
 		return status
+	}
+
+	// Check for API token (refresh token) if enabled
+	if f.config.EnableAPIKey && f.config.EnableBearerToken {
+		apiToken := f.extractAPIToken(header)
+		if apiToken != "" {
+			f.logger.Debug("API token found",
+				zap.Int("token_length", len(apiToken)),
+				zap.Bool("from_query", f.isAPITokenFromQuery(header)),
+				zap.String("trace_id", traceID))
+
+			// Ensure handlers are initialized
+			if err := f.ensureHandlersInitialized(); err != nil {
+				f.logger.Error("Failed to initialize handlers for API token exchange",
+					zap.String("trace_id", traceID),
+					zap.Error(err))
+				return f.handleAuthFailure(500, fmt.Sprintf("Failed to initialize handlers: %v", err))
+			}
+
+			// Exchange refresh token for access token
+			accessToken, err := f.oauthHandler.ExchangeRefreshToken(context.Background(), apiToken)
+			if err != nil {
+				f.logger.Debug("Failed to exchange API token for access token",
+					zap.String("trace_id", traceID),
+					zap.Error(err))
+				// Don't fail here, let it continue to check for other auth methods
+			} else {
+				// Successfully exchanged
+				f.logger.Debug("Successfully exchanged API token for access token",
+					zap.String("trace_id", traceID))
+
+				// If API token came from query parameter, create session and redirect
+				if f.isAPITokenFromQuery(header) {
+					// Validate the access token to get user info
+					sess, err := f.oauthHandler.ValidateBearerToken(context.Background(), accessToken)
+					if err != nil {
+						f.logger.Error("Failed to validate access token for session creation",
+							zap.String("trace_id", traceID),
+							zap.Error(err))
+						// Fall back to injecting as bearer token
+						header.Set("authorization", "Bearer "+accessToken)
+					} else {
+						// Store the refresh token in the session for future use
+						sess.RefreshToken = apiToken
+						sess.Token = accessToken
+
+						// Store the session
+						if err := f.config.SessionStore.Store(sess); err != nil {
+							f.logger.Error("Failed to store session",
+								zap.String("trace_id", traceID),
+								zap.Error(err))
+							// Fall back to injecting as bearer token
+							header.Set("authorization", "Bearer "+accessToken)
+						} else {
+							// Set session cookie
+							if err := f.cookieManager.SetCookie(header, sess.ID); err != nil {
+								f.logger.Error("Failed to set session cookie",
+									zap.String("trace_id", traceID),
+									zap.Error(err))
+								// Fall back to injecting as bearer token
+								header.Set("authorization", "Bearer "+accessToken)
+							} else {
+								// Redirect to clean URL without the API key parameter
+								cleanPath := removeQueryParam(path, "auth-api-key")
+								// Format the cookie properly for the redirect
+								cookieStr := f.cookieManager.FormatCookie(sess.ID)
+								f.logger.Info("API key authenticated, creating session and redirecting",
+									zap.String("from", sanitizePathForLogging(path)),
+									zap.String("to", cleanPath),
+									zap.String("session_id", sess.ID[:8]+"..."),
+									zap.String("trace_id", traceID))
+								return f.handleRedirect(cleanPath, cookieStr)
+							}
+						}
+					}
+				} else {
+					// API token from header, just inject as bearer token
+					header.Set("authorization", "Bearer "+accessToken)
+				}
+			}
+		}
 	}
 
 	// Check for bearer token authentication if enabled
@@ -601,6 +682,124 @@ func (f *Filter) extractBearerToken(header api.RequestHeaderMap) string {
 	}
 
 	return parts[1]
+}
+
+func (f *Filter) extractAPIToken(header api.RequestHeaderMap) string {
+	// Check API-KEY header first
+	if apiKey, _ := header.Get("api-key"); apiKey != "" {
+		return apiKey
+	}
+
+	// Also check X-API-KEY header (common variation)
+	if apiKey, _ := header.Get("x-api-key"); apiKey != "" {
+		return apiKey
+	}
+
+	// Check query parameter
+	path, _ := header.Get(":path")
+	if path != "" {
+		// Parse query string from path
+		if idx := strings.Index(path, "?"); idx > 0 {
+			query := path[idx+1:]
+			values, err := url.ParseQuery(query)
+			if err == nil {
+				if apiKey := values.Get("auth-api-key"); apiKey != "" {
+					return apiKey
+				}
+			}
+		}
+	}
+
+	return ""
+}
+
+// sanitizePathForLogging removes sensitive data from URLs before logging
+func sanitizePathForLogging(path string) string {
+	if path == "" {
+		return path
+	}
+
+	// Check if path contains query string
+	idx := strings.Index(path, "?")
+	if idx < 0 {
+		return path // No query string, safe to log
+	}
+
+	basePath := path[:idx]
+	query := path[idx+1:]
+
+	// Parse query parameters
+	values, err := url.ParseQuery(query)
+	if err != nil {
+		return basePath + "?[invalid_query]"
+	}
+
+	// List of sensitive parameters to redact
+	sensitiveParams := []string{
+		"auth-api-key",
+		"api-key",
+		"token",
+		"access_token",
+		"refresh_token",
+		"id_token",
+		"client_secret",
+		"password",
+	}
+
+	// Redact sensitive parameters
+	for _, param := range sensitiveParams {
+		if values.Has(param) {
+			values.Set(param, "[REDACTED]")
+		}
+	}
+
+	// Rebuild the query string
+	sanitizedQuery := values.Encode()
+	if sanitizedQuery != "" {
+		return basePath + "?" + sanitizedQuery
+	}
+	return basePath
+}
+
+// isAPITokenFromQuery checks if API token came from query parameter
+func (f *Filter) isAPITokenFromQuery(header api.RequestHeaderMap) bool {
+	path, _ := header.Get(":path")
+	if path == "" {
+		return false
+	}
+	return strings.Contains(path, "auth-api-key=")
+}
+
+// removeQueryParam removes a specific query parameter from the path
+func removeQueryParam(path string, paramToRemove string) string {
+	if path == "" {
+		return path
+	}
+
+	// Split path and query string
+	idx := strings.Index(path, "?")
+	if idx < 0 {
+		return path // No query string
+	}
+
+	basePath := path[:idx]
+	query := path[idx+1:]
+
+	// Parse query parameters
+	values, err := url.ParseQuery(query)
+	if err != nil {
+		return basePath // Return base path if query parsing fails
+	}
+
+	// Remove the parameter
+	values.Del(paramToRemove)
+
+	// Rebuild the path
+	newQuery := values.Encode()
+	if newQuery != "" {
+		return basePath + "?" + newQuery
+	}
+	return basePath
 }
 
 func (f *Filter) OnLog(reqHeaders api.RequestHeaderMap, reqTrailers api.RequestTrailerMap,
