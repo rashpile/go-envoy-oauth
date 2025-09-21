@@ -58,6 +58,9 @@ type OAuthConfig struct {
 	// API Key generation feature (offline token)
 	EnableAPIKey bool `json:"enable_api_key"`
 
+	// Bearer token authentication
+	EnableBearerToken bool `json:"enable_bearer_token"`
+
 	// Session store
 	SessionStore session.SessionStore
 
@@ -91,6 +94,7 @@ func (p *Parser) Parse(any *anypb.Any, callbacks api.ConfigCallbackHandler) (int
 		SkipAuthHeaderName: "",
 		RemoveHeaders:      []string{"X-User-ID", "X-User-Email", "X-User-Username"},
 		EnableAPIKey:       false, // API key generation disabled by default
+		EnableBearerToken:  true,  // Bearer token authentication enabled by default
 	}
 
 	// Parse OpenID Connect configuration
@@ -195,6 +199,14 @@ func (p *Parser) Parse(any *anypb.Any, callbacks api.ConfigCallbackHandler) (int
 		conf.EnableAPIKey = enableAPIKey
 	}
 
+	// Parse bearer token authentication setting
+	if enableBearerToken, ok := v.AsMap()["enable_bearer_token"].(bool); ok {
+		conf.EnableBearerToken = enableBearerToken
+		log.Printf("Parsed enable_bearer_token from config: %v", enableBearerToken)
+	} else {
+		log.Printf("enable_bearer_token not found in config, using default: %v", conf.EnableBearerToken)
+	}
+
 	// Parse cluster-specific configurations
 	if clusters, ok := v.AsMap()["clusters"].(map[string]interface{}); ok {
 		for clusterName, clusterConfig := range clusters {
@@ -232,8 +244,8 @@ func (p *Parser) Parse(any *anypb.Any, callbacks api.ConfigCallbackHandler) (int
 		return nil, fmt.Errorf("redirect_url is required")
 	}
 
-	log.Printf("Parsed OAuth config: issuer_url=%s, client_id=%s, redirect_url=%s, scopes=%v",
-		conf.IssuerURL, conf.ClientID, conf.RedirectURL, conf.Scopes)
+	log.Printf("Parsed OAuth config: issuer_url=%s, client_id=%s, redirect_url=%s, scopes=%v, enable_api_key=%v, enable_bearer_token=%v",
+		conf.IssuerURL, conf.ClientID, conf.RedirectURL, conf.Scopes, conf.EnableAPIKey, conf.EnableBearerToken)
 
 	return conf, nil
 }
@@ -275,6 +287,7 @@ func (p *Parser) Merge(parent interface{}, child interface{}) interface{} {
 		Clusters:          make(map[string]ClusterConfig),
 		SessionStore:      parentConfig.SessionStore,
 		EnableAPIKey:      parentConfig.EnableAPIKey,
+		EnableBearerToken: parentConfig.EnableBearerToken,
 	}
 
 	// Override with child values if specified
@@ -325,6 +338,11 @@ func (p *Parser) Merge(parent interface{}, child interface{}) interface{} {
 	// Override EnableAPIKey if child config explicitly sets it
 	if childConfig.EnableAPIKey != parentConfig.EnableAPIKey {
 		newConfig.EnableAPIKey = childConfig.EnableAPIKey
+	}
+
+	// Override EnableBearerToken if child config explicitly sets it
+	if childConfig.EnableBearerToken != parentConfig.EnableBearerToken {
+		newConfig.EnableBearerToken = childConfig.EnableBearerToken
 	}
 
 	// Copy parent cluster configs first

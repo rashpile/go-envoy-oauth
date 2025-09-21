@@ -10,6 +10,7 @@ oauth:
   client_secret: "your_client_secret_here"
   redirect_url: "/oauth/callback" #default "/oauth/callback"
   enable_api_key: false # optional, default: false - Enable API key generation feature
+  enable_bearer_token: true # optional, default: true - Enable bearer token authentication
 clients:
   - id: admin_cluster #required
     address: httpbin.org # required
