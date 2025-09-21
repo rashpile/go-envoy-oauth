@@ -44,16 +44,24 @@ type OAuthHandler interface {
 	HandleLogout(header api.RequestHeaderMap) error
 	ValidateSession(session *session.Session) error
 	ValidateBearerToken(ctx context.Context, token string) (*session.Session, error)
+	ExchangeRefreshToken(ctx context.Context, refreshToken string) (string, error)
+}
+
+type tokenCacheEntry struct {
+	accessToken string
+	expiry      time.Time
 }
 
 type OAuthHandlerImpl struct {
-	config         *OIDCConfig
-	provider       *OIDCProvider
-	oauth2Config   *oauth2.Config
-	sessionStore   session.SessionStore
-	cookieManager  *session.CookieManager
-	tokenValidator *TokenValidator
-	mu             sync.Mutex
+	config             *OIDCConfig
+	provider           *OIDCProvider
+	oauth2Config       *oauth2.Config
+	sessionStore       session.SessionStore
+	cookieManager      *session.CookieManager
+	tokenValidator     *TokenValidator
+	refreshTokenCache  map[string]*tokenCacheEntry // maps refresh token hash -> access token
+	cacheMu            sync.RWMutex
+	mu                 sync.Mutex
 }
 
 // NewOAuthHandler creates a new OAuth handler
@@ -88,12 +96,13 @@ func NewOAuthHandler(config *OIDCConfig, sessionStore session.SessionStore, cook
 	}
 
 	return &OAuthHandlerImpl{
-		config:         config,
-		provider:       provider,
-		oauth2Config:   oauth2Config,
-		sessionStore:   sessionStore,
-		cookieManager:  cookieManager,
-		tokenValidator: tokenValidator,
+		config:            config,
+		provider:          provider,
+		oauth2Config:      oauth2Config,
+		sessionStore:      sessionStore,
+		cookieManager:     cookieManager,
+		tokenValidator:    tokenValidator,
+		refreshTokenCache: make(map[string]*tokenCacheEntry),
 	}, nil
 }
 
@@ -409,4 +418,56 @@ func (h *OAuthHandlerImpl) ValidateBearerToken(ctx context.Context, token string
 	}
 
 	return sess, nil
+}
+
+// ExchangeRefreshToken exchanges a refresh token for an access token with caching
+func (h *OAuthHandlerImpl) ExchangeRefreshToken(ctx context.Context, refreshToken string) (string, error) {
+	// Create a hash of the refresh token for cache key (don't store the actual token)
+	cacheKey := base64.RawURLEncoding.EncodeToString([]byte(refreshToken))[:32] // Use first 32 chars as key
+
+	// Check cache first
+	h.cacheMu.RLock()
+	if cached, ok := h.refreshTokenCache[cacheKey]; ok {
+		// Check if token is still valid (with 1 minute buffer)
+		if time.Now().Add(1 * time.Minute).Before(cached.expiry) {
+			h.cacheMu.RUnlock()
+			GetLogger().Debug("Using cached access token for refresh token")
+			return cached.accessToken, nil
+		}
+	}
+	h.cacheMu.RUnlock()
+
+	// Use OAuth2 token endpoint to exchange refresh token
+	tokenSource := h.oauth2Config.TokenSource(ctx, &oauth2.Token{
+		RefreshToken: refreshToken,
+	})
+
+	// Get new token (this will use the refresh token to get a new access token)
+	token, err := tokenSource.Token()
+	if err != nil {
+		GetLogger().Error("Failed to exchange refresh token for access token",
+			zap.Error(err))
+		return "", fmt.Errorf("failed to exchange refresh token: %v", err)
+	}
+
+	// Cache the token
+	h.cacheMu.Lock()
+	h.refreshTokenCache[cacheKey] = &tokenCacheEntry{
+		accessToken: token.AccessToken,
+		expiry:      token.Expiry,
+	}
+	// Clean up old entries while we have the lock
+	for key, entry := range h.refreshTokenCache {
+		if time.Now().After(entry.expiry) {
+			delete(h.refreshTokenCache, key)
+		}
+	}
+	h.cacheMu.Unlock()
+
+	// Log successful exchange
+	GetLogger().Debug("Successfully exchanged refresh token for access token",
+		zap.String("token_type", token.TokenType),
+		zap.Time("expiry", token.Expiry))
+
+	return token.AccessToken, nil
 }
