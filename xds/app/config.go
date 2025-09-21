@@ -25,6 +25,7 @@ type OAuthConfig struct {
 	ClientSecret  string   `yaml:"client_secret"`
 	RedirectURL   string   `yaml:"redirect_url"`
 	Scopes        []string `yaml:"scopes,omitempty"`
+	EnableAPIKey  bool     `yaml:"enable_api_key,omitempty"`
 }
 
 type ClientConfig struct {
@@ -59,6 +60,9 @@ func overrideFromEnv(config *GatewayConfig) {
 	}
 	if val := os.Getenv("OAUTH_SCOPES"); val != "" {
 		config.OAuth.Scopes = strings.Split(val, ",")
+	}
+	if val := os.Getenv("OAUTH_ENABLE_API_KEY"); val != "" {
+		config.OAuth.EnableAPIKey = val == "true" || val == "1"
 	}
 }
 

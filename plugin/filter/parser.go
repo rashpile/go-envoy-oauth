@@ -55,6 +55,9 @@ type OAuthConfig struct {
 	// Cluster-specific configurations
 	Clusters map[string]ClusterConfig `json:"clusters"`
 
+	// API Key generation feature (offline token)
+	EnableAPIKey bool `json:"enable_api_key"`
+
 	// Session store
 	SessionStore session.SessionStore
 
@@ -87,6 +90,7 @@ func (p *Parser) Parse(any *anypb.Any, callbacks api.ConfigCallbackHandler) (int
 		SessionStore:       session.NewInMemorySessionStore(),
 		SkipAuthHeaderName: "",
 		RemoveHeaders:      []string{"X-User-ID", "X-User-Email", "X-User-Username"},
+		EnableAPIKey:       false, // API key generation disabled by default
 	}
 
 	// Parse OpenID Connect configuration
@@ -186,6 +190,11 @@ func (p *Parser) Parse(any *anypb.Any, callbacks api.ConfigCallbackHandler) (int
 		}
 	}
 
+	// Parse API key generation setting
+	if enableAPIKey, ok := v.AsMap()["enable_api_key"].(bool); ok {
+		conf.EnableAPIKey = enableAPIKey
+	}
+
 	// Parse cluster-specific configurations
 	if clusters, ok := v.AsMap()["clusters"].(map[string]interface{}); ok {
 		for clusterName, clusterConfig := range clusters {
@@ -265,6 +274,7 @@ func (p *Parser) Merge(parent interface{}, child interface{}) interface{} {
 		ExcludePaths:      slices.Clone(parentConfig.ExcludePaths),
 		Clusters:          make(map[string]ClusterConfig),
 		SessionStore:      parentConfig.SessionStore,
+		EnableAPIKey:      parentConfig.EnableAPIKey,
 	}
 
 	// Override with child values if specified
@@ -310,6 +320,11 @@ func (p *Parser) Merge(parent interface{}, child interface{}) interface{} {
 	// Merge exclude paths
 	if len(childConfig.ExcludePaths) > 0 {
 		newConfig.ExcludePaths = append(newConfig.ExcludePaths, childConfig.ExcludePaths...)
+	}
+
+	// Override EnableAPIKey if child config explicitly sets it
+	if childConfig.EnableAPIKey != parentConfig.EnableAPIKey {
+		newConfig.EnableAPIKey = childConfig.EnableAPIKey
 	}
 
 	// Copy parent cluster configs first

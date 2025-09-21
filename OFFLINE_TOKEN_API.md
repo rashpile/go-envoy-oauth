@@ -48,6 +48,24 @@ sequenceDiagram
 
 ## Configuration
 
+### Enabling the Feature
+
+The API key generation feature is disabled by default. To enable it, add the following to your Envoy configuration:
+
+```yaml
+typed_config:
+  "@type": type.googleapis.com/envoy.extensions.filters.http.golang.v3.Config
+  plugin_name: go-envoy-oauth
+  plugin_config:
+    "@type": type.googleapis.com/xds.type.v3.TypedStruct
+    value:
+      issuer_url: "https://your-oauth-provider/realms/your-realm"
+      client_id: "your-client-id"
+      client_secret: "your-client-secret"
+      redirect_url: "/oauth/callback"
+      enable_api_key: true  # Enable API key generation feature
+```
+
 ### OAuth Provider Setup (Keycloak Example)
 
 1. **Enable offline_access scope** in your client configuration
@@ -57,7 +75,12 @@ sequenceDiagram
 
 ### Envoy Configuration
 
-The offline token feature is automatically enabled when the OAuth handler is initialized. No additional configuration is required in the Envoy filter.
+The API key generation feature must be explicitly enabled in the configuration:
+
+- Set `enable_api_key: true` to enable the feature
+- Set `enable_api_key: false` or omit the parameter to disable (default)
+
+When disabled, all API key endpoints (`/oauth/consent`, `/oauth/offline`, `/oauth/offline-callback`) will return a 404 error.
 
 ## Usage
 
