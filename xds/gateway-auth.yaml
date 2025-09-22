@@ -13,7 +13,8 @@ oauth:
   enable_bearer_token: true # optional, default: true - Enable bearer token authentication
 clients:
   - id: admin_cluster #required
-    address: httpbin.org # required
+    domain: httpbin.org # optional - domain for routing
+    address: httpbin.org # required - upstream address
     port: 443 # default 8080
     ssl: true # default false
     exclude: true # default false
@@ -22,6 +23,7 @@ clients:
       - /healthz
       - /metrics
   - id: echo_service_cluster
+    domain: echo.example.com # optional - domain for routing
     address: httpbin.org
     port: 443
     ssl: true

@@ -180,9 +180,18 @@ func MakeListener(config *GatewayConfig) ([]types.Resource, error) {
 }
 
 func MakeRoutes(config *GatewayConfig) ([]types.Resource, error) {
-	var routes []*route.Route
+	var virtualHosts []*route.VirtualHost
+	var wildcardRoutes []*route.Route
 
 	for _, client := range config.Clients {
+		// Determine host rewrite value
+		// If domain is specified, use domain; otherwise use address
+		hostRewrite := client.Address
+		if client.Domain != "" {
+			hostRewrite = client.Domain
+		}
+
+		// Create route for this client
 		r := &route.Route{
 			Match: &route.RouteMatch{
 				PathSpecifier: &route.RouteMatch_Prefix{
@@ -195,23 +204,42 @@ func MakeRoutes(config *GatewayConfig) ([]types.Resource, error) {
 						Cluster: client.ID,
 					},
 					HostRewriteSpecifier: &route.RouteAction_HostRewriteLiteral{
-						HostRewriteLiteral: client.Address,
+						HostRewriteLiteral: hostRewrite,
 					},
 				},
 			},
 		}
-		routes = append(routes, r)
+
+		if client.Domain != "" {
+			// Create individual virtual host for clients with specific domains
+			vh := &route.VirtualHost{
+				Name:    client.ID + "_host",
+				Domains: []string{client.Domain},
+				Routes:  []*route.Route{r},
+			}
+			virtualHosts = append(virtualHosts, vh)
+		} else {
+			// Collect routes for wildcard virtual host
+			wildcardRoutes = append(wildcardRoutes, r)
+		}
+	}
+
+	// Add wildcard virtual host if there are any routes without specific domains
+	if len(wildcardRoutes) > 0 {
+		// Sort routes by prefix length (longest first) for proper matching
+		sortRoutesByPrefix(wildcardRoutes)
+
+		vh := &route.VirtualHost{
+			Name:    "default_host",
+			Domains: []string{"*"},
+			Routes:  wildcardRoutes,
+		}
+		virtualHosts = append(virtualHosts, vh)
 	}
 
 	routeConfig := &route.RouteConfiguration{
-		Name: RouteConfig,
-		VirtualHosts: []*route.VirtualHost{
-			{
-				Name:    "local_service",
-				Domains: []string{"*"},
-				Routes:  routes,
-			},
-		},
+		Name:         RouteConfig,
+		VirtualHosts: virtualHosts,
 	}
 
 	return []types.Resource{routeConfig}, nil
@@ -274,6 +302,20 @@ func MakeClusters(config *GatewayConfig) ([]types.Resource, error) {
 	}
 
 	return clusters, nil
+}
+
+// sortRoutesByPrefix sorts routes by prefix length (longest first)
+// This ensures more specific routes are matched before general ones
+func sortRoutesByPrefix(routes []*route.Route) {
+	for i := 0; i < len(routes)-1; i++ {
+		for j := i + 1; j < len(routes); j++ {
+			prefixI := routes[i].GetMatch().GetPrefix()
+			prefixJ := routes[j].GetMatch().GetPrefix()
+			if len(prefixJ) > len(prefixI) {
+				routes[i], routes[j] = routes[j], routes[i]
+			}
+		}
+	}
 }
 
 func MakeEndpoints(config *GatewayConfig) ([]types.Resource, error) {

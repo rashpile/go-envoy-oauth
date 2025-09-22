@@ -22,3 +22,13 @@ clients:
     exclude_paths:
       - /status/200
       - /status/201
+  - id: echo2_service_cluster
+    address: httpbin.local
+    domain: example.httpbin.org
+    port: 443
+    ssl: true
+    exclude: false
+    prefix: /
+    exclude_paths:
+      - /status/200
+      - /status/201

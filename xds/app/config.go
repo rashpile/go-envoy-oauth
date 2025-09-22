@@ -31,6 +31,7 @@ type OAuthConfig struct {
 
 type ClientConfig struct {
 	ID           string   `yaml:"id"`
+	Domain       string   `yaml:"domain,omitempty"`
 	Address      string   `yaml:"address"`
 	Port         uint32   `yaml:"port"`
 	SSL          bool     `yaml:"ssl"`
