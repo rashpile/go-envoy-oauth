@@ -31,6 +31,7 @@ type Filter struct {
 	cookieManager       *session.CookieManager
 	callbacks           api.FilterCallbackHandler
 	logger              *zap.Logger
+	errorHandler        *ErrorHandler
 	mu                  sync.Mutex
 }
 
@@ -78,6 +79,7 @@ func NewFilter(config *OAuthConfig, callbacks api.FilterCallbackHandler) (*Filte
 		cookieManager:       cookieManager,
 		callbacks:           callbacks,
 		logger:              logger,
+		errorHandler:        NewErrorHandler(logger, callbacks),
 	}
 
 	// If OAuth handler already exists and API key feature is enabled, try to create offline handler
@@ -109,14 +111,35 @@ func (f *Filter) ensureHandlersInitialized() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	// Create OAuth handler if needed
-	if f.oauthHandler == nil {
-		f.logger.Debug("Creating OAuth handler from ensureHandlersInitialized")
-		_, err := f.createOAuthHandler(f.config, f.cookieManager)
-		if err != nil {
-			return fmt.Errorf("failed to create OAuth handler: %v", err)
-		}
+	// If handler already exists, nothing to do
+	if f.oauthHandler != nil {
+		return nil
 	}
+
+	// Check if we should retry based on exponential backoff
+	if !f.config.RetryManager.ShouldRetry() {
+		retryInfo := f.config.RetryManager.GetRetryInfo()
+		f.logger.Debug("OAuth handler initialization in backoff period",
+			zap.String("retry_info", retryInfo))
+		return f.config.RetryManager.GetError()
+	}
+
+	// Try to create the handler
+	f.logger.Info("Attempting to initialize OAuth handler")
+	_, err := f.createOAuthHandler(f.config, f.cookieManager)
+	if err != nil {
+		f.logger.Warn("Failed to create OAuth handler, will retry later",
+			zap.String("error", err.Error()),
+			zap.String("retry_info", f.config.RetryManager.GetRetryInfo()))
+
+		// Record error with exponential backoff
+		f.config.RetryManager.RecordError(fmt.Errorf("OAuth provider unavailable: %v", err))
+		return f.config.RetryManager.GetError()
+	}
+
+	f.logger.Info("OAuth handler created successfully")
+	// Clear error state on success
+	f.config.RetryManager.ClearError()
 
 	// Create offline handler if needed and if API key feature is enabled
 	if f.config.EnableAPIKey && f.offlineTokenHandler == nil && f.oauthHandler != nil {
@@ -151,8 +174,9 @@ func (f *Filter) createOAuthHandler(config *OAuthConfig, cookieManager *session.
 
 	oauthHandler, err := oauth.NewOAuthHandler(oauthConfig, config.SessionStore, cookieManager)
 	if err != nil {
-		logger.Error("Failed to create OAuth handler",
-			zap.Error(err),
+		// Use Warn level but without stack trace for expected IDP connectivity issues
+		logger.Warn("Failed to create OAuth handler (IDP may be unavailable)",
+			zap.String("error", err.Error()),
 			zap.String("issuer_url", config.IssuerURL),
 			zap.String("client_id", config.ClientID))
 		return nil, fmt.Errorf("failed to create OAuth handler: %v", err)
@@ -294,6 +318,21 @@ func (f *Filter) isBrowserRequest(header api.RequestHeaderMap) bool {
 
 // handleUnauthenticatedRequest handles unauthenticated requests based on request type
 func (f *Filter) handleUnauthenticatedRequest(header api.RequestHeaderMap, path string, traceID string, err error, context string) api.StatusType {
+	// Check if IDP is unavailable and we're still in backoff period
+	f.mu.Lock()
+	if f.config.RetryManager.GetError() != nil && !f.config.RetryManager.ShouldRetry() {
+		// IDP is unavailable and we're still in backoff, return a user-friendly error message
+		f.mu.Unlock()
+		retryInfo := f.config.RetryManager.GetRetryInfo()
+		f.logger.Warn("Identity provider is temporarily unavailable (in backoff period)",
+			zap.String("path", sanitizePathForLogging(path)),
+			zap.String("trace_id", traceID),
+			zap.String("error", f.config.RetryManager.GetError().Error()),
+			zap.String("retry_info", retryInfo))
+		return f.errorHandler.HandleIDPUnavailable()
+	}
+	f.mu.Unlock()
+
 	if f.isBrowserRequest(header) {
 		f.logger.Debug(fmt.Sprintf("Unauthenticated browser request: %s", context),
 			zap.String("path", sanitizePathForLogging(path)),
@@ -352,15 +391,31 @@ func (f *Filter) DecodeHeaders(header api.RequestHeaderMap, endStream bool) api.
 		f.mu.Lock()
 		// Double check after acquiring lock
 		if f.oauthHandler == nil {
-			f.logger.Debug("Creating OAuth handler",
+			// Check if we should retry or if we're still in backoff
+			if !f.config.RetryManager.ShouldRetry() {
+				f.mu.Unlock()
+				retryInfo := f.config.RetryManager.GetRetryInfo()
+				f.logger.Debug("OAuth handler creation in backoff period",
+					zap.String("trace_id", traceID),
+					zap.String("retry_info", retryInfo))
+				return f.errorHandler.HandleIDPUnavailable()
+			}
+
+			f.logger.Info("Attempting to create OAuth handler",
 				zap.String("trace_id", traceID))
 			_, err := f.createOAuthHandler(f.config, f.cookieManager)
 			if err != nil {
 				f.mu.Unlock()
-				f.logger.Error("Failed to create OAuth handler",
-					zap.Error(err))
-				return f.handleAuthFailure(500, "Internal Server Error: Failed to create OAuth handler")
+				f.logger.Warn("Failed to create OAuth handler on-demand",
+					zap.String("error", err.Error()))
+				// Record the error for retry management
+				f.config.RetryManager.RecordError(fmt.Errorf("OAuth provider unavailable: %v", err))
+				return f.errorHandler.HandleIDPUnavailable()
 			}
+			// Success! Clear any previous errors
+			f.config.RetryManager.ClearError()
+			f.logger.Info("OAuth handler created successfully after retry",
+				zap.String("trace_id", traceID))
 		}
 		f.mu.Unlock()
 	}
@@ -557,6 +612,15 @@ func (f *Filter) handleLogin(header api.RequestHeaderMap) api.StatusType {
 
 	f.logger.Debug("Handling login request",
 		zap.String("trace_id", traceID))
+
+	// Ensure handlers are initialized
+	if err := f.ensureHandlersInitialized(); err != nil {
+		f.logger.Warn("OAuth handler unavailable for login",
+			zap.String("trace_id", traceID),
+			zap.String("error", err.Error()))
+		return f.errorHandler.HandleIDPUnavailable()
+	}
+
 	// Get redirect URI from query parameter
 	path, _ := header.Get(":path")
 	values, err := url.ParseQuery(path[strings.Index(path, "?")+1:])
@@ -593,6 +657,15 @@ func (f *Filter) handleCallback(header api.RequestHeaderMap) api.StatusType {
 
 	f.logger.Debug("Handling OAuth callback",
 		zap.String("trace_id", traceID))
+
+	// Ensure handlers are initialized
+	if err := f.ensureHandlersInitialized(); err != nil {
+		f.logger.Warn("OAuth handler unavailable for callback",
+			zap.String("trace_id", traceID),
+			zap.String("error", err.Error()))
+		return f.errorHandler.HandleIDPUnavailable()
+	}
+
 	// Get query parameters
 	path, _ := header.Get(":path")
 	query := path[strings.Index(path, "?")+1:]

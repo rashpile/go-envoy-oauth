@@ -1,17 +1,21 @@
 version: "3.8"
 
 services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:latest
+    container_name: keycloak
+    environment:
+      - KEYCLOAK_USER=admin
+      - KEYCLOAK_PASSWORD=admin
+    command: start-dev
+    networks:
+      - envoy-network
+
   envoy:
-    image: envoyproxy/envoy:contrib-v1.35.2
+    image: go-envoy-oauth:latest
     container_name: envoy-gateway
     volumes:
-      # - ./envoy.yaml:/etc/envoy/envoy.yaml
-      - ../../dist/envoy-xds.yaml:/etc/envoy/envoy.yaml
-      - ../../dist/go-envoy-oauth.so:/app/go-envoy-oauth.so
-      - ./standalone.sh:/app/standalone.sh
       - ./gateway-auth.yaml:/app/gateway-auth.yaml
-      - ./envoy.yaml:/app/gateway-base.yaml
-      - ../../dist/xds-server:/app/xds-server
     environment:
       - OAUTH_CLIENTSECRET=${CLIENT_SECRET}
       - OAUTH_CLIENTID=${CLIENT_ID}

@@ -3,16 +3,18 @@ package main
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 )
 
 type GatewayConfig struct {
-	Plugin   PluginConfig   `yaml:"plugin"`
-	OAuth    OAuthConfig    `yaml:"oauth"`
-	Clients  []ClientConfig `yaml:"clients"`
-	Template string         `yaml:"template,omitempty"` // Path to template config file
+	Plugin   PluginConfig    `yaml:"plugin"`
+	OAuth    OAuthConfig     `yaml:"oauth"`
+	Clients  []ClientConfig  `yaml:"clients"`
+	Template string          `yaml:"template,omitempty"` // Path to template config file
+	Listener ListenerConfig  `yaml:"listener,omitempty"`
 }
 
 type PluginConfig struct {
@@ -27,6 +29,11 @@ type OAuthConfig struct {
 	Scopes            []string `yaml:"scopes,omitempty"`
 	EnableAPIKey      bool     `yaml:"enable_api_key,omitempty"`
 	EnableBearerToken bool     `yaml:"enable_bearer_token,omitempty"`
+}
+
+type ListenerConfig struct {
+	Address string `yaml:"address,omitempty"`
+	Port    uint32 `yaml:"port,omitempty"`
 }
 
 type ClientConfig struct {
@@ -69,6 +76,16 @@ func overrideFromEnv(config *GatewayConfig) {
 	if val := os.Getenv("OAUTH_ENABLE_BEARER_TOKEN"); val != "" {
 		config.OAuth.EnableBearerToken = val == "true" || val == "1"
 	}
+
+	// Listener config overrides
+	if val := os.Getenv("LISTENER_ADDRESS"); val != "" {
+		config.Listener.Address = val
+	}
+	if val := os.Getenv("LISTENER_PORT"); val != "" {
+		if port, err := strconv.ParseUint(val, 10, 32); err == nil {
+			config.Listener.Port = uint32(port)
+		}
+	}
 }
 
 func LoadConfig(path string) (*GatewayConfig, error) {
@@ -92,6 +109,13 @@ func LoadConfig(path string) (*GatewayConfig, error) {
 	// Set defaults
 	if config.Plugin.LibraryPath == "" {
 		config.Plugin.LibraryPath = "/app/go-envoy-oauth.so"
+	}
+
+	if config.Listener.Address == "" {
+		config.Listener.Address = "0.0.0.0"
+	}
+	if config.Listener.Port == 0 {
+		config.Listener.Port = 8080
 	}
 
 	if config.OAuth.RedirectURL == "" {

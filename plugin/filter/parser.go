@@ -65,6 +65,9 @@ type OAuthConfig struct {
 	SessionStore session.SessionStore
 
 	OAuthHandler oauth.OAuthHandler
+
+	// Retry manager for IDP unavailability (singleton, shared across all filters)
+	RetryManager *IDPRetryManager
 }
 
 // Parser parses the filter configuration
@@ -246,6 +249,9 @@ func (p *Parser) Parse(any *anypb.Any, callbacks api.ConfigCallbackHandler) (int
 
 	log.Printf("Parsed OAuth config: issuer_url=%s, client_id=%s, redirect_url=%s, scopes=%v, enable_api_key=%v, enable_bearer_token=%v",
 		conf.IssuerURL, conf.ClientID, conf.RedirectURL, conf.Scopes, conf.EnableAPIKey, conf.EnableBearerToken)
+
+	// Initialize the singleton retry manager
+	conf.RetryManager = NewIDPRetryManager()
 
 	return conf, nil
 }

@@ -315,23 +315,44 @@ func fetchOIDCConfig(issuerURL string) (*OIDCProvider, error) {
 	// Construct well-known configuration URL
 	configURL := issuerURL + "/.well-known/openid-configuration"
 
+	// Create HTTP client with timeout
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+	}
+
 	// Fetch configuration
-	resp, err := http.Get(configURL)
+	resp, err := client.Get(configURL)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to fetch OIDC configuration from %s: %v", configURL, err)
 	}
 	defer resp.Body.Close()
+
+	// Check response status
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		return nil, fmt.Errorf("OIDC configuration request failed with status %d: %s", resp.StatusCode, string(body))
+	}
 
 	// Read response
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to read OIDC configuration response: %v", err)
 	}
 
 	// Parse response
 	var provider OIDCProvider
 	if err := json.Unmarshal(body, &provider); err != nil {
-		return nil, err
+		// Log the first 100 chars of the response for debugging
+		preview := string(body)
+		if len(preview) > 100 {
+			preview = preview[:100] + "..."
+		}
+		return nil, fmt.Errorf("failed to parse OIDC configuration (response: %s): %v", preview, err)
+	}
+
+	// Validate required fields
+	if provider.AuthEndpoint == "" || provider.TokenEndpoint == "" {
+		return nil, fmt.Errorf("invalid OIDC configuration: missing required endpoints")
 	}
 
 	return &provider, nil
