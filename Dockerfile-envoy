@@ -1,0 +1,66 @@
+# Build OAuth plugin
+FROM golang:1.23.6-bookworm AS plugin-builder
+
+WORKDIR /app
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY plugin/ ./plugin/
+
+ENV GOFLAGS=-buildvcs=false
+RUN go build -o /output/go-envoy-oauth.so -buildmode=c-shared ./plugin/libgolang
+
+# Build XDS server
+FROM golang:1.23.6-bookworm AS xds-builder
+
+WORKDIR /app
+
+COPY xds/go.mod xds/go.sum ./
+RUN go mod download
+
+COPY xds/app/ ./app/
+
+ENV GOFLAGS=-buildvcs=false
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /output/xds-server ./app
+
+# Final stage - bundle everything into Envoy image
+FROM envoyproxy/envoy:contrib-v1.35.2
+
+LABEL org.opencontainers.image.source="https://github.com/rashpile/go-envoy-oauth"
+LABEL org.opencontainers.image.description="Standalone Envoy with OAuth authentication"
+LABEL org.opencontainers.image.licenses="MIT"
+
+# Copy OAuth plugin from builder
+COPY --from=plugin-builder /output/go-envoy-oauth.so /app/go-envoy-oauth.so
+
+# Copy XDS server from builder
+COPY --from=xds-builder /output/xds-server /app/xds-server
+
+# Copy configuration files
+COPY xds/envoy-xds.yaml /etc/envoy/envoy.yaml
+COPY xds/gateway-auth.yaml /app/gateway-auth.yaml
+
+# Create startup script
+RUN echo '#!/bin/bash' > /app/entrypoint.sh && \
+    echo 'set -e' >> /app/entrypoint.sh && \
+    echo '' >> /app/entrypoint.sh && \
+    echo '# Start XDS server in background' >> /app/entrypoint.sh && \
+    echo '/app/xds-server --config=/app/gateway-auth.yaml --port=18000 > /var/log/xds-server.log 2>&1 &' >> /app/entrypoint.sh && \
+    echo 'XDS_PID=$!' >> /app/entrypoint.sh && \
+    echo '' >> /app/entrypoint.sh && \
+    echo '# Wait for XDS server to be ready' >> /app/entrypoint.sh && \
+    echo 'sleep 2' >> /app/entrypoint.sh && \
+    echo '' >> /app/entrypoint.sh && \
+    echo '# Trap signals to gracefully shutdown both processes' >> /app/entrypoint.sh && \
+    echo 'trap "kill \$XDS_PID; exit" SIGTERM SIGINT' >> /app/entrypoint.sh && \
+    echo '' >> /app/entrypoint.sh && \
+    echo '# Start Envoy' >> /app/entrypoint.sh && \
+    echo 'exec envoy -c /etc/envoy/envoy.yaml' >> /app/entrypoint.sh && \
+    chmod +x /app/entrypoint.sh
+
+# Expose Envoy ports
+EXPOSE 8080 9901
+
+# Set the entrypoint
+ENTRYPOINT ["/app/entrypoint.sh"]
