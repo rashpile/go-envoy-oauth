@@ -149,15 +149,15 @@ func MakeListener(config *GatewayConfig) ([]types.Resource, error) {
 		return nil, fmt.Errorf("failed to marshal HTTP connection manager: %w", err)
 	}
 
-	// Create listener
+	// Create listener with configured address and port
 	l := &listener.Listener{
 		Name: ListenerName,
 		Address: &core.Address{
 			Address: &core.Address_SocketAddress{
 				SocketAddress: &core.SocketAddress{
-					Address: "0.0.0.0",
+					Address: config.Listener.Address,
 					PortSpecifier: &core.SocketAddress_PortValue{
-						PortValue: 8080,
+						PortValue: config.Listener.Port,
 					},
 				},
 			},

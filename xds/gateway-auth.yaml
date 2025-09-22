@@ -2,6 +2,14 @@
 # Can be specified here or via --template CLI flag
 # template: example-template.yaml
 
+# Listener configuration (optional)
+# Can also be set via environment variables:
+#   LISTENER_ADDRESS=0.0.0.0
+#   LISTENER_PORT=8080
+listener:
+  address: 0.0.0.0  # optional, default: 0.0.0.0
+  port: 8080        # optional, default: 8080
+
 plugin:
   library_path: /app/go-envoy-oauth.so # optional, default: /app/go-envoy-oauth.so
 oauth:
