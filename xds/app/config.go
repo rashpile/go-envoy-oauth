@@ -39,6 +39,7 @@ type ListenerConfig struct {
 type ClientConfig struct {
 	ID           string   `yaml:"id"`
 	Domain       string   `yaml:"domain,omitempty"`
+	HostRewrite  string   `yaml:"host_rewrite,omitempty"`
 	Address      string   `yaml:"address"`
 	Port         uint32   `yaml:"port"`
 	SSL          bool     `yaml:"ssl"`

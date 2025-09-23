@@ -2,12 +2,17 @@ version: "3.8"
 
 services:
   keycloak:
-    image: quay.io/keycloak/keycloak:latest
+    image: quay.io/keycloak/keycloak:26.3.4
     container_name: keycloak
     environment:
-      - KEYCLOAK_USER=admin
-      - KEYCLOAK_PASSWORD=admin
-    command: start-dev
+      - KC_HTTP_RELATIVE_PATH=/auth
+    command: start-dev --bootstrap-admin-username tmpadm --bootstrap-admin-password pass
+    networks:
+      - envoy-network
+
+  http-echo:
+    image: jmalloc/echo-server
+    container_name: http-echo
     networks:
       - envoy-network
 
@@ -24,9 +29,8 @@ services:
       - LOG_LEVEL=TRACE
       - COOKIE_CONFIG=HTTPOnly; SameSite=Lax
     ports:
-      - "8081:8080"
+      - "8081:8081"
       - "127.0.0.1:9901:9901"
-    command: /app/standalone.sh
     networks:
       - envoy-network
 

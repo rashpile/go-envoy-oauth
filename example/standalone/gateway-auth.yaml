@@ -3,9 +3,21 @@ template: /app/gateway-base.yaml
 # To enable API key generation feature, set:
 # oauth.enable_api_key: true
 # or environment variable: OAUTH_ENABLE_API_KEY=true
+listener:
+  address: 0.0.0.0
+  port: 8081
+
 clients:
+  - id: keycloak #required
+    address: keycloak # required
+    domain: localhost:8081
+    port: 8080 # default 8080
+    ssl: false # default false
+    exclude: true # default false
+    prefix: /auth #default /
   - id: admin_cluster #required
     address: httpbin.org # required
+    domain: localhost:8081
     port: 443 # default 8080
     ssl: true # default false
     exclude: true # default false
@@ -14,19 +26,11 @@ clients:
       - /healthz
       - /metrics
   - id: echo_service_cluster
-    address: httpbin.org
-    port: 443
-    ssl: true
-    exclude: false
-    prefix: /
-    exclude_paths:
-      - /status/200
-      - /status/201
-  - id: echo2_service_cluster
-    address: httpbin.local
-    domain: example.httpbin.org
-    port: 443
-    ssl: true
+    domain: localhost:8081
+    host_rewrite: httpbin.org
+    address: http-echo
+    port: 8080
+    ssl: false
     exclude: false
     prefix: /
     exclude_paths:

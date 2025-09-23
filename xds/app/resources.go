@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strings"
 
 	xdstype "github.com/cncf/xds/go/xds/type/v3"
 	cluster "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
@@ -180,15 +181,19 @@ func MakeListener(config *GatewayConfig) ([]types.Resource, error) {
 }
 
 func MakeRoutes(config *GatewayConfig) ([]types.Resource, error) {
-	var virtualHosts []*route.VirtualHost
+	// Group routes by domain
+	domainRoutes := make(map[string][]*route.Route)
 	var wildcardRoutes []*route.Route
 
 	for _, client := range config.Clients {
 		// Determine host rewrite value
-		// If domain is specified, use domain; otherwise use address
+		// Priority: HostRewrite > Domain > Address
 		hostRewrite := client.Address
 		if client.Domain != "" {
 			hostRewrite = client.Domain
+		}
+		if client.HostRewrite != "" {
+			hostRewrite = client.HostRewrite
 		}
 
 		// Create route for this client
@@ -211,17 +216,31 @@ func MakeRoutes(config *GatewayConfig) ([]types.Resource, error) {
 		}
 
 		if client.Domain != "" {
-			// Create individual virtual host for clients with specific domains
-			vh := &route.VirtualHost{
-				Name:    client.ID + "_host",
-				Domains: []string{client.Domain},
-				Routes:  []*route.Route{r},
-			}
-			virtualHosts = append(virtualHosts, vh)
+			// Group routes by domain
+			domainRoutes[client.Domain] = append(domainRoutes[client.Domain], r)
 		} else {
 			// Collect routes for wildcard virtual host
 			wildcardRoutes = append(wildcardRoutes, r)
 		}
+	}
+
+	// Create virtual hosts for each unique domain
+	var virtualHosts []*route.VirtualHost
+	for domain, routes := range domainRoutes {
+		// Sort routes by prefix length (longest first) for proper matching
+		sortRoutesByPrefix(routes)
+
+		// Create a virtual host name based on domain (sanitized)
+		vhName := strings.ReplaceAll(domain, ":", "_")
+		vhName = strings.ReplaceAll(vhName, ".", "_")
+		vhName = vhName + "_host"
+
+		vh := &route.VirtualHost{
+			Name:    vhName,
+			Domains: []string{domain},
+			Routes:  routes,
+		}
+		virtualHosts = append(virtualHosts, vh)
 	}
 
 	// Add wildcard virtual host if there are any routes without specific domains
