@@ -43,6 +43,7 @@ type OAuthHandler interface {
 	HandleCallback(header api.RequestHeaderMap, query string) error
 	HandleLogout(header api.RequestHeaderMap) error
 	ValidateSession(session *session.Session) error
+	IsNeedValidateSession(session *session.Session) bool
 	ValidateBearerToken(ctx context.Context, token string) (*session.Session, error)
 	ExchangeRefreshToken(ctx context.Context, refreshToken string) (string, error)
 }
@@ -53,15 +54,15 @@ type tokenCacheEntry struct {
 }
 
 type OAuthHandlerImpl struct {
-	config             *OIDCConfig
-	provider           *OIDCProvider
-	oauth2Config       *oauth2.Config
-	sessionStore       session.SessionStore
-	cookieManager      *session.CookieManager
-	tokenValidator     *TokenValidator
-	refreshTokenCache  map[string]*tokenCacheEntry // maps refresh token hash -> access token
-	cacheMu            sync.RWMutex
-	mu                 sync.Mutex
+	config            *OIDCConfig
+	provider          *OIDCProvider
+	oauth2Config      *oauth2.Config
+	sessionStore      session.SessionStore
+	cookieManager     *session.CookieManager
+	tokenValidator    *TokenValidator
+	refreshTokenCache map[string]*tokenCacheEntry // maps refresh token hash -> access token
+	cacheMu           sync.RWMutex
+	mu                sync.Mutex
 }
 
 // NewOAuthHandler creates a new OAuth handler
@@ -269,6 +270,10 @@ func (h *OAuthHandlerImpl) HandleLogout(header api.RequestHeaderMap) error {
 
 	h.cookieManager.DeleteCookie(header)
 	return nil
+}
+
+func (h *OAuthHandlerImpl) IsNeedValidateSession(session *session.Session) bool {
+	return time.Now().After(session.ExpiresAt)
 }
 
 func (h *OAuthHandlerImpl) ValidateSession(session *session.Session) error {
