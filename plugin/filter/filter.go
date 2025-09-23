@@ -426,7 +426,7 @@ func (f *Filter) DecodeHeaders(header api.RequestHeaderMap, endStream bool) api.
 	if f.oauthHandler == nil {
 		return f.handleAsyncOAuthHandler(header, traceID, path, f.handleDecodeHeaders)
 	}
-	if f.config.EnableAPIKey && f.config.EnableBearerToken {
+	if f.config.EnableAPIKey && f.config.EnableBearerToken && f.extractAPIToken(header) != "" {
 		return f.handleAsyncDecodeHeaders(header, path, traceID, f.handleDecodeHeaders)
 	}
 	return f.handleDecodeHeaders(header, path, traceID)
