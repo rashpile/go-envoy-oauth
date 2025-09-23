@@ -112,16 +112,69 @@ func (f *Filter) handleAsyncCallback(header api.RequestHeaderMap, query string, 
 }
 ```
 
-### Avoiding Deadlocks
+### Critical: Avoiding Worker Thread Deadlocks
 
-When using async processing in service-to-service scenarios (Service A → Envoy → Service B → Envoy → Service C):
+#### The Circular Dependency Problem
 
-**Problem**: Synchronous processing can exhaust Envoy worker threads, causing resource deadlocks.
+A critical deadlock scenario occurs when the OAuth provider (e.g., Keycloak) is behind the same Envoy proxy that performs authentication:
 
-**Solution**: Use async processing for operations that:
-- Make upstream HTTP calls
-- Wait for external responses
-- Could block worker threads
+```
+User Request → Envoy:8081 → Backend (requires auth)
+                ↓
+         OAuth Callback triggered
+                ↓
+         Filter calls http://localhost:8081/auth/token
+                ↓
+         Request goes BACK to Envoy:8081
+                ↓
+         Envoy routes to Keycloak
+                ↓
+         ⚠️ DEADLOCK: All worker threads busy waiting for OAuth
+```
+
+#### Why This Causes a Deadlock
+
+1. **Envoy uses a fixed pool of worker threads** (default: number of CPU cores)
+2. **Synchronous OAuth callback** holds Worker Thread #1 while making HTTP call to IdP
+3. **IdP request needs a worker thread** but all threads are busy with OAuth callbacks
+4. **Result**: 60+ second timeout and request failure
+
+#### Why `exclude: true` Doesn't Prevent This
+
+Even if Keycloak routes have `exclude: true` in configuration:
+```yaml
+clients:
+  - id: keycloak
+    address: keycloak
+    exclude: true  # This skips auth, but...
+```
+
+The deadlock occurs **before** the exclusion check can run - the request needs a worker thread to even enter the filter where the check happens.
+
+#### Solution: Async Processing
+
+The async implementation solves this by immediately freeing worker threads:
+
+```go
+func (f *Filter) handleAsyncCallback(...) api.StatusType {
+    go func() {
+        // OAuth HTTP calls happen in goroutine
+        // Worker thread is already freed
+        err := f.oauthHandler.HandleCallback(header, query)
+        // ...
+    }()
+    return api.Running  // Frees worker thread immediately!
+}
+```
+
+**Result**: Worker threads are available for the OAuth provider requests, breaking the deadlock cycle.
+
+#### Alternative Solutions
+
+If async processing is not feasible:
+1. **Increase worker threads**: `envoy --concurrency 8` (or higher)
+2. **Direct IdP connection**: Configure `ISSUER_URL` to bypass Envoy (e.g., `http://keycloak:8080` instead of `http://localhost:8081`)
+3. **Separate Envoy instance**: Use different Envoy proxy for IdP traffic
 
 ### Performance Considerations
 

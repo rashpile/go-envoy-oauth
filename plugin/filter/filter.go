@@ -424,37 +424,15 @@ func (f *Filter) DecodeHeaders(header api.RequestHeaderMap, endStream bool) api.
 
 	// Initialize OAuth handler if needed (before handling any OAuth endpoints)
 	if f.oauthHandler == nil {
-		f.mu.Lock()
-		// Double check after acquiring lock
-		if f.oauthHandler == nil {
-			// Check if we should retry or if we're still in backoff
-			if !f.config.RetryManager.ShouldRetry() {
-				f.mu.Unlock()
-				retryInfo := f.config.RetryManager.GetRetryInfo()
-				f.logger.Debug("OAuth handler creation in backoff period",
-					zap.String("trace_id", traceID),
-					zap.String("retry_info", retryInfo))
-				return f.errorHandler.HandleIDPUnavailable()
-			}
-
-			f.logger.Debug("Attempting to create OAuth handler",
-				zap.String("trace_id", traceID))
-			_, err := f.createOAuthHandler(f.config, f.cookieManager)
-			if err != nil {
-				f.mu.Unlock()
-				f.logger.Warn("Failed to create OAuth handler on-demand",
-					zap.String("error", err.Error()))
-				// Record the error for retry management
-				f.config.RetryManager.RecordError(fmt.Errorf("OAuth provider unavailable: %v", err))
-				return f.errorHandler.HandleIDPUnavailable()
-			}
-			// Success! Clear any previous errors
-			f.config.RetryManager.ClearError()
-			f.logger.Debug("OAuth handler created successfully after retry",
-				zap.String("trace_id", traceID))
-		}
-		f.mu.Unlock()
+		return f.handleAsyncOAuthHandler(header, traceID, path, f.handleDecodeHeaders)
 	}
+	if f.config.EnableAPIKey && f.config.EnableBearerToken {
+		return f.handleAsyncDecodeHeaders(header, path, traceID, f.handleDecodeHeaders)
+	}
+	return f.handleDecodeHeaders(header, path, traceID)
+}
+
+func (f *Filter) handleDecodeHeaders(header api.RequestHeaderMap, path string, traceID string) api.StatusType {
 
 	// Handle OAuth endpoints
 	if strings.HasPrefix(path, "/oauth/") {
@@ -601,9 +579,10 @@ func (f *Filter) DecodeHeaders(header api.RequestHeaderMap, endStream bool) api.
 		return f.handleUnauthenticatedRequest(header, path, traceID, err, "Invalid session")
 	}
 
-	// Validate and refresh session if needed
-	if err := f.oauthHandler.ValidateSession(session); err != nil {
-		return f.handleUnauthenticatedRequest(header, path, traceID, err, "Session validation failed")
+	// Check if session needs validation/refresh
+	if f.oauthHandler.IsNeedValidateSession(session) {
+		// Perform async validation to avoid blocking
+		return f.handleAsyncValidateSession(header, session, path, traceID, f.handleAuthSuccess)
 	}
 
 	return f.handleAuthSuccess(header, session)
@@ -707,72 +686,6 @@ func (f *Filter) handleCallback(header api.RequestHeaderMap) api.StatusType {
 	query := path[strings.Index(path, "?")+1:]
 
 	return f.handleAsyncCallback(header, query, traceID)
-	// // Process the callback
-	// err := f.oauthHandler.HandleCallback(header, query)
-	// if err != nil {
-	// 	f.logger.Error("Failed to handle OAuth callback",
-	// 		zap.String("trace_id", traceID),
-	// 		zap.Error(err))
-	// 	return f.handleAuthFailure(400, "Bad Request: Invalid OAuth callback")
-	// }
-
-	// // Get the session ID from the set-cookie header
-	// sessionID, exists := header.Get("set-cookie")
-	// if !exists || sessionID == "" {
-	// 	f.logger.Error("Failed to get session cookie",
-	// 		zap.String("trace_id", traceID),
-	// 		zap.Error(err))
-	// 	return f.handleAuthFailure(500, "Internal Server Error: Failed to get session cookie")
-	// }
-
-	// // Get the redirect URI from the location header
-	// redirectURI, exists := header.Get("location")
-	// if !exists || redirectURI == "" {
-	// 	redirectURI = "/"
-	// }
-
-	// return f.handleRedirect(redirectURI, sessionID)
-}
-
-func (f *Filter) handleAsyncCallback(header api.RequestHeaderMap, query string, traceID string) api.StatusType {
-	go func() {
-		// Add panic recovery
-		defer func() {
-			if r := recover(); r != nil {
-				f.logger.Error("Panic in async callback", zap.Any("panic", r))
-				f.handleAuthFailure(500, "Internal Server Error")
-			}
-		}()
-		err := f.oauthHandler.HandleCallback(header, query)
-		if err != nil {
-			f.logger.Error("Failed to handle OAuth callback",
-				zap.String("trace_id", traceID),
-				zap.Error(err))
-			f.handleAuthFailure(400, "Bad Request: Invalid OAuth callback")
-			// Don't need to return anything - SendLocalReply already called
-			return
-		}
-
-		// Get the session ID from the set-cookie header
-		sessionID, exists := header.Get("set-cookie")
-		if !exists || sessionID == "" {
-			f.logger.Error("Failed to get session cookie",
-				zap.String("trace_id", traceID),
-				zap.Error(err))
-			f.handleAuthFailure(500, "Internal Server Error: Failed to get session cookie")
-			return
-		}
-
-		// Get the redirect URI from the location header
-		redirectURI, exists := header.Get("location")
-		if !exists || redirectURI == "" {
-			redirectURI = "/"
-		}
-
-		f.handleRedirect(redirectURI, sessionID)
-		// SendLocalReply already called inside handleRedirect
-	}()
-	return api.Running // Tell Envoy we're processing async
 }
 
 // handleLogout processes user logout
@@ -898,54 +811,6 @@ func (f *Filter) extractAPIToken(header api.RequestHeaderMap) string {
 	}
 
 	return ""
-}
-
-// sanitizePathForLogging removes sensitive data from URLs before logging
-func sanitizePathForLogging(path string) string {
-	if path == "" {
-		return path
-	}
-
-	// Check if path contains query string
-	idx := strings.Index(path, "?")
-	if idx < 0 {
-		return path // No query string, safe to log
-	}
-
-	basePath := path[:idx]
-	query := path[idx+1:]
-
-	// Parse query parameters
-	values, err := url.ParseQuery(query)
-	if err != nil {
-		return basePath + "?[invalid_query]"
-	}
-
-	// List of sensitive parameters to redact
-	sensitiveParams := []string{
-		"auth-api-key",
-		"api-key",
-		"token",
-		"access_token",
-		"refresh_token",
-		"id_token",
-		"client_secret",
-		"password",
-	}
-
-	// Redact sensitive parameters
-	for _, param := range sensitiveParams {
-		if values.Has(param) {
-			values.Set(param, "[REDACTED]")
-		}
-	}
-
-	// Rebuild the query string
-	sanitizedQuery := values.Encode()
-	if sanitizedQuery != "" {
-		return basePath + "?" + sanitizedQuery
-	}
-	return basePath
 }
 
 // isAPITokenFromQuery checks if API token came from query parameter
@@ -1096,91 +961,4 @@ func getClusterName(callbacks api.FilterCallbackHandler) string {
 		return ""
 	}
 	return clusterName
-}
-
-// handleOfflineConsent displays the consent page for API key generation
-func (f *Filter) handleOfflineConsent(header api.RequestHeaderMap) api.StatusType {
-	// Check if API key feature is enabled
-	if !f.config.EnableAPIKey {
-		return f.handleAuthFailure(404, "API key generation feature is disabled")
-	}
-
-	// Ensure handlers are initialized
-	if err := f.ensureHandlersInitialized(); err != nil {
-		return f.handleAuthFailure(500, fmt.Sprintf("Failed to initialize handlers: %v", err))
-	}
-
-	if f.offlineTokenHandler == nil {
-		return f.handleAuthFailure(500, "API key generation feature not available")
-	}
-
-	statusCode, body, headers := f.offlineTokenHandler.HandleConsentPage(header)
-	f.callbacks.DecoderFilterCallbacks().SendLocalReply(
-		statusCode,
-		body,
-		headers,
-		0,
-		"",
-	)
-	return api.LocalReply
-}
-
-// handleOfflineRedirect initiates OAuth flow for API key generation
-func (f *Filter) handleOfflineRedirect(header api.RequestHeaderMap) api.StatusType {
-	// Check if API key feature is enabled
-	if !f.config.EnableAPIKey {
-		return f.handleAuthFailure(404, "API key generation feature is disabled")
-	}
-
-	// Ensure handlers are initialized
-	if err := f.ensureHandlersInitialized(); err != nil {
-		return f.handleAuthFailure(500, fmt.Sprintf("Failed to initialize handlers: %v", err))
-	}
-
-	if f.offlineTokenHandler == nil {
-		return f.handleAuthFailure(500, "API key generation feature not available")
-	}
-
-	statusCode, body, headers := f.offlineTokenHandler.HandleOfflineAuthRedirect(header)
-	f.callbacks.DecoderFilterCallbacks().SendLocalReply(
-		statusCode,
-		body,
-		headers,
-		0,
-		"",
-	)
-	return api.LocalReply
-}
-
-// handleOfflineCallback processes OAuth callback for API key generation
-func (f *Filter) handleOfflineCallback(header api.RequestHeaderMap, path string) api.StatusType {
-	// Check if API key feature is enabled
-	if !f.config.EnableAPIKey {
-		return f.handleAuthFailure(404, "API key generation feature is disabled")
-	}
-
-	// Ensure handlers are initialized
-	if err := f.ensureHandlersInitialized(); err != nil {
-		return f.handleAuthFailure(500, fmt.Sprintf("Failed to initialize handlers: %v", err))
-	}
-
-	if f.offlineTokenHandler == nil {
-		return f.handleAuthFailure(500, "API key generation feature not available")
-	}
-
-	// Extract query parameters
-	query := ""
-	if idx := strings.Index(path, "?"); idx != -1 {
-		query = path[idx+1:]
-	}
-
-	statusCode, body, headers := f.offlineTokenHandler.HandleOfflineCallback(header, query)
-	f.callbacks.DecoderFilterCallbacks().SendLocalReply(
-		statusCode,
-		body,
-		headers,
-		0,
-		"",
-	)
-	return api.LocalReply
 }

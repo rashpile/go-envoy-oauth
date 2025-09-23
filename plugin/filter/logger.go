@@ -2,6 +2,7 @@ package filter
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -58,7 +59,7 @@ func init() {
 			accessConfig.EncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
 			accessConfig.EncoderConfig.TimeKey = "time"
 			accessConfig.EncoderConfig.MessageKey = "msg"
-			accessConfig.EncoderConfig.LevelKey = "" // Don't show level for access logs
+			accessConfig.EncoderConfig.LevelKey = ""  // Don't show level for access logs
 			accessConfig.EncoderConfig.CallerKey = "" // Don't show caller for access logs
 			accessConfig.Level = zap.NewAtomicLevelAt(zapcore.InfoLevel)
 			accessConfig.OutputPaths = []string{"stdout"}
@@ -108,4 +109,52 @@ func LogAccess(method, path, host, clientIP, userAgent string, statusCode int, r
 // IsAccessLogEnabled returns whether access logging is enabled
 func IsAccessLogEnabled() bool {
 	return accessLogEnabled
+}
+
+// sanitizePathForLogging removes sensitive data from URLs before logging
+func sanitizePathForLogging(path string) string {
+	if path == "" {
+		return path
+	}
+
+	// Check if path contains query string
+	idx := strings.Index(path, "?")
+	if idx < 0 {
+		return path // No query string, safe to log
+	}
+
+	basePath := path[:idx]
+	query := path[idx+1:]
+
+	// Parse query parameters
+	values, err := url.ParseQuery(query)
+	if err != nil {
+		return basePath + "?[invalid_query]"
+	}
+
+	// List of sensitive parameters to redact
+	sensitiveParams := []string{
+		"auth-api-key",
+		"api-key",
+		"token",
+		"access_token",
+		"refresh_token",
+		"id_token",
+		"client_secret",
+		"password",
+	}
+
+	// Redact sensitive parameters
+	for _, param := range sensitiveParams {
+		if values.Has(param) {
+			values.Set(param, "[REDACTED]")
+		}
+	}
+
+	// Rebuild the query string
+	sanitizedQuery := values.Encode()
+	if sanitizedQuery != "" {
+		return basePath + "?" + sanitizedQuery
+	}
+	return basePath
 }
