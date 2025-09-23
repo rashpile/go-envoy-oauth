@@ -34,12 +34,12 @@ type Filter struct {
 	errorHandler        *ErrorHandler
 	mu                  sync.Mutex
 	// Access log fields
-	requestStart time.Time
+	requestStart  time.Time
 	requestMethod string
-	requestPath string
-	requestHost string
-	clientIP string
-	userAgent string
+	requestPath   string
+	requestHost   string
+	clientIP      string
+	userAgent     string
 }
 
 // NewFilter creates a new filter instance
@@ -706,31 +706,73 @@ func (f *Filter) handleCallback(header api.RequestHeaderMap) api.StatusType {
 	path, _ := header.Get(":path")
 	query := path[strings.Index(path, "?")+1:]
 
-	// Process the callback
-	err := f.oauthHandler.HandleCallback(header, query)
-	if err != nil {
-		f.logger.Error("Failed to handle OAuth callback",
-			zap.String("trace_id", traceID),
-			zap.Error(err))
-		return f.handleAuthFailure(400, "Bad Request: Invalid OAuth callback")
-	}
+	return f.handleAsyncCallback(header, query, traceID)
+	// // Process the callback
+	// err := f.oauthHandler.HandleCallback(header, query)
+	// if err != nil {
+	// 	f.logger.Error("Failed to handle OAuth callback",
+	// 		zap.String("trace_id", traceID),
+	// 		zap.Error(err))
+	// 	return f.handleAuthFailure(400, "Bad Request: Invalid OAuth callback")
+	// }
 
-	// Get the session ID from the set-cookie header
-	sessionID, exists := header.Get("set-cookie")
-	if !exists || sessionID == "" {
-		f.logger.Error("Failed to get session cookie",
-			zap.String("trace_id", traceID),
-			zap.Error(err))
-		return f.handleAuthFailure(500, "Internal Server Error: Failed to get session cookie")
-	}
+	// // Get the session ID from the set-cookie header
+	// sessionID, exists := header.Get("set-cookie")
+	// if !exists || sessionID == "" {
+	// 	f.logger.Error("Failed to get session cookie",
+	// 		zap.String("trace_id", traceID),
+	// 		zap.Error(err))
+	// 	return f.handleAuthFailure(500, "Internal Server Error: Failed to get session cookie")
+	// }
 
-	// Get the redirect URI from the location header
-	redirectURI, exists := header.Get("location")
-	if !exists || redirectURI == "" {
-		redirectURI = "/"
-	}
+	// // Get the redirect URI from the location header
+	// redirectURI, exists := header.Get("location")
+	// if !exists || redirectURI == "" {
+	// 	redirectURI = "/"
+	// }
 
-	return f.handleRedirect(redirectURI, sessionID)
+	// return f.handleRedirect(redirectURI, sessionID)
+}
+
+func (f *Filter) handleAsyncCallback(header api.RequestHeaderMap, query string, traceID string) api.StatusType {
+	go func() {
+		// Add panic recovery
+		defer func() {
+			if r := recover(); r != nil {
+				f.logger.Error("Panic in async callback", zap.Any("panic", r))
+				f.handleAuthFailure(500, "Internal Server Error")
+			}
+		}()
+		err := f.oauthHandler.HandleCallback(header, query)
+		if err != nil {
+			f.logger.Error("Failed to handle OAuth callback",
+				zap.String("trace_id", traceID),
+				zap.Error(err))
+			f.handleAuthFailure(400, "Bad Request: Invalid OAuth callback")
+			// Don't need to return anything - SendLocalReply already called
+			return
+		}
+
+		// Get the session ID from the set-cookie header
+		sessionID, exists := header.Get("set-cookie")
+		if !exists || sessionID == "" {
+			f.logger.Error("Failed to get session cookie",
+				zap.String("trace_id", traceID),
+				zap.Error(err))
+			f.handleAuthFailure(500, "Internal Server Error: Failed to get session cookie")
+			return
+		}
+
+		// Get the redirect URI from the location header
+		redirectURI, exists := header.Get("location")
+		if !exists || redirectURI == "" {
+			redirectURI = "/"
+		}
+
+		f.handleRedirect(redirectURI, sessionID)
+		// SendLocalReply already called inside handleRedirect
+	}()
+	return api.Running // Tell Envoy we're processing async
 }
 
 // handleLogout processes user logout
