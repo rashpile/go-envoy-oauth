@@ -33,6 +33,13 @@ type Filter struct {
 	logger              *zap.Logger
 	errorHandler        *ErrorHandler
 	mu                  sync.Mutex
+	// Access log fields
+	requestStart time.Time
+	requestMethod string
+	requestPath string
+	requestHost string
+	clientIP string
+	userAgent string
 }
 
 // NewFilter creates a new filter instance
@@ -213,6 +220,14 @@ func (f *Filter) handleAuthFailure(statusCode int, message string) api.StatusTyp
 		zap.Int("status_code", statusCode),
 		zap.String("message", message))
 
+	// Log access if enabled
+	if IsAccessLogEnabled() && f.requestStart.Unix() > 0 {
+		responseTime := time.Since(f.requestStart).Seconds() * 1000
+		LogAccess(f.requestMethod, f.requestPath, f.requestHost,
+			f.clientIP, f.userAgent, statusCode, responseTime)
+		f.requestStart = time.Time{} // Reset
+	}
+
 	headers := createAuthErrorHeaders()
 
 	f.callbacks.DecoderFilterCallbacks().SendLocalReply(
@@ -279,6 +294,14 @@ func (f *Filter) handleRedirect(url string, cookieValue string) api.StatusType {
 	f.logger.Debug("Handling redirect",
 		zap.String("url", url),
 		zap.Bool("has_cookie", cookieValue != ""))
+
+	// Log access if enabled
+	if IsAccessLogEnabled() && f.requestStart.Unix() > 0 {
+		responseTime := time.Since(f.requestStart).Seconds() * 1000
+		LogAccess(f.requestMethod, f.requestPath, f.requestHost,
+			f.clientIP, f.userAgent, http.StatusFound, responseTime)
+		f.requestStart = time.Time{} // Reset
+	}
 
 	headers := map[string][]string{
 		"Location":     {url},
@@ -355,6 +378,19 @@ func (f *Filter) DecodeHeaders(header api.RequestHeaderMap, endStream bool) api.
 	host, _ := header.Get(":authority")
 	traceID := f.getTraceID(header)
 
+	// Capture request information for access logging
+	if IsAccessLogEnabled() {
+		f.requestStart = time.Now()
+		f.requestMethod = method
+		f.requestPath = path
+		f.requestHost = host
+		f.clientIP, _ = header.Get("x-forwarded-for")
+		if f.clientIP == "" {
+			f.clientIP, _ = header.Get("x-real-ip")
+		}
+		f.userAgent, _ = header.Get("user-agent")
+	}
+
 	f.logger.Debug("Processing request headers",
 		zap.String("method", method),
 		zap.String("path", sanitizePathForLogging(path)),
@@ -401,7 +437,7 @@ func (f *Filter) DecodeHeaders(header api.RequestHeaderMap, endStream bool) api.
 				return f.errorHandler.HandleIDPUnavailable()
 			}
 
-			f.logger.Info("Attempting to create OAuth handler",
+			f.logger.Debug("Attempting to create OAuth handler",
 				zap.String("trace_id", traceID))
 			_, err := f.createOAuthHandler(f.config, f.cookieManager)
 			if err != nil {
@@ -414,7 +450,7 @@ func (f *Filter) DecodeHeaders(header api.RequestHeaderMap, endStream bool) api.
 			}
 			// Success! Clear any previous errors
 			f.config.RetryManager.ClearError()
-			f.logger.Info("OAuth handler created successfully after retry",
+			f.logger.Debug("OAuth handler created successfully after retry",
 				zap.String("trace_id", traceID))
 		}
 		f.mu.Unlock()
@@ -717,6 +753,42 @@ func (f *Filter) handleLogout(header api.RequestHeaderMap) api.StatusType {
 // EncodeHeaders is called when response headers are being sent
 // This can be used to add cookies to responses after successful auth
 func (f *Filter) EncodeHeaders(header api.ResponseHeaderMap, endStream bool) api.StatusType {
+	// Log access if enabled
+	if IsAccessLogEnabled() && f.requestStart.Unix() > 0 {
+		statusStr, _ := header.Get(":status")
+		statusCode := 200 // default
+		if statusStr != "" {
+			// Parse status code from string
+			if len(statusStr) >= 3 {
+				switch statusStr[0] {
+				case '2':
+					statusCode = 200
+				case '3':
+					statusCode = 300
+				case '4':
+					statusCode = 400
+				case '5':
+					statusCode = 500
+				}
+				// Try to parse the actual code
+				var code int
+				if n, _ := fmt.Sscanf(statusStr, "%d", &code); n == 1 {
+					statusCode = code
+				}
+			}
+		}
+
+		// Calculate response time
+		responseTime := time.Since(f.requestStart).Seconds() * 1000 // convert to ms
+
+		// Log the access
+		LogAccess(f.requestMethod, f.requestPath, f.requestHost,
+			f.clientIP, f.userAgent, statusCode, responseTime)
+
+		// Reset the request tracking
+		f.requestStart = time.Time{}
+	}
+
 	return api.Continue
 }
 
