@@ -5,14 +5,14 @@ import (
 	"strings"
 
 	xdstype "github.com/cncf/xds/go/xds/type/v3"
+	golang "github.com/envoyproxy/go-control-plane/contrib/envoy/extensions/filters/http/golang/v3alpha"
 	cluster "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
 	core "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	endpoint "github.com/envoyproxy/go-control-plane/envoy/config/endpoint/v3"
 	listener "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3"
 	route "github.com/envoyproxy/go-control-plane/envoy/config/route/v3"
-	hcm "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
-	golang "github.com/envoyproxy/go-control-plane/contrib/envoy/extensions/filters/http/golang/v3alpha"
 	router "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/router/v3"
+	hcm "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
 	tls "github.com/envoyproxy/go-control-plane/envoy/extensions/transport_sockets/tls/v3"
 	"github.com/envoyproxy/go-control-plane/pkg/cache/types"
 	"github.com/envoyproxy/go-control-plane/pkg/resource/v3"
@@ -35,14 +35,13 @@ func MakeListener(config *GatewayConfig) ([]types.Resource, error) {
 		"redirect_url":              config.OAuth.RedirectURL,
 		"enable_api_key":            config.OAuth.EnableAPIKey,
 		"enable_bearer_token":       config.OAuth.EnableBearerToken,
-		"session_cookie_name":       "session",
-		"session_max_age":           86400,
-		"session_path":              "/",
-		"session_domain":            "localhost",
-		"session_secure":            false,
-		"session_http_only":         true,
-		"session_same_site":         "Lax",
-		"cookie_config":             "HttpOnly; SameSite=Lax",
+		"session_cookie_name":       config.OAuth.SessionCookieName,
+		"session_max_age":           config.OAuth.SessionMaxAge,
+		"session_path":              config.OAuth.SessionPath,
+		"session_domain":            config.OAuth.SessionDomain,
+		"session_secure":            config.OAuth.SessionSecure,
+		"session_http_only":         config.OAuth.SessionHTTPOnly,
+		"session_same_site":         config.OAuth.SessionSameSite,
 		"user_id_header_name":       "X-User-ID",
 		"user_email_header_name":    "X-User-Email",
 		"user_username_header_name": "X-User",

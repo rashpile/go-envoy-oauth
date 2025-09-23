@@ -40,7 +40,6 @@ type OAuthConfig struct {
 	SessionSecure     bool          `json:"session_secure"`
 	SessionHttpOnly   bool          `json:"session_http_only"`
 	SessionSameSite   string        `json:"session_same_site"`
-	CookieConfig      string        `json:"cookie_config"`
 
 	// Header configuration
 	UserIDHeaderName       string   `json:"user_id_header_name"`
@@ -90,7 +89,6 @@ func (p *Parser) Parse(any *anypb.Any, callbacks api.ConfigCallbackHandler) (int
 		SessionSecure:      true,
 		SessionHttpOnly:    true,
 		SessionSameSite:    "Lax",
-		CookieConfig:       "",
 		ExcludePaths:       []string{"/health"},
 		Clusters:           make(map[string]ClusterConfig),
 		SessionStore:       session.NewInMemorySessionStore(),
@@ -169,10 +167,6 @@ func (p *Parser) Parse(any *anypb.Any, callbacks api.ConfigCallbackHandler) (int
 		}
 	}
 
-	// Parse cookie configuration
-	if cookieConfig, ok := v.AsMap()["cookie_config"].(string); ok {
-		conf.CookieConfig = cookieConfig
-	}
 
 	// Parse header configuration
 	if userIDHeaderName, ok := v.AsMap()["user_id_header_name"].(string); ok {

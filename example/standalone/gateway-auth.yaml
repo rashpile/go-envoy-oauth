@@ -6,7 +6,11 @@ template: /app/gateway-base.yaml
 listener:
   address: 0.0.0.0
   port: 8081
-
+oauth:
+  session_cookie_name: pkgw
+  session_secure: false
+  session_http_only: true
+  session_same_site: Lax
 clients:
   - id: keycloak #required
     address: keycloak # required
@@ -36,3 +40,12 @@ clients:
     exclude_paths:
       - /status/200
       - /status/201
+  - id: echo2_service_cluster
+    domain: local.home:8081
+    host_rewrite: httpbin.org
+    address: http-echo
+    port: 8080
+    ssl: false
+    exclude: false
+    exclude_paths:
+      - /favicon.ico

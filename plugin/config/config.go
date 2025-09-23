@@ -8,5 +8,4 @@ type Config struct {
 	SessionSecure     bool   `yaml:"session_secure"`
 	SessionHttpOnly   bool   `yaml:"session_http_only"`
 	SessionSameSite   string `yaml:"session_same_site"`
-	CookieConfig      string `yaml:"cookie_config"`
 }

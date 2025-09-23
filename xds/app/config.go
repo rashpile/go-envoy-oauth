@@ -22,13 +22,20 @@ type PluginConfig struct {
 }
 
 type OAuthConfig struct {
-	IssuerURL         string   `yaml:"issuer_url"`
-	ClientID          string   `yaml:"client_id"`
-	ClientSecret      string   `yaml:"client_secret"`
-	RedirectURL       string   `yaml:"redirect_url"`
-	Scopes            []string `yaml:"scopes,omitempty"`
-	EnableAPIKey      bool     `yaml:"enable_api_key,omitempty"`
-	EnableBearerToken bool     `yaml:"enable_bearer_token,omitempty"`
+	IssuerURL           string   `yaml:"issuer_url"`
+	ClientID            string   `yaml:"client_id"`
+	ClientSecret        string   `yaml:"client_secret"`
+	RedirectURL         string   `yaml:"redirect_url"`
+	Scopes              []string `yaml:"scopes,omitempty"`
+	EnableAPIKey        bool     `yaml:"enable_api_key,omitempty"`
+	EnableBearerToken   bool     `yaml:"enable_bearer_token,omitempty"`
+	SessionCookieName   string   `yaml:"session_cookie_name,omitempty"`
+	SessionMaxAge       int      `yaml:"session_max_age,omitempty"`
+	SessionPath         string   `yaml:"session_path,omitempty"`
+	SessionDomain       string   `yaml:"session_domain,omitempty"`
+	SessionSecure       bool     `yaml:"session_secure,omitempty"`
+	SessionHTTPOnly     bool     `yaml:"session_http_only,omitempty"`
+	SessionSameSite     string   `yaml:"session_same_site,omitempty"`
 }
 
 type ListenerConfig struct {
@@ -77,6 +84,29 @@ func overrideFromEnv(config *GatewayConfig) {
 	if val := os.Getenv("OAUTH_ENABLE_BEARER_TOKEN"); val != "" {
 		config.OAuth.EnableBearerToken = val == "true" || val == "1"
 	}
+	if val := os.Getenv("OAUTH_SESSION_COOKIE_NAME"); val != "" {
+		config.OAuth.SessionCookieName = val
+	}
+	if val := os.Getenv("OAUTH_SESSION_MAX_AGE"); val != "" {
+		if maxAge, err := strconv.Atoi(val); err == nil {
+			config.OAuth.SessionMaxAge = maxAge
+		}
+	}
+	if val := os.Getenv("OAUTH_SESSION_PATH"); val != "" {
+		config.OAuth.SessionPath = val
+	}
+	if val := os.Getenv("OAUTH_SESSION_DOMAIN"); val != "" {
+		config.OAuth.SessionDomain = val
+	}
+	if val := os.Getenv("OAUTH_SESSION_SECURE"); val != "" {
+		config.OAuth.SessionSecure = val == "true" || val == "1"
+	}
+	if val := os.Getenv("OAUTH_SESSION_HTTP_ONLY"); val != "" {
+		config.OAuth.SessionHTTPOnly = val == "true" || val == "1"
+	}
+	if val := os.Getenv("OAUTH_SESSION_SAME_SITE"); val != "" {
+		config.OAuth.SessionSameSite = val
+	}
 
 	// Listener config overrides
 	if val := os.Getenv("LISTENER_ADDRESS"); val != "" {
@@ -99,6 +129,8 @@ func LoadConfig(path string) (*GatewayConfig, error) {
 
 	// Set defaults BEFORE unmarshaling to handle missing fields
 	config.OAuth.EnableBearerToken = true  // Default to true
+	config.OAuth.SessionSecure = true      // Default to true
+	config.OAuth.SessionHTTPOnly = true    // Default to true
 
 	if err := yaml.Unmarshal(data, &config); err != nil {
 		return nil, fmt.Errorf("failed to parse config: %w", err)
@@ -107,7 +139,7 @@ func LoadConfig(path string) (*GatewayConfig, error) {
 	// Override from environment variables
 	overrideFromEnv(&config)
 
-	// Set defaults
+	// Set defaults for session configuration
 	if config.Plugin.LibraryPath == "" {
 		config.Plugin.LibraryPath = "/app/go-envoy-oauth.so"
 	}
@@ -125,6 +157,23 @@ func LoadConfig(path string) (*GatewayConfig, error) {
 
 	if config.OAuth.Scopes == nil {
 		config.OAuth.Scopes = []string{"openid", "profile", "email"}
+	}
+
+	// Set session configuration defaults
+	if config.OAuth.SessionCookieName == "" {
+		config.OAuth.SessionCookieName = "session"
+	}
+	if config.OAuth.SessionMaxAge == 0 {
+		config.OAuth.SessionMaxAge = 86400 // 24 hours
+	}
+	if config.OAuth.SessionPath == "" {
+		config.OAuth.SessionPath = "/"
+	}
+	// SessionDomain defaults to empty (will be determined from request headers)
+	// SessionSecure defaults to true (already set above)
+	// SessionHTTPOnly defaults to true (already set above)
+	if config.OAuth.SessionSameSite == "" {
+		config.OAuth.SessionSameSite = "Lax"
 	}
 
 	for i := range config.Clients {
