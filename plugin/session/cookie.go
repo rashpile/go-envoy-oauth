@@ -72,8 +72,11 @@ func (cm *CookieManager) SetCookie(header api.RequestHeaderMap, value string) er
 			cookie += "; SameSite=None"
 		}
 	}
-	if cm.config.Domain != "" {
-		cookie += "; Domain=" + cm.config.Domain
+
+	// Determine cookie domain
+	domain := cm.getDomainFromHeaders(header)
+	if domain != "" {
+		cookie += "; Domain=" + domain
 	}
 
 	header.Set("set-cookie", cookie)
@@ -101,7 +104,9 @@ func (cm *CookieManager) GetCookie(header api.RequestHeaderMap) (string, error) 
 
 // DeleteCookie removes the session cookie
 func (cm *CookieManager) DeleteCookie(header api.RequestHeaderMap) {
-	header.Set("set-cookie", cm.formatCookie(""))
+	domain := cm.getDomainFromHeaders(header)
+	cookie := cm.formatCookieWithDomain("", domain)
+	header.Set("set-cookie", cookie)
 }
 
 // FormatCookie returns a formatted cookie string for use in Set-Cookie headers
@@ -110,9 +115,13 @@ func (cm *CookieManager) FormatCookie(value string) string {
 }
 
 func (cm *CookieManager) formatCookie(value string) string {
+	return cm.formatCookieWithDomain(value, cm.config.Domain)
+}
+
+func (cm *CookieManager) formatCookieWithDomain(value string, domain string) string {
 	cookie := fmt.Sprintf("%s=%s", cm.config.Name, value)
-	if cm.config.Domain != "" {
-		cookie += "; Domain=" + cm.config.Domain
+	if domain != "" {
+		cookie += "; Domain=" + domain
 	}
 	if cm.config.Path != "" {
 		cookie += "; Path=" + cm.config.Path
@@ -130,6 +139,46 @@ func (cm *CookieManager) formatCookie(value string) string {
 		cookie += "; SameSite=" + sameSiteString(cm.config.SameSite)
 	}
 	return cookie
+}
+
+// getDomainFromHeaders extracts the appropriate domain from request headers
+func (cm *CookieManager) getDomainFromHeaders(header api.RequestHeaderMap) string {
+	// If a domain is explicitly configured, use it
+	if cm.config.Domain != "" {
+		return cm.config.Domain
+	}
+
+	// Try X-Forwarded-Host first (for proxied requests)
+	if forwardedHost, ok := header.Get("x-forwarded-host"); ok && forwardedHost != "" {
+		// Extract domain from host (remove port if present)
+		domain := forwardedHost
+		if idx := strings.LastIndex(domain, ":"); idx != -1 {
+			domain = domain[:idx]
+		}
+		// Don't set Domain attribute for localhost - it causes issues with browsers
+		if domain == "localhost" || domain == "127.0.0.1" || strings.HasPrefix(domain, "192.168.") || strings.HasPrefix(domain, "10.") {
+			return ""
+		}
+		return domain
+	}
+
+	// Fall back to Host header
+	if host, ok := header.Get("host"); ok && host != "" {
+		// Extract domain from host (remove port if present)
+		domain := host
+		if idx := strings.LastIndex(domain, ":"); idx != -1 {
+			domain = domain[:idx]
+		}
+		// Don't set Domain attribute for localhost - it causes issues with browsers
+		if domain == "localhost" || domain == "127.0.0.1" || strings.HasPrefix(domain, "192.168.") || strings.HasPrefix(domain, "10.") {
+			return ""
+		}
+		return domain
+	}
+
+	// No domain found, cookie will be set without Domain attribute
+	// This makes it a host-only cookie (more restrictive but safer)
+	return ""
 }
 
 func sameSiteString(sameSite http.SameSite) string {

@@ -1,9 +1,14 @@
 version: "3.8"
+volumes:
+  keycloak_data:
+    driver: local
 
 services:
   keycloak:
     image: quay.io/keycloak/keycloak:26.3.4
     container_name: keycloak
+    volumes:
+      - keycloak_data:/opt/keycloak/data
     environment:
       - KC_HTTP_RELATIVE_PATH=/auth
     command: start-dev --bootstrap-admin-username tmpadm --bootstrap-admin-password pass
