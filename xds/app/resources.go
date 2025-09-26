@@ -72,6 +72,19 @@ func MakeListener(config *GatewayConfig) ([]types.Resource, error) {
 			}
 			clientConfig["exclude_paths"] = excludePathsInterface
 		}
+		// Add sso_injection configuration
+		// Only add if explicitly set to true (default is false)
+		if client.SsoInjection {
+			clientConfig["sso_injection"] = true
+		}
+		// Add sso_appurl if provided
+		if client.SsoAppURL != "" {
+			clientConfig["sso_appurl"] = client.SsoAppURL
+		}
+		// Add sso_appname if provided
+		if client.SsoAppName != "" {
+			clientConfig["sso_appname"] = client.SsoAppName
+		}
 		if len(clientConfig) > 0 {
 			clusters[client.ID] = clientConfig
 		}

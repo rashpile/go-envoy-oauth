@@ -27,6 +27,7 @@ clients:
     ssl: true # default false
     exclude: true # default false
     prefix: /ip #default /
+    sso_injection: false # optional, default: false - Enable SSO script injection for HTML pages
     exclude_paths: # optional
       - /healthz
       - /metrics
@@ -37,6 +38,7 @@ clients:
     ssl: true
     exclude: false
     prefix: /
+    sso_injection: true # optional, default: false - Enable SSO script injection for HTML pages
     exclude_paths:
       - /status/200
       - /status/201

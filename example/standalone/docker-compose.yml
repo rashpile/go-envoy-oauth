@@ -1,6 +1,7 @@
-version: "3.8"
 volumes:
   keycloak_data:
+    driver: local
+  shorts_data:
     driver: local
 
 services:
@@ -10,14 +11,25 @@ services:
     volumes:
       - keycloak_data:/opt/keycloak/data
     environment:
-      - KC_HTTP_RELATIVE_PATH=/auth
-    command: start-dev --bootstrap-admin-username tmpadm --bootstrap-admin-password pass
+      KC_HTTP_RELATIVE_PATH: /auth
+      # KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN}
+      # KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD}
+      # KC_PROXY_HEADERS: xforwarded
+    command: start-dev
     networks:
       - envoy-network
 
   http-echo:
     image: jmalloc/echo-server
     container_name: http-echo
+    networks:
+      - envoy-network
+
+  pk-shorts:
+    image: rashpile/pk-shorts
+    container_name: shorts
+    volumes:
+      - shorts_data:/app/data
     networks:
       - envoy-network
 
@@ -31,7 +43,7 @@ services:
       - OAUTH_CLIENTID=${CLIENT_ID}
       - OAUTH_ISSUERURL=${ISSUER_URL}
       - OAUTH_ENABLE_API_KEY=true
-      - LOG_LEVEL=INFO
+      - LOG_LEVEL=DEBUG
       - ACCESS_LOG=json
     ports:
       - "8081:8081"

@@ -25,6 +25,7 @@ type Session struct {
 // Filter implements the Envoy HTTP filter
 type Filter struct {
 	config              *OAuthConfig
+	cluster             string
 	oauthHandler        oauth.OAuthHandler
 	offlineTokenHandler *oauth.OfflineTokenHandler
 	sessionStore        session.SessionStore
@@ -40,6 +41,9 @@ type Filter struct {
 	requestHost   string
 	clientIP      string
 	userAgent     string
+	// SSO script injection
+	shouldInjectSSO bool
+	currentSession  *session.Session
 }
 
 // NewFilter creates a new filter instance
@@ -245,6 +249,9 @@ func (f *Filter) handleAuthFailure(statusCode int, message string) api.StatusTyp
 func (f *Filter) handleAuthSuccess(header api.RequestHeaderMap, session *session.Session) api.StatusType {
 	traceID := f.getTraceID(header)
 
+	// Store the current session for SSO script injection
+	f.currentSession = session
+
 	// Get header names from config or use defaults
 	userIDHeader := f.config.UserIDHeaderName
 	if userIDHeader == "" {
@@ -369,67 +376,6 @@ func (f *Filter) handleUnauthenticatedRequest(header api.RequestHeaderMap, path 
 			zap.Error(err))
 		return f.handleAuthFailure(401, fmt.Sprintf("Unauthorized: %s", context))
 	}
-}
-
-// DecodeHeaders is called when request headers are received
-func (f *Filter) DecodeHeaders(header api.RequestHeaderMap, endStream bool) api.StatusType {
-	method, _ := header.Get(":method")
-	path, _ := header.Get(":path")
-	host, _ := header.Get(":authority")
-	traceID := f.getTraceID(header)
-
-	// Capture request information for access logging
-	if IsAccessLogEnabled() {
-		f.requestStart = time.Now()
-		f.requestMethod = method
-		f.requestPath = path
-		f.requestHost = host
-		f.clientIP, _ = header.Get("x-forwarded-for")
-		if f.clientIP == "" {
-			f.clientIP, _ = header.Get("x-real-ip")
-		}
-		f.userAgent, _ = header.Get("user-agent")
-	}
-
-	f.logger.Debug("Processing request headers",
-		zap.String("method", method),
-		zap.String("path", sanitizePathForLogging(path)),
-		zap.String("host", host),
-		zap.String("trace_id", traceID),
-	)
-
-	// Get the request path and cluster
-	// cluster, _ := header.Get(":authority")
-	cluster := getClusterName(f.callbacks)
-
-	f.logger.Debug(fmt.Sprintf("path: %s, cluster: %s, trace_id: %s", sanitizePathForLogging(path), cluster, traceID))
-
-	if f.config.SkipAuthHeaderName != "" {
-		if username, exists := header.Get(f.config.SkipAuthHeaderName); exists && username != "" {
-			f.logger.Debug("Skipping authentication - header already exists",
-				zap.String("header", f.config.SkipAuthHeaderName),
-				zap.String("username", username),
-				zap.String("trace_id", traceID))
-			return api.Continue
-		}
-	}
-
-	// Check if the path should be excluded
-	if !strings.HasPrefix(path, "/oauth/") && f.isPathExcluded(path, cluster) {
-		f.logger.Debug("Path is excluded from authentication",
-			zap.String("path", sanitizePathForLogging(path)),
-			zap.String("trace_id", traceID))
-		return api.Continue
-	}
-
-	// Initialize OAuth handler if needed (before handling any OAuth endpoints)
-	if f.oauthHandler == nil {
-		return f.handleAsyncOAuthHandler(header, traceID, path, f.handleDecodeHeaders)
-	}
-	if f.config.EnableAPIKey && f.config.EnableBearerToken && f.extractAPIToken(header) != "" {
-		return f.handleAsyncDecodeHeaders(header, path, traceID, f.handleDecodeHeaders)
-	}
-	return f.handleDecodeHeaders(header, path, traceID)
 }
 
 func (f *Filter) handleDecodeHeaders(header api.RequestHeaderMap, path string, traceID string) api.StatusType {
@@ -603,21 +549,23 @@ func (f *Filter) handleOAuthEndpoints(header api.RequestHeaderMap, path string) 
 		zap.String("full_path", path),
 		zap.String("trace_id", traceID))
 
-	switch basePath {
-	case "/oauth/login":
+	switch {
+	case basePath == "/oauth/login":
 		return f.handleLogin(header)
-	case "/oauth/callback":
+	case basePath == "/oauth/callback":
 		return f.handleCallback(header)
-	case "/oauth/logout":
+	case basePath == "/oauth/logout":
 		return f.handleLogout(header)
-	case "/oauth/welcome":
+	case basePath == "/oauth/welcome":
 		return f.handleWelcome(header)
-	case "/oauth/consent":
+	case basePath == "/oauth/consent":
 		return f.handleOfflineConsent(header)
-	case "/oauth/offline":
+	case basePath == "/oauth/offline":
 		return f.handleOfflineRedirect(header)
-	case "/oauth/offline-callback":
+	case basePath == "/oauth/offline-callback":
 		return f.handleOfflineCallback(header, path)
+	case strings.HasPrefix(basePath, "/oauth/assets/"):
+		return f.handleAssets(header)
 	default:
 		return f.handleAuthFailure(404, "Not Found: Unknown OAuth endpoint")
 	}
@@ -705,48 +653,6 @@ func (f *Filter) handleLogout(header api.RequestHeaderMap) api.StatusType {
 	}
 
 	return f.handleRedirect(logoutURL, "")
-}
-
-// EncodeHeaders is called when response headers are being sent
-// This can be used to add cookies to responses after successful auth
-func (f *Filter) EncodeHeaders(header api.ResponseHeaderMap, endStream bool) api.StatusType {
-	// Log access if enabled
-	if IsAccessLogEnabled() && f.requestStart.Unix() > 0 {
-		statusStr, _ := header.Get(":status")
-		statusCode := 200 // default
-		if statusStr != "" {
-			// Parse status code from string
-			if len(statusStr) >= 3 {
-				switch statusStr[0] {
-				case '2':
-					statusCode = 200
-				case '3':
-					statusCode = 300
-				case '4':
-					statusCode = 400
-				case '5':
-					statusCode = 500
-				}
-				// Try to parse the actual code
-				var code int
-				if n, _ := fmt.Sscanf(statusStr, "%d", &code); n == 1 {
-					statusCode = code
-				}
-			}
-		}
-
-		// Calculate response time
-		responseTime := time.Since(f.requestStart).Seconds() * 1000 // convert to ms
-
-		// Log the access
-		LogAccess(f.requestMethod, f.requestPath, f.requestHost,
-			f.clientIP, f.userAgent, statusCode, responseTime)
-
-		// Reset the request tracking
-		f.requestStart = time.Time{}
-	}
-
-	return api.Continue
 }
 
 func (f *Filter) isPathExcluded(path, cluster string) bool {
@@ -894,10 +800,6 @@ func convertSameSite(s string) http.SameSite {
 
 // Implement required StreamFilter interface methods
 func (f *Filter) DecodeData(buffer api.BufferInstance, endStream bool) api.StatusType {
-	return api.Continue
-}
-
-func (f *Filter) EncodeData(buffer api.BufferInstance, endStream bool) api.StatusType {
 	return api.Continue
 }
 

@@ -53,6 +53,9 @@ type ClientConfig struct {
 	Exclude      bool     `yaml:"exclude"`
 	Prefix       string   `yaml:"prefix"`
 	ExcludePaths []string `yaml:"exclude_paths,omitempty"`
+	SsoInjection bool     `yaml:"sso_injection,omitempty"`
+	SsoAppURL    string   `yaml:"sso_appurl,omitempty"`
+	SsoAppName   string   `yaml:"sso_appname,omitempty"`
 }
 
 // overrideFromEnv overrides configuration values from environment variables
