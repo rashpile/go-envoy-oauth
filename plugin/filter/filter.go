@@ -179,7 +179,7 @@ func (f *Filter) createOAuthHandler(config *OAuthConfig, cookieManager *session.
 		Scopes:       config.Scopes,
 	}
 
-	oauthHandler, err := oauth.NewOAuthHandler(oauthConfig, config.SessionStore, cookieManager)
+	oauthHandler, err := oauth.NewOAuthHandler(oauthConfig, config.SessionStore, cookieManager, logger)
 	if err != nil {
 		// Use Warn level but without stack trace for expected IDP connectivity issues
 		logger.Warn("Failed to create OAuth handler (IDP may be unavailable)",
@@ -610,6 +610,8 @@ func (f *Filter) handleOAuthEndpoints(header api.RequestHeaderMap, path string) 
 		return f.handleCallback(header)
 	case "/oauth/logout":
 		return f.handleLogout(header)
+	case "/oauth/welcome":
+		return f.handleWelcome(header)
 	case "/oauth/consent":
 		return f.handleOfflineConsent(header)
 	case "/oauth/offline":
@@ -694,7 +696,7 @@ func (f *Filter) handleLogout(header api.RequestHeaderMap) api.StatusType {
 
 	f.logger.Debug("Handling logout request",
 		zap.String("trace_id", traceID))
-	err := f.oauthHandler.HandleLogout(header)
+	logoutURL, err := f.oauthHandler.HandleLogout(header)
 	if err != nil {
 		f.logger.Error("Failed to handle logout",
 			zap.String("trace_id", traceID),
@@ -702,7 +704,7 @@ func (f *Filter) handleLogout(header api.RequestHeaderMap) api.StatusType {
 		return f.handleAuthFailure(500, "Internal Server Error: Failed to process logout")
 	}
 
-	return f.handleRedirect("/", "")
+	return f.handleRedirect(logoutURL, "")
 }
 
 // EncodeHeaders is called when response headers are being sent

@@ -30,18 +30,19 @@ type OIDCConfig struct {
 
 // OIDCProvider represents the OpenID Connect provider configuration
 type OIDCProvider struct {
-	Issuer           string   `json:"issuer"`
-	AuthEndpoint     string   `json:"authorization_endpoint"`
-	TokenEndpoint    string   `json:"token_endpoint"`
-	UserInfoEndpoint string   `json:"userinfo_endpoint"`
-	JWKSURI          string   `json:"jwks_uri"`
-	ScopesSupported  []string `json:"scopes_supported"`
+	Issuer             string   `json:"issuer"`
+	AuthEndpoint       string   `json:"authorization_endpoint"`
+	TokenEndpoint      string   `json:"token_endpoint"`
+	UserInfoEndpoint   string   `json:"userinfo_endpoint"`
+	EndSessionEndpoint string   `json:"end_session_endpoint"`
+	JWKSURI            string   `json:"jwks_uri"`
+	ScopesSupported    []string `json:"scopes_supported"`
 }
 
 type OAuthHandler interface {
 	HandleAuthRedirect(header api.RequestHeaderMap, redirectURI string) error
 	HandleCallback(header api.RequestHeaderMap, query string) error
-	HandleLogout(header api.RequestHeaderMap) error
+	HandleLogout(header api.RequestHeaderMap) (string, error)
 	ValidateSession(session *session.Session) error
 	IsNeedValidateSession(session *session.Session) bool
 	ValidateBearerToken(ctx context.Context, token string) (*session.Session, error)
@@ -63,15 +64,24 @@ type OAuthHandlerImpl struct {
 	refreshTokenCache map[string]*tokenCacheEntry // maps refresh token hash -> access token
 	cacheMu           sync.RWMutex
 	mu                sync.Mutex
+	logger            *zap.Logger
 }
 
 // NewOAuthHandler creates a new OAuth handler
-func NewOAuthHandler(config *OIDCConfig, sessionStore session.SessionStore, cookieManager *session.CookieManager) (OAuthHandler, error) {
+func NewOAuthHandler(config *OIDCConfig, sessionStore session.SessionStore, cookieManager *session.CookieManager, logger *zap.Logger) (OAuthHandler, error) {
 	// Fetch OpenID Connect configuration
 	provider, err := fetchOIDCConfig(config.IssuerURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch OIDC config: %v", err)
 	}
+
+	// Log the discovered endpoints
+	logger.Debug("OIDC Provider discovered",
+		zap.String("issuer", provider.Issuer),
+		zap.String("auth_endpoint", provider.AuthEndpoint),
+		zap.String("token_endpoint", provider.TokenEndpoint),
+		zap.String("userinfo_endpoint", provider.UserInfoEndpoint),
+		zap.String("end_session_endpoint", provider.EndSessionEndpoint))
 
 	// Create OAuth2 config
 	oauth2Config := &oauth2.Config{
@@ -87,10 +97,10 @@ func NewOAuthHandler(config *OIDCConfig, sessionStore session.SessionStore, cook
 
 	// Create token validator for bearer token authentication
 	var tokenValidator *TokenValidator
-	tokenValidator, err = NewTokenValidator(config.IssuerURL, config.ClientID, GetLogger())
+	tokenValidator, err = NewTokenValidator(config.IssuerURL, config.ClientID, logger)
 	if err != nil {
 		// Log error but don't fail - bearer token auth will be disabled
-		GetLogger().Error("Failed to create token validator, bearer token auth will be disabled",
+		logger.Error("Failed to create token validator, bearer token auth will be disabled",
 			zap.Error(err),
 			zap.String("issuer_url", config.IssuerURL))
 		tokenValidator = nil
@@ -104,6 +114,7 @@ func NewOAuthHandler(config *OIDCConfig, sessionStore session.SessionStore, cook
 		cookieManager:     cookieManager,
 		tokenValidator:    tokenValidator,
 		refreshTokenCache: make(map[string]*tokenCacheEntry),
+		logger:            logger,
 	}, nil
 }
 
@@ -235,11 +246,18 @@ func (h *OAuthHandlerImpl) HandleCallback(header api.RequestHeaderMap, query str
 		return fmt.Errorf("invalid user info: sub claim not found")
 	}
 
+	// Extract ID token if available
+	idToken := ""
+	if idTokenRaw, ok := token.Extra("id_token").(string); ok {
+		idToken = idTokenRaw
+	}
+
 	// Create a new session for the authenticated user
 	session := &session.Session{
 		ID:           generateRandomState(), // Use a new random ID for the user session
 		UserID:       sub,
 		Token:        token.AccessToken,
+		IDToken:      idToken,
 		RefreshToken: token.RefreshToken, // Store refresh token for future use
 		Claims:       userInfo,
 		CreatedAt:    time.Now(),
@@ -258,18 +276,77 @@ func (h *OAuthHandlerImpl) HandleCallback(header api.RequestHeaderMap, query str
 	return nil
 }
 
-func (h *OAuthHandlerImpl) HandleLogout(header api.RequestHeaderMap) error {
+func (h *OAuthHandlerImpl) HandleLogout(header api.RequestHeaderMap) (string, error) {
+	h.logger.Debug("HandleLogout started",
+		zap.String("provider_issuer", h.provider.Issuer),
+		zap.String("end_session_endpoint", h.provider.EndSessionEndpoint),
+		zap.Bool("has_end_session", h.provider.EndSessionEndpoint != ""))
+
 	sessionID, err := h.cookieManager.GetCookie(header)
 	if err != nil {
-		return err
+		h.logger.Debug("No session cookie found", zap.Error(err))
+		return "", err
 	}
 
+	// Get the session to retrieve ID token for logout
+	sess, err := h.sessionStore.Get(sessionID)
+	if err != nil {
+		// Session not found, just clear the cookie
+		h.logger.Debug("Session not found, clearing cookie", zap.Error(err))
+		h.cookieManager.DeleteCookie(header)
+		return "/", nil
+	}
+
+	h.logger.Debug("Session found for logout",
+		zap.String("user_id", sess.UserID),
+		zap.Bool("has_id_token", sess.IDToken != ""))
+
+	// Delete the session from store
 	if err := h.sessionStore.Delete(sessionID); err != nil {
-		return err
+		return "", err
 	}
 
+	// Clear the cookie
 	h.cookieManager.DeleteCookie(header)
-	return nil
+
+	// If IDP supports end_session_endpoint, redirect to it
+	if h.provider.EndSessionEndpoint != "" {
+		// Build the logout URL with required parameters
+		logoutURL, err := url.Parse(h.provider.EndSessionEndpoint)
+		if err != nil {
+			return "", fmt.Errorf("failed to parse end_session_endpoint: %v", err)
+		}
+
+		params := logoutURL.Query()
+
+		// Add ID token hint if available
+		if sess.IDToken != "" {
+			params.Set("id_token_hint", sess.IDToken)
+		}
+
+		// Get the post-logout redirect URI
+		postLogoutRedirectURI := h.GetPostLogoutRedirectURI(header)
+		if postLogoutRedirectURI != "" {
+			params.Set("post_logout_redirect_uri", postLogoutRedirectURI)
+			// Add state parameter for security
+			state := generateRandomState()
+			params.Set("state", state)
+		}
+
+		logoutURL.RawQuery = params.Encode()
+
+		h.logger.Debug("Redirecting to IDP logout endpoint",
+			zap.String("logout_url", logoutURL.String()),
+			zap.String("endpoint", h.provider.EndSessionEndpoint),
+			zap.Bool("has_id_token", sess.IDToken != ""),
+			zap.String("post_logout_redirect", postLogoutRedirectURI))
+
+		return logoutURL.String(), nil
+	}
+
+	// No IDP logout endpoint, just redirect to home
+	h.logger.Debug("IDP does not support end_session_endpoint, performing local logout only")
+	return "/", nil
 }
 
 func (h *OAuthHandlerImpl) IsNeedValidateSession(session *session.Session) bool {
@@ -373,6 +450,62 @@ func generateRandomState() string {
 	return base64.RawURLEncoding.EncodeToString(b)
 }
 
+// GetPostLogoutRedirectURI returns the post-logout redirect URI
+func (h *OAuthHandlerImpl) GetPostLogoutRedirectURI(header api.RequestHeaderMap) string {
+	// First check if redirect_uri is provided in query params
+	path, _ := header.Get(":path")
+	if path != "" {
+		// Parse query parameters from the path
+		if idx := strings.Index(path, "?"); idx > 0 {
+			queryString := path[idx+1:]
+			if params, err := url.ParseQuery(queryString); err == nil {
+				if redirectURI := params.Get("redirect_uri"); redirectURI != "" {
+					// Validate that it's a relative path or same-origin URL for security
+					if strings.HasPrefix(redirectURI, "/") {
+						// Relative path - make it absolute
+						host, _ := header.Get(":authority")
+						if host == "" {
+							host, _ = header.Get("host")
+						}
+						if forwardedHost, _ := header.Get("x-forwarded-host"); forwardedHost != "" {
+							host = forwardedHost
+						}
+
+						scheme := "http"
+						if forwardedProto, _ := header.Get("x-forwarded-proto"); forwardedProto == "https" {
+							scheme = "https"
+						}
+
+						return fmt.Sprintf("%s://%s%s", scheme, host, redirectURI)
+					}
+					// For absolute URLs, return as-is (you may want to validate the domain)
+					return redirectURI
+				}
+			}
+		}
+	}
+
+	// Fall back to /oauth/welcome page
+	// Get the host from the request
+	host, _ := header.Get(":authority")
+	if host == "" {
+		host, _ = header.Get("host")
+	}
+
+	if forwardedHost, _ := header.Get("x-forwarded-host"); forwardedHost != "" {
+		host = forwardedHost
+	}
+
+	// Determine the scheme
+	scheme := "http"
+	if forwardedProto, _ := header.Get("x-forwarded-proto"); forwardedProto == "https" {
+		scheme = "https"
+	}
+
+	// Return the welcome page URL
+	return fmt.Sprintf("%s://%s/oauth/welcome", scheme, host)
+}
+
 // RefreshToken attempts to refresh an expired access token
 func (h *OAuthHandlerImpl) RefreshToken(session *session.Session) error {
 	if session.Token == "" {
@@ -458,7 +591,7 @@ func (h *OAuthHandlerImpl) ExchangeRefreshToken(ctx context.Context, refreshToke
 		// Check if token is still valid (with 1 minute buffer)
 		if time.Now().Add(1 * time.Minute).Before(cached.expiry) {
 			h.cacheMu.RUnlock()
-			GetLogger().Debug("Using cached access token for refresh token")
+			h.logger.Debug("Using cached access token for refresh token")
 			return cached.accessToken, nil
 		}
 	}
@@ -472,7 +605,7 @@ func (h *OAuthHandlerImpl) ExchangeRefreshToken(ctx context.Context, refreshToke
 	// Get new token (this will use the refresh token to get a new access token)
 	token, err := tokenSource.Token()
 	if err != nil {
-		GetLogger().Error("Failed to exchange refresh token for access token",
+		h.logger.Error("Failed to exchange refresh token for access token",
 			zap.Error(err))
 		return "", fmt.Errorf("failed to exchange refresh token: %v", err)
 	}
@@ -492,7 +625,7 @@ func (h *OAuthHandlerImpl) ExchangeRefreshToken(ctx context.Context, refreshToke
 	h.cacheMu.Unlock()
 
 	// Log successful exchange
-	GetLogger().Debug("Successfully exchanged refresh token for access token",
+	h.logger.Debug("Successfully exchanged refresh token for access token",
 		zap.String("token_type", token.TokenType),
 		zap.Time("expiry", token.Expiry))
 
