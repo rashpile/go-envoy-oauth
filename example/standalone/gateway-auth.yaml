@@ -28,7 +28,10 @@ clients:
     port: 443 # default 8080
     ssl: true # default false
     exclude: false
-    prefix: /ip #default /
+    sso_injection: true
+    sso_appurl: http://localhost:8081/
+    sso_appname: Admin
+    prefix: /
     exclude_paths: # optional
       - /healthz
       - /metrics
@@ -40,6 +43,9 @@ clients:
     ssl: false
     exclude: false
     prefix: /echo
+    sso_injection: true
+    sso_appurl: http://localhost:8081/echo
+    sso_appname: Echo
     exclude_paths:
       - /status/200
       - /status/201
@@ -52,13 +58,17 @@ clients:
     exclude: false
     exclude_paths:
       - /favicon.ico
+  - id: shortsui_service_cluster
+    domain: localhost:8081
+    address: shorts
+    port: 8080
+    prefix: /sui
+    sso_injection: true
+    sso_appurl: http://localhost:8081/sui
+    sso_appname: Shorts
   - id: shorts_service_cluster
     domain: localhost:8081
     address: shorts
     port: 8080
-    prefix: /
-    sso_injection: true
-    sso_appurl: http://localhost:8081/sui
-    sso_appname: Shorts
-    exclude_paths:
-      - /s/
+    prefix: /s
+    exclude: true

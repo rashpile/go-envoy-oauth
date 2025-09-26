@@ -2,6 +2,7 @@ package filter
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -148,6 +149,17 @@ func (f *Filter) EncodeHeaders(header api.ResponseHeaderMap, endStream bool) api
 			f.logger.Debug("HTML response detected, will inject SSO script",
 				zap.String("content_type", contentType),
 				zap.Bool("has_session", f.currentSession != nil))
+		}
+	}
+	c := f.config.Clusters[f.cluster]
+
+	if f.currentSession != nil && c.SsoInjection && f.shouldInjectSSO {
+		contentLength, _ := header.Get("content-length")
+		if contentLength != "" {
+			contentLengthInt, _ := strconv.Atoi(contentLength)
+			if contentLengthInt > 0 {
+				header.Set("content-length", strconv.Itoa(contentLengthInt+len(f.buildSSOScriptTag())))
+			}
 		}
 	}
 
