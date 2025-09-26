@@ -1,6 +1,7 @@
 package filter
 
 import (
+	"net/url"
 	"strings"
 
 	"github.com/envoyproxy/envoy/contrib/golang/common/go/api"
@@ -17,11 +18,33 @@ func (f *Filter) handleWelcome(header api.RequestHeaderMap) api.StatusType {
 		zap.String("trace_id", traceID),
 		zap.String("path", path))
 
-	// If there are query parameters (like state), redirect to clean URL
+	// Extract home-url parameter if present
+	homeURL := "/"
 	if strings.Contains(path, "?") {
-		f.logger.Debug("Redirecting to clean welcome URL without query params",
-			zap.String("trace_id", traceID))
-		return f.handleRedirect("/oauth/welcome", "")
+		if idx := strings.Index(path, "?"); idx > 0 {
+			queryString := path[idx+1:]
+			if params, err := url.ParseQuery(queryString); err == nil {
+				if paramHomeURL := params.Get("home-url"); paramHomeURL != "" {
+					homeURL = paramHomeURL
+				}
+				// Check if we need to redirect to clean URL (removing state but keeping home-url)
+				if params.Get("state") != "" {
+					// Remove state parameter but keep home-url
+					cleanParams := url.Values{}
+					if paramHomeURL := params.Get("home-url"); paramHomeURL != "" {
+						cleanParams.Set("home-url", paramHomeURL)
+					}
+					cleanURL := "/oauth/welcome"
+					if len(cleanParams) > 0 {
+						cleanURL += "?" + cleanParams.Encode()
+					}
+					f.logger.Debug("Redirecting to clean welcome URL without state param",
+						zap.String("trace_id", traceID),
+						zap.String("clean_url", cleanURL))
+					return f.handleRedirect(cleanURL, "")
+				}
+			}
+		}
 	}
 
 	// Set response headers
@@ -32,7 +55,7 @@ func (f *Filter) handleWelcome(header api.RequestHeaderMap) api.StatusType {
 	// Send the welcome page HTML
 	f.callbacks.DecoderFilterCallbacks().SendLocalReply(
 		200, // HTTP 200 OK
-		getWelcomeHTML(),
+		getWelcomeHTML(homeURL),
 		map[string][]string{
 			"content-type":  {"text/html; charset=utf-8"},
 			"cache-control": {"no-cache, no-store, must-revalidate"},
@@ -45,7 +68,19 @@ func (f *Filter) handleWelcome(header api.RequestHeaderMap) api.StatusType {
 }
 
 // getWelcomeHTML returns the HTML content for the welcome page
-func getWelcomeHTML() string {
+func getWelcomeHTML(homeURL string) string {
+	// Escape the URL for safe inclusion in HTML
+	if homeURL == "" {
+		homeURL = "/"
+	}
+
+	// Escape HTML special characters in the URL
+	homeURL = strings.ReplaceAll(homeURL, "&", "&amp;")
+	homeURL = strings.ReplaceAll(homeURL, "<", "&lt;")
+	homeURL = strings.ReplaceAll(homeURL, ">", "&gt;")
+	homeURL = strings.ReplaceAll(homeURL, "\"", "&quot;")
+	homeURL = strings.ReplaceAll(homeURL, "'", "&#39;")
+
 	return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -116,7 +151,7 @@ func getWelcomeHTML() string {
         <p>Thank you for using our service.</p>
         <div class="buttons">
             <a href="/oauth/login">Sign In Again</a>
-            <a href="/" class="home-link">Go to Home</a>
+            <a href="` + homeURL + `" class="home-link">Go to Home</a>
         </div>
     </div>
 </body>

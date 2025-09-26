@@ -19,12 +19,15 @@ clients:
     ssl: false # default false
     exclude: true # default false
     prefix: /auth #default /
+    sso_injection: true
+    sso_appurl: http://localhost:8081/auth
+    sso_appname: Keycloak
   - id: admin_cluster #required
     address: httpbin.org # required
     domain: localhost:8081
     port: 443 # default 8080
     ssl: true # default false
-    exclude: true # default false
+    exclude: false
     prefix: /ip #default /
     exclude_paths: # optional
       - /healthz
@@ -36,7 +39,7 @@ clients:
     port: 8080
     ssl: false
     exclude: false
-    prefix: /
+    prefix: /echo
     exclude_paths:
       - /status/200
       - /status/201
@@ -49,3 +52,13 @@ clients:
     exclude: false
     exclude_paths:
       - /favicon.ico
+  - id: shorts_service_cluster
+    domain: localhost:8081
+    address: shorts
+    port: 8080
+    prefix: /
+    sso_injection: true
+    sso_appurl: http://localhost:8081/sui
+    sso_appname: Shorts
+    exclude_paths:
+      - /s/

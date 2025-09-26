@@ -20,6 +20,9 @@ import (
 // ClusterConfig represents the configuration for a specific cluster
 type ClusterConfig struct {
 	Exclude      bool
+	SsoInjection bool
+	SsoAppURL    string
+	SsoAppName   string
 	ExcludePaths []string
 }
 
@@ -167,7 +170,6 @@ func (p *Parser) Parse(any *anypb.Any, callbacks api.ConfigCallbackHandler) (int
 		}
 	}
 
-
 	// Parse header configuration
 	if userIDHeaderName, ok := v.AsMap()["user_id_header_name"].(string); ok {
 		conf.UserIDHeaderName = userIDHeaderName
@@ -210,6 +212,7 @@ func (p *Parser) Parse(any *anypb.Any, callbacks api.ConfigCallbackHandler) (int
 			if config, ok := clusterConfig.(map[string]interface{}); ok {
 				clusterConf := ClusterConfig{
 					ExcludePaths: []string{},
+					SsoInjection: false,
 				}
 				if exclude, ok := config["exclude"].(bool); ok {
 					clusterConf.Exclude = exclude
@@ -221,6 +224,15 @@ func (p *Parser) Parse(any *anypb.Any, callbacks api.ConfigCallbackHandler) (int
 							clusterConf.ExcludePaths[i] = path
 						}
 					}
+				}
+				if ssoInjection, ok := config["sso_injection"].(bool); ok {
+					clusterConf.SsoInjection = ssoInjection
+				}
+				if ssoAppURL, ok := config["sso_appurl"].(string); ok {
+					clusterConf.SsoAppURL = ssoAppURL
+				}
+				if ssoAppName, ok := config["sso_appname"].(string); ok {
+					clusterConf.SsoAppName = ssoAppName
 				}
 				conf.Clusters[clusterName] = clusterConf
 			}
