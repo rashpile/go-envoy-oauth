@@ -244,9 +244,16 @@ func (s *XDSServer) Start(port int) error {
 		if err := s.startHTTPChallenge(); err != nil {
 			return fmt.Errorf("failed to start HTTP challenge server: %w", err)
 		}
+
+		// Load existing certificates into SDS if available
+		if s.sdsServer != nil {
+			if err := s.sdsServer.loadCertificates(); err != nil {
+				log.Printf("Warning: failed to load initial certificates for SDS: %v", err)
+			}
+		}
 	}
 
-	// Create initial snapshot
+	// Create initial snapshot (will include secrets if loaded)
 	if err := s.updateSnapshot(); err != nil {
 		return fmt.Errorf("failed to create initial snapshot: %w", err)
 	}
