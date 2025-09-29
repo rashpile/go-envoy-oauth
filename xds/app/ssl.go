@@ -97,14 +97,7 @@ func (s *XDSServer) startHTTPChallenge() error {
 		return nil
 	}
 
-	// Manage certificates (obtain or renew)
-	ctx := context.Background()
-	if err := s.certManager.ManageSync(ctx, domains); err != nil {
-		return fmt.Errorf("manage certs: %v", err)
-	}
-	log.Printf("Certificates managed for: %s", strings.Join(domains, ", "))
-
-	// Setup HTTP server for ACME challenges
+	// Setup HTTP server for ACME challenges FIRST
 	mux := http.NewServeMux()
 	acme := certmagic.NewACMEIssuer(s.certManager, certmagic.DefaultACME)
 
@@ -129,13 +122,24 @@ func (s *XDSServer) startHTTPChallenge() error {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
-	// Start HTTP server in background
+	// Start HTTP server in background BEFORE managing certificates
 	go func() {
 		log.Printf("HTTP-01 challenge server listening on port %d", httpPort)
 		if err := s.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Printf("HTTP server error: %v", err)
 		}
 	}()
+
+	// Give the HTTP server a moment to start
+	time.Sleep(100 * time.Millisecond)
+
+	// Now manage certificates (obtain or renew) - this will use the HTTP server for challenges
+	log.Printf("Managing certificates for domains: %s", strings.Join(domains, ", "))
+	ctx := context.Background()
+	if err := s.certManager.ManageSync(ctx, domains); err != nil {
+		return fmt.Errorf("manage certs: %v", err)
+	}
+	log.Printf("Certificates obtained/renewed for: %s", strings.Join(domains, ", "))
 
 	return nil
 }
