@@ -7,11 +7,9 @@ The SSO Script Injection feature automatically injects a Single Sign-On (SSO) us
 ## How It Works
 
 1. **HTML Detection**: The filter detects HTML responses by checking the Content-Type header for `text/html`
-2. **Script Injection**: For authenticated users, the filter injects:
-   - User metadata (name, email) as HTML meta tags
-   - Application links from configured clusters
-   - A JavaScript file that creates the SSO menu UI
-3. **Menu Rendering**: The injected JavaScript creates an account button in the top-right corner showing:
+2. **Script Injection**: For authenticated users, the filter injects a JavaScript file reference into the HTML
+3. **Data Fetching**: The injected JavaScript fetches user data from the `/oauth/user` API endpoint
+4. **Menu Rendering**: The JavaScript creates an account button in the top-right corner showing:
    - User initials in a circular button
    - Dropdown menu with user info, application links, and logout option
 
@@ -63,21 +61,10 @@ clients:
 
 1. **EncodeHeaders**: Checks Content-Type header for HTML responses
 2. **EncodeData**: Modifies response body to inject script after `<head>` tag
-3. **Script Injection**: Adds meta tags and script reference to `/oauth/assets/sso.js`
+3. **Script Injection**: Adds script reference to `/oauth/assets/sso.js`
 
-### Injected Elements
+### Injected Element
 
-#### Meta Tags
-```html
-<meta name="sso-user-name" content="John Doe">
-<meta name="sso-user-email" content="john@example.com">
-<meta name="sso-app-0-url" content="http://app1.example.com">
-<meta name="sso-app-0-name" content="Application 1">
-<meta name="sso-app-1-url" content="http://app2.example.com">
-<meta name="sso-app-1-name" content="Application 2">
-```
-
-#### Script Tag
 ```html
 <script src="/oauth/assets/sso.js" defer></script>
 ```
@@ -86,11 +73,11 @@ clients:
 
 The SSO script (`/oauth/assets/sso.js`) provides:
 
-1. **Auto-positioning**: If no element with `id="sso-menu"` exists, creates a fixed-position container
-2. **User Data Extraction**: Reads user info from meta tags
-3. **Application Discovery**: Finds all configured applications from meta tags
-4. **Menu Creation**: Builds and renders the dropdown menu
-5. **Logout Flow**: Handles logout with proper OIDC flow and post-logout redirect
+1. **API Data Fetching**: Makes a request to `/oauth/user` to get user info and configured applications
+2. **Auto-positioning**: If no element with `id="sso-menu"` exists, creates a fixed-position container
+3. **Menu Creation**: Builds and renders the dropdown menu with fetched data
+4. **Logout Flow**: Handles logout with proper OIDC flow and post-logout redirect
+5. **Error Handling**: Falls back to default values if API call fails
 
 ## Example Configuration
 
@@ -186,18 +173,20 @@ The SSO menu uses inline styles for consistency across applications. Key CSS cla
 2. Verify the response Content-Type includes `text/html`
 3. Check browser console for JavaScript errors
 4. Ensure user is authenticated (has valid session)
+5. Verify `/oauth/user` endpoint is accessible and returns valid JSON
 
 ### Wrong User Information
 
-1. Verify OIDC provider returns correct claims
-2. Check that `name` or `preferred_username` claim is present
-3. Verify `email` claim is available
+1. Test the `/oauth/user` endpoint directly in browser
+2. Verify OIDC provider returns correct claims
+3. Check that `name` or `preferred_username` claim is present
+4. Verify `email` claim is available in the session
 
 ### Application Links Missing
 
-1. Ensure both `sso_appurl` and `sso_appname` are configured
-2. Check that values are properly escaped in the configuration
-3. Verify meta tags are present in the HTML source
+1. Ensure both `sso_appurl` and `sso_appname` are configured for each cluster
+2. Test `/oauth/user` endpoint to verify apps array is populated
+3. Check browser console for any JavaScript errors when rendering menu
 
 ## API Endpoints
 
@@ -206,6 +195,28 @@ The SSO menu uses inline styles for consistency across applications. Key CSS cla
 - **Method**: GET
 - **Authentication**: Not required (public asset)
 - **Cache**: 1 hour (`cache-control: public, max-age=3600`)
+
+### `/oauth/user`
+- **Purpose**: Returns current user information and configured applications as JSON
+- **Method**: GET
+- **Authentication**: Required (must have valid session)
+- **Response Format**:
+```json
+{
+  "name": "John Doe",
+  "email": "john@example.com",
+  "apps": [
+    {
+      "app": "Application Name",
+      "url": "https://app.example.com"
+    }
+  ]
+}
+```
+- **Status Codes**:
+  - `200`: Success - returns user info
+  - `401`: Unauthorized - no valid session
+  - `500`: Internal error - failed to generate response
 
 ## Browser Compatibility
 

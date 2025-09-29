@@ -82,59 +82,10 @@ func (f *Filter) findInjectionPoint(html string) int {
 	return -1
 }
 
-// buildSSOScriptTag builds the script tag with user info
+// buildSSOScriptTag builds the script tag
 func (f *Filter) buildSSOScriptTag() string {
-	var builder strings.Builder
-
-	// Add meta tags for user info if available
-	if f.currentSession != nil && f.currentSession.Claims != nil {
-		// Try to extract user info from claims
-		userName := ""
-		userEmail := ""
-
-		if name, ok := f.currentSession.Claims["name"].(string); ok {
-			userName = name
-		} else if name, ok := f.currentSession.Claims["preferred_username"].(string); ok {
-			userName = name
-		}
-
-		if email, ok := f.currentSession.Claims["email"].(string); ok {
-			userEmail = email
-		}
-
-		// Add meta tags if we have user info
-		if userName != "" {
-			builder.WriteString(fmt.Sprintf("\n<meta name=\"sso-user-name\" content=\"%s\">", escapeHTMLAttribute(userName)))
-		}
-		if userEmail != "" {
-			builder.WriteString(fmt.Sprintf("\n<meta name=\"sso-user-email\" content=\"%s\">", escapeHTMLAttribute(userEmail)))
-		}
-	}
-
-	// Add app URLs and names from all clusters with SSO configuration
-	appIndex := 0
-	for _, cluster := range f.config.Clusters {
-		if cluster.SsoAppURL != "" && cluster.SsoAppName != "" {
-			builder.WriteString(fmt.Sprintf("\n<meta name=\"sso-app-%d-url\" content=\"%s\">", appIndex, escapeHTMLAttribute(cluster.SsoAppURL)))
-			builder.WriteString(fmt.Sprintf("\n<meta name=\"sso-app-%d-name\" content=\"%s\">", appIndex, escapeHTMLAttribute(cluster.SsoAppName)))
-			appIndex++
-		}
-	}
-
-	// Add the script tag
-	builder.WriteString("\n<script src=\"/oauth/assets/sso.js\" defer></script>\n")
-
-	return builder.String()
-}
-
-// escapeHTMLAttribute escapes a string for use in HTML attribute
-func escapeHTMLAttribute(s string) string {
-	s = strings.ReplaceAll(s, "&", "&amp;")
-	s = strings.ReplaceAll(s, "<", "&lt;")
-	s = strings.ReplaceAll(s, ">", "&gt;")
-	s = strings.ReplaceAll(s, "\"", "&quot;")
-	s = strings.ReplaceAll(s, "'", "&#39;")
-	return s
+	// Simply inject the script tag - user data will be fetched via /oauth/user API
+	return "\n<script src=\"/oauth/assets/sso.js\" defer></script>\n"
 }
 
 // EncodeHeaders is called when response headers are being sent

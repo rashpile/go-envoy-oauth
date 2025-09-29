@@ -18,7 +18,7 @@ clients:
     port: 8080 # default 8080
     ssl: false # default false
     exclude: true # default false
-    prefix: /auth #default /
+    prefix: /auth/ #default /
     sso_injection: true
     sso_appurl: http://localhost:8081/auth
     sso_appname: Keycloak
@@ -70,5 +70,5 @@ clients:
     domain: localhost:8081
     address: shorts
     port: 8080
-    prefix: /s
+    prefix: /s/
     exclude: true

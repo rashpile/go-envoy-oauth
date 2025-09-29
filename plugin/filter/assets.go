@@ -62,7 +62,42 @@ func getSSOScript() string {
         window.addEventListener('load', initSSO);
     }
 
-    function initSSO() {
+    async function initSSO() {
+        // First, fetch user data from the API
+        let userData = { name: 'User', email: '', initials: 'U', apps: [] };
+
+        try {
+            const response = await fetch('/oauth/user', {
+                credentials: 'same-origin',
+                headers: {
+                    'Accept': 'application/json'
+                }
+            });
+
+            if (response.ok) {
+                const data = await response.json();
+                userData.name = data.name || 'User';
+                userData.email = data.email || '';
+                userData.apps = data.apps || [];
+
+                // Generate initials
+                if (userData.name && userData.name !== 'User') {
+                    const parts = userData.name.trim().split(' ');
+                    if (parts.length >= 2) {
+                        userData.initials = (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+                    } else if (parts.length === 1) {
+                        userData.initials = parts[0].substring(0, 2).toUpperCase();
+                    }
+                } else {
+                    userData.initials = 'U';
+                }
+            } else {
+                console.warn('SSO: Failed to fetch user data, using defaults');
+            }
+        } catch (error) {
+            console.error('SSO: Error fetching user data:', error);
+        }
+
         let container = document.getElementById('sso-menu');
         let isAbsolute = false;
 
@@ -219,23 +254,18 @@ func getSSOScript() string {
         ` + "`" + `;
         document.head.appendChild(style);
 
-        // Get user info from meta tags or data attributes
-        const userData = getUserData();
-        // Get app links from meta tags
-        const appLinks = getAppLinks();
-
         // Create account button
         const accountButton = document.createElement('div');
         accountButton.className = 'sso-account-button';
         accountButton.setAttribute('aria-label', 'Account menu');
         accountButton.setAttribute('role', 'button');
-        accountButton.innerHTML = userData.initials || 'U';
+        accountButton.innerHTML = userData.initials;
 
         // Build app links HTML
         let appLinksHTML = '';
-        if (appLinks.length > 0) {
+        if (userData.apps && userData.apps.length > 0) {
             appLinksHTML = '';
-            for (const app of appLinks) {
+            for (const app of userData.apps) {
                 appLinksHTML += ` + "`" + `
                     <a href="${app.url}" class="sso-menu-item">
                         <span class="sso-menu-item-icon">
@@ -243,7 +273,7 @@ func getSSOScript() string {
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                             </svg>
                         </span>
-                        ${app.name}
+                        ${app.app}
                     </a>` + "`" + `;
             }
             appLinksHTML += '<div class="sso-menu-divider"></div>';
@@ -254,8 +284,8 @@ func getSSOScript() string {
         dropdown.className = 'sso-dropdown';
         dropdown.innerHTML = ` + "`" + `
             <div class="sso-user-info">
-                <div class="sso-user-name">${userData.name || 'User'}</div>
-                <div class="sso-user-email">${userData.email || 'user@example.com'}</div>
+                <div class="sso-user-name">${userData.name}</div>
+                <div class="sso-user-email">${userData.email}</div>
             </div>
             <div class="sso-menu-items">
                 ${appLinksHTML}
@@ -323,58 +353,6 @@ func getSSOScript() string {
             window.location.href = ` + "`/oauth/logout?redirect_uri=${encodedWelcomeUrl}`" + `;
         };
 
-        // Helper function to get app links from meta tags
-        function getAppLinks() {
-            const apps = [];
-            let i = 0;
-
-            // Look for app meta tags with pattern sso-app-{index}-url and sso-app-{index}-name
-            while (true) {
-                const urlMeta = document.querySelector(` + "`meta[name=\"sso-app-${i}-url\"]`" + `);
-                const nameMeta = document.querySelector(` + "`meta[name=\"sso-app-${i}-name\"]`" + `);
-
-                if (!urlMeta || !nameMeta) {
-                    break;
-                }
-
-                apps.push({
-                    url: urlMeta.content,
-                    name: nameMeta.content
-                });
-
-                i++;
-            }
-
-            return apps;
-        }
-
-        // Helper function to get user data
-        function getUserData() {
-            // Try to get data from meta tags
-            let name = document.querySelector('meta[name="sso-user-name"]')?.content;
-            let email = document.querySelector('meta[name="sso-user-email"]')?.content;
-
-            // Try to get data from container attributes
-            if (!name) name = container.getAttribute('data-user-name');
-            if (!email) email = container.getAttribute('data-user-email');
-
-            // Try to get from global object
-            if (!name && window.ssoUser) name = window.ssoUser.name;
-            if (!email && window.ssoUser) email = window.ssoUser.email;
-
-            // Generate initials
-            let initials = 'U';
-            if (name) {
-                const parts = name.trim().split(' ');
-                if (parts.length >= 2) {
-                    initials = (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
-                } else if (parts.length === 1) {
-                    initials = parts[0].substring(0, 2).toUpperCase();
-                }
-            }
-
-            return { name, email, initials };
-        }
     }
 })();`
 }

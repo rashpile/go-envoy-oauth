@@ -43,8 +43,8 @@ services:
       - OAUTH_CLIENTID=${CLIENT_ID}
       - OAUTH_ISSUERURL=${ISSUER_URL}
       - OAUTH_ENABLE_API_KEY=true
-      - LOG_LEVEL=DEBUG
-      - ACCESS_LOG=json
+      - LOG_LEVEL=INFO
+      - ACCESS_LOG=plain
     ports:
       - "8081:8081"
       - "127.0.0.1:9901:9901"

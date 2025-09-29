@@ -558,6 +558,8 @@ func (f *Filter) handleOAuthEndpoints(header api.RequestHeaderMap, path string) 
 		return f.handleLogout(header)
 	case basePath == "/oauth/welcome":
 		return f.handleWelcome(header)
+	case basePath == "/oauth/user":
+		return f.handleUserInfo(header)
 	case basePath == "/oauth/consent":
 		return f.handleOfflineConsent(header)
 	case basePath == "/oauth/offline":
