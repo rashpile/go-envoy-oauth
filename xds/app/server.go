@@ -101,7 +101,7 @@ func NewXDSServer(configPath, templatePath string) (*XDSServer, error) {
 			storagePath = filepath.Join(xdg, "certmagic")
 		}
 
-		sdsServer, err := NewSDSServer(storagePath)
+		sdsServer, err := NewSDSServer(storagePath, snapshotCache)
 		if err != nil {
 			log.Printf("Warning: failed to create SDS server: %v", err)
 			// Continue without SDS - certificates will be served statically

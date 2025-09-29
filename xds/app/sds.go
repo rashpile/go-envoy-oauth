@@ -25,22 +25,15 @@ import (
 // SDSServer implements the Secret Discovery Service
 type SDSServer struct {
 	secret.UnimplementedSecretDiscoveryServiceServer
-	cache           cache.SnapshotCache
-	server          server.Server
+	mainCache       cache.SnapshotCache  // Use the main XDS cache
 	version         uint64
 	mu              sync.RWMutex
 	certificatePath string
 	watcher         *fsnotify.Watcher
 }
 
-// NewSDSServer creates a new SDS server instance
-func NewSDSServer(certificatePath string) (*SDSServer, error) {
-	// Create a separate cache for secrets
-	secretCache := cache.NewSnapshotCache(false, cache.IDHash{}, nil)
-
-	// Create xDS server for secrets
-	xdsServer := server.NewServer(context.Background(), secretCache, nil)
-
+// NewSDSServer creates a new SDS server instance that uses the main XDS cache
+func NewSDSServer(certificatePath string, mainCache cache.SnapshotCache) (*SDSServer, error) {
 	// Create file watcher
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
@@ -48,8 +41,7 @@ func NewSDSServer(certificatePath string) (*SDSServer, error) {
 	}
 
 	sds := &SDSServer{
-		cache:           secretCache,
-		server:          xdsServer,
+		mainCache:       mainCache,
 		certificatePath: certificatePath,
 		watcher:         watcher,
 	}
@@ -67,20 +59,23 @@ func NewSDSServer(certificatePath string) (*SDSServer, error) {
 
 // StreamSecrets handles streaming secret discovery requests
 func (s *SDSServer) StreamSecrets(stream secret.SecretDiscoveryService_StreamSecretsServer) error {
-	// Use the built-in xDS server implementation
-	return s.server.StreamSecrets(stream)
+	// Create a server instance using our cache
+	xdsServer := server.NewServer(context.Background(), s.mainCache, nil)
+	return xdsServer.StreamSecrets(stream)
 }
 
 // FetchSecrets handles unary secret discovery requests
 func (s *SDSServer) FetchSecrets(ctx context.Context, req *discovery.DiscoveryRequest) (*discovery.DiscoveryResponse, error) {
-	// Use the built-in xDS server implementation
-	return s.server.FetchSecrets(ctx, req)
+	// Create a server instance using our cache
+	xdsServer := server.NewServer(context.Background(), s.mainCache, nil)
+	return xdsServer.FetchSecrets(ctx, req)
 }
 
 // DeltaSecrets handles delta secret discovery requests
 func (s *SDSServer) DeltaSecrets(stream secret.SecretDiscoveryService_DeltaSecretsServer) error {
-	// Use the built-in xDS server implementation
-	return s.server.DeltaSecrets(stream)
+	// Create a server instance using our cache
+	xdsServer := server.NewServer(context.Background(), s.mainCache, nil)
+	return xdsServer.DeltaSecrets(stream)
 }
 
 // loadCertificates loads all certificates from the certificate directory
@@ -177,31 +172,65 @@ func (s *SDSServer) loadCertificates() error {
 	return s.updateSnapshot(secrets)
 }
 
-// updateSnapshot updates the SDS cache snapshot
+// updateSnapshot updates the main XDS cache with secrets
 func (s *SDSServer) updateSnapshot(secrets []types.Resource) error {
-	// Increment version
+	// Get the current snapshot from the main cache
+	ctx := context.Background()
+	currentSnapshot, err := s.mainCache.GetSnapshot(nodeID)
+	if err != nil {
+		// If no snapshot exists yet, we'll create a new one with just secrets
+		atomic.AddUint64(&s.version, 1)
+		version := fmt.Sprintf("v%d", s.version)
+
+		snapshot, err := cache.NewSnapshot(
+			version,
+			map[resource.Type][]types.Resource{
+				resource.SecretType: secrets,
+			},
+		)
+		if err != nil {
+			return fmt.Errorf("failed to create secret snapshot: %w", err)
+		}
+
+		if err := s.mainCache.SetSnapshot(ctx, nodeID, snapshot); err != nil {
+			return fmt.Errorf("failed to set secret snapshot: %w", err)
+		}
+
+		log.Printf("SDS: Created new snapshot with %d secrets", len(secrets))
+		return nil
+	}
+
+	// Update the existing snapshot with new secrets
 	atomic.AddUint64(&s.version, 1)
 	version := fmt.Sprintf("v%d", s.version)
 
-	// Create snapshot
-	snapshot, err := cache.NewSnapshot(
-		version,
-		map[resource.Type][]types.Resource{
-			resource.SecretType: secrets,
-		},
-	)
+	// Create a new snapshot with updated secrets but keeping other resources
+	resources := map[resource.Type][]types.Resource{
+		resource.SecretType: secrets,
+	}
+
+	// Copy existing resources from current snapshot
+	for _, resType := range []resource.Type{resource.ListenerType, resource.RouteType, resource.ClusterType, resource.EndpointType} {
+		resMap := currentSnapshot.GetResources(resType)
+		if len(resMap) > 0 {
+			resList := make([]types.Resource, 0, len(resMap))
+			for _, res := range resMap {
+				resList = append(resList, res)
+			}
+			resources[resType] = resList
+		}
+	}
+
+	snapshot, err := cache.NewSnapshot(version, resources)
 	if err != nil {
-		return fmt.Errorf("failed to create secret snapshot: %w", err)
+		return fmt.Errorf("failed to create combined snapshot: %w", err)
 	}
 
-	// Update cache for all nodes (using wildcard)
-	ctx := context.Background()
-	// Set snapshot for the default node ID
-	if err := s.cache.SetSnapshot(ctx, nodeID, snapshot); err != nil {
-		return fmt.Errorf("failed to set secret snapshot: %w", err)
+	if err := s.mainCache.SetSnapshot(ctx, nodeID, snapshot); err != nil {
+		return fmt.Errorf("failed to update snapshot with secrets: %w", err)
 	}
 
-	log.Printf("SDS: Updated secret snapshot to version %s with %d secrets", version, len(secrets))
+	log.Printf("SDS: Updated main snapshot to version %s with %d secrets", version, len(secrets))
 	return nil
 }
 
