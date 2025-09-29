@@ -5,9 +5,13 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/http"
+	"os"
+	"path/filepath"
 	"sync/atomic"
 	"time"
 
+	"github.com/caddyserver/certmagic"
 	"github.com/envoyproxy/go-control-plane/pkg/cache/types"
 	"github.com/envoyproxy/go-control-plane/pkg/cache/v3"
 	"github.com/envoyproxy/go-control-plane/pkg/server/v3"
@@ -21,6 +25,7 @@ import (
 	endpointservice "github.com/envoyproxy/go-control-plane/envoy/service/endpoint/v3"
 	listenerservice "github.com/envoyproxy/go-control-plane/envoy/service/listener/v3"
 	routeservice "github.com/envoyproxy/go-control-plane/envoy/service/route/v3"
+	secretservice "github.com/envoyproxy/go-control-plane/envoy/service/secret/v3"
 )
 
 const (
@@ -35,6 +40,9 @@ type XDSServer struct {
 	cache        cache.SnapshotCache
 	version      uint64
 	grpcServer   *grpc.Server
+	certManager  *certmagic.Config
+	httpServer   *http.Server
+	sdsServer    *SDSServer
 }
 
 func NewXDSServer(configPath, templatePath string) (*XDSServer, error) {
@@ -66,14 +74,44 @@ func NewXDSServer(configPath, templatePath string) (*XDSServer, error) {
 	// Create cache (use nil for logger to use default)
 	snapshotCache := cache.NewSnapshotCache(false, cache.IDHash{}, nil)
 
-	return &XDSServer{
+	server := &XDSServer{
 		config:       config,
 		configPath:   configPath,
 		templatePath: templatePath,
 		template:     template,
 		cache:        snapshotCache,
 		version:      0,
-	}, nil
+	}
+
+	// Initialize CertMagic if SSL is enabled
+	if config.SSL.Enabled {
+		if err := server.initCertMagic(); err != nil {
+			return nil, fmt.Errorf("failed to initialize CertMagic: %w", err)
+		}
+
+		// Initialize SDS server for dynamic certificate serving
+		// Determine certificate storage path
+		storagePath := config.SSL.StoragePath
+		if storagePath == "" {
+			xdg := os.Getenv("XDG_DATA_HOME")
+			if xdg == "" {
+				home, _ := os.UserHomeDir()
+				xdg = filepath.Join(home, ".local", "share")
+			}
+			storagePath = filepath.Join(xdg, "certmagic")
+		}
+
+		sdsServer, err := NewSDSServer(storagePath)
+		if err != nil {
+			log.Printf("Warning: failed to create SDS server: %v", err)
+			// Continue without SDS - certificates will be served statically
+		} else {
+			server.sdsServer = sdsServer
+			log.Printf("SDS server initialized for certificate path: %s", storagePath)
+		}
+	}
+
+	return server, nil
 }
 
 func (s *XDSServer) updateSnapshot() error {
@@ -201,6 +239,13 @@ func (s *XDSServer) watchConfig() error {
 }
 
 func (s *XDSServer) Start(port int) error {
+	// Start HTTP challenge server if SSL is enabled
+	if s.config.SSL.Enabled {
+		if err := s.startHTTPChallenge(); err != nil {
+			return fmt.Errorf("failed to start HTTP challenge server: %w", err)
+		}
+	}
+
 	// Create initial snapshot
 	if err := s.updateSnapshot(); err != nil {
 		return fmt.Errorf("failed to create initial snapshot: %w", err)
@@ -236,6 +281,12 @@ func (s *XDSServer) Start(port int) error {
 	routeservice.RegisterRouteDiscoveryServiceServer(s.grpcServer, xdsServer)
 	listenerservice.RegisterListenerDiscoveryServiceServer(s.grpcServer, xdsServer)
 
+	// Register SDS service if available
+	if s.sdsServer != nil {
+		secretservice.RegisterSecretDiscoveryServiceServer(s.grpcServer, s.sdsServer)
+		log.Printf("SDS service registered for dynamic certificate serving")
+	}
+
 	// Start listening
 	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
 	if err != nil {
@@ -250,4 +301,8 @@ func (s *XDSServer) Stop() {
 	if s.grpcServer != nil {
 		s.grpcServer.GracefulStop()
 	}
+	if s.sdsServer != nil {
+		s.sdsServer.Stop()
+	}
+	s.stopHTTPChallenge()
 }
