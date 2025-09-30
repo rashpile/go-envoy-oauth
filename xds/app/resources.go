@@ -218,10 +218,8 @@ func MakeListener(config *GatewayConfig) ([]types.Resource, error) {
 				},
 			}
 
-			// Set SNI for the filter chain
-			filterChain.FilterChainMatch = &listener.FilterChainMatch{
-				ServerNames: tlsDomains,
-			}
+			// Remove SNI matching - let this be the default chain
+			// The certificate will work for any connection
 
 			log.Printf("Listener configured with SDS TLS for domains: %v", tlsDomains)
 		} else {
