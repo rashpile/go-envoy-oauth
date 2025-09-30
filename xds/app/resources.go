@@ -186,23 +186,25 @@ func MakeListener(config *GatewayConfig) ([]types.Resource, error) {
 		}
 
 		if len(tlsDomains) > 0 {
-			// Use the first domain's certificate as default
-			defaultSecretName := GetSecretName(tlsDomains[0])
-
-			// Create SDS configuration for certificate
-			tlsContext := &tls.DownstreamTlsContext{
-				CommonTlsContext: &tls.CommonTlsContext{
-					TlsCertificateSdsSecretConfigs: []*tls.SdsSecretConfig{
-						{
-							Name: defaultSecretName,
-							SdsConfig: &core.ConfigSource{
-								ResourceApiVersion: resource.DefaultAPIVersion,
-								ConfigSourceSpecifier: &core.ConfigSource_Ads{
-									Ads: &core.AggregatedConfigSource{},
-								},
-							},
+			// Load ALL domain certificates
+			var sdsConfigs []*tls.SdsSecretConfig
+			for _, domain := range tlsDomains {
+				secretName := GetSecretName(domain)
+				sdsConfigs = append(sdsConfigs, &tls.SdsSecretConfig{
+					Name: secretName,
+					SdsConfig: &core.ConfigSource{
+						ResourceApiVersion: resource.DefaultAPIVersion,
+						ConfigSourceSpecifier: &core.ConfigSource_Ads{
+							Ads: &core.AggregatedConfigSource{},
 						},
 					},
+				})
+			}
+
+			// Create SDS configuration with all certificates
+			tlsContext := &tls.DownstreamTlsContext{
+				CommonTlsContext: &tls.CommonTlsContext{
+					TlsCertificateSdsSecretConfigs: sdsConfigs,
 				},
 			}
 
