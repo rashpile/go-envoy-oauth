@@ -120,7 +120,51 @@ func (s *XDSServer) updateSnapshot() error {
 	if err != nil {
 		return fmt.Errorf("failed to reload config: %w", err)
 	}
-	s.config = config
+
+	// Check for new domains that need certificates
+	if s.config.SSL.Enabled && s.certManager != nil {
+		oldDomains := s.collectDomains()
+		s.config = config
+		newDomains := s.collectDomains()
+
+		// Find domains that are new
+		needsCert := false
+		for _, newDomain := range newDomains {
+			found := false
+			for _, oldDomain := range oldDomains {
+				if newDomain == oldDomain {
+					found = true
+					break
+				}
+			}
+			if !found {
+				needsCert = true
+				log.Printf("New domain detected that needs certificate: %s", newDomain)
+			}
+		}
+
+		// Acquire certificates for new domains
+		if needsCert && len(newDomains) > 0 {
+			log.Printf("Acquiring certificates for domains: %v", newDomains)
+			ctx := context.Background()
+			if err := s.certManager.ManageSync(ctx, newDomains); err != nil {
+				log.Printf("Warning: failed to acquire certificates for new domains: %v", err)
+			} else {
+				log.Printf("Successfully acquired/renewed certificates for domains: %v", newDomains)
+				// Reload certificates into SDS immediately
+				if s.sdsServer != nil {
+					log.Printf("Reloading certificates into SDS...")
+					if err := s.sdsServer.loadCertificates(); err != nil {
+						log.Printf("Warning: failed to reload certificates for SDS: %v", err)
+					} else {
+						log.Printf("Successfully reloaded certificates into SDS")
+					}
+				}
+			}
+		}
+	} else {
+		s.config = config
+	}
 
 	// Reload template if path is specified
 	templatePath := s.templatePath
@@ -148,7 +192,7 @@ func (s *XDSServer) updateSnapshot() error {
 	}
 
 	clusters, err := MakeClusters(s.config)
-	if err != nil {
+º	if err != nil {
 		return fmt.Errorf("failed to create clusters: %w", err)
 	}
 
