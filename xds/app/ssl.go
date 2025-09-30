@@ -202,3 +202,61 @@ func (s *XDSServer) getCertificatePath(domain string) (certPath, keyPath string,
 	_ = cert // Use cert to avoid unused variable warning
 	return certPath, keyPath, nil
 }
+
+// collectDomainsFrom collects domains needing certs from provided config
+func collectDomainsFrom(cfg *GatewayConfig) []string {
+	m := map[string]struct{}{}
+	for _, c := range cfg.Clients {
+		if c.TLS && c.Domain != "" {
+			m[c.Domain] = struct{}{}
+		}
+	}
+	domains := make([]string, 0, len(m))
+	for d := range m {
+		domains = append(domains, d)
+	}
+	return domains
+}
+
+// handleSSLConfigChange ensures certificates are obtained for any new domains and reloads SDS
+func (s *XDSServer) handleSSLConfigChange(oldCfg, newCfg *GatewayConfig) {
+	if s == nil || s.certManager == nil || !newCfg.SSL.Enabled {
+		return
+	}
+	oldDomains := collectDomainsFrom(oldCfg)
+	newDomains := collectDomainsFrom(newCfg)
+
+	// find if there are any new domains in newDomains not present in oldDomains
+	need := false
+	for _, nd := range newDomains {
+		found := false
+		for _, od := range oldDomains {
+			if nd == od {
+				found = true
+				break
+			}
+		}
+		if !found {
+			need = true
+			log.Printf("New domain detected that needs certificate: %s", nd)
+		}
+	}
+	if !need || len(newDomains) == 0 {
+		return
+	}
+	log.Printf("Acquiring certificates for domains: %v", newDomains)
+	ctx := context.Background()
+	if err := s.certManager.ManageSync(ctx, newDomains); err != nil {
+		log.Printf("Warning: failed to acquire certificates for new domains: %v", err)
+		return
+	}
+	log.Printf("Successfully acquired/renewed certificates for domains: %v", newDomains)
+	if s.sdsServer != nil {
+		log.Printf("Reloading certificates into SDS...")
+		if err := s.sdsServer.loadCertificates(); err != nil {
+			log.Printf("Warning: failed to reload certificates for SDS: %v", err)
+		} else {
+			log.Printf("Successfully reloaded certificates into SDS")
+		}
+	}
+}

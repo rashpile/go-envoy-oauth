@@ -14,8 +14,8 @@ import (
 	"github.com/caddyserver/certmagic"
 	"github.com/envoyproxy/go-control-plane/pkg/cache/types"
 	"github.com/envoyproxy/go-control-plane/pkg/cache/v3"
-	"github.com/envoyproxy/go-control-plane/pkg/server/v3"
 	"github.com/envoyproxy/go-control-plane/pkg/resource/v3"
+	"github.com/envoyproxy/go-control-plane/pkg/server/v3"
 	"github.com/fsnotify/fsnotify"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
@@ -121,47 +121,11 @@ func (s *XDSServer) updateSnapshot() error {
 		return fmt.Errorf("failed to reload config: %w", err)
 	}
 
-	// Check for new domains that need certificates
+	// Delegate cert management for new domains to SSL helper
 	if s.config.SSL.Enabled && s.certManager != nil {
-		oldDomains := s.collectDomains()
+		oldCfg := s.config
+		s.handleSSLConfigChange(oldCfg, config)
 		s.config = config
-		newDomains := s.collectDomains()
-
-		// Find domains that are new
-		needsCert := false
-		for _, newDomain := range newDomains {
-			found := false
-			for _, oldDomain := range oldDomains {
-				if newDomain == oldDomain {
-					found = true
-					break
-				}
-			}
-			if !found {
-				needsCert = true
-				log.Printf("New domain detected that needs certificate: %s", newDomain)
-			}
-		}
-
-		// Acquire certificates for new domains
-		if needsCert && len(newDomains) > 0 {
-			log.Printf("Acquiring certificates for domains: %v", newDomains)
-			ctx := context.Background()
-			if err := s.certManager.ManageSync(ctx, newDomains); err != nil {
-				log.Printf("Warning: failed to acquire certificates for new domains: %v", err)
-			} else {
-				log.Printf("Successfully acquired/renewed certificates for domains: %v", newDomains)
-				// Reload certificates into SDS immediately
-				if s.sdsServer != nil {
-					log.Printf("Reloading certificates into SDS...")
-					if err := s.sdsServer.loadCertificates(); err != nil {
-						log.Printf("Warning: failed to reload certificates for SDS: %v", err)
-					} else {
-						log.Printf("Successfully reloaded certificates into SDS")
-					}
-				}
-			}
-		}
 	} else {
 		s.config = config
 	}
@@ -192,7 +156,7 @@ func (s *XDSServer) updateSnapshot() error {
 	}
 
 	clusters, err := MakeClusters(s.config)
-º	if err != nil {
+	if err != nil {
 		return fmt.Errorf("failed to create clusters: %w", err)
 	}
 
