@@ -173,6 +173,20 @@ func (s *XDSServer) updateSnapshot() error {
 		}
 	}
 
+	// Preserve existing secrets from the current snapshot if any
+	currentSnapshot, _ := s.cache.GetSnapshot(nodeID)
+	if currentSnapshot != nil {
+		secretsMap := currentSnapshot.GetResources(resource.SecretType)
+		if len(secretsMap) > 0 {
+			secrets := make([]types.Resource, 0, len(secretsMap))
+			for _, secret := range secretsMap {
+				secrets = append(secrets, secret)
+			}
+			resources[resource.SecretType] = secrets
+			log.Printf("Preserving %d secrets in snapshot update", len(secrets))
+		}
+	}
+
 	// Create snapshot
 	version := fmt.Sprintf("v%d", atomic.AddUint64(&s.version, 1))
 	snapshot, err := cache.NewSnapshot(version, resources)
