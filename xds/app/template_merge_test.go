@@ -12,11 +12,11 @@ import (
 )
 
 func TestMergeListenersWithSameName(t *testing.T) {
-	// Create a template with listener_0
+	// Create a template with http_listener
 	template := &EnvoyTemplate{
 		Listeners: []map[string]interface{}{
 			{
-				"name": ListenerName,
+				"name": HTTPListenerName,
 				"address": map[string]interface{}{
 					"socket_address": map[string]interface{}{
 						"address":    "0.0.0.0",
@@ -76,7 +76,7 @@ func TestMergeListenersWithSameName(t *testing.T) {
 	managerAny, _ := anypb.New(manager)
 
 	authListener := &listener.Listener{
-		Name: ListenerName,
+		Name: HTTPListenerName,
 		FilterChains: []*listener.FilterChain{
 			{
 				Filters: []*listener.Filter{
@@ -160,7 +160,7 @@ func TestMergeListenersWithDifferentNames(t *testing.T) {
 	}
 
 	authListener := &listener.Listener{
-		Name: ListenerName,
+		Name: HTTPSListenerName,
 	}
 	authListeners := []types.Resource{authListener}
 
@@ -183,7 +183,7 @@ func TestMergeListenersWithDifferentNames(t *testing.T) {
 		if l.Name == "admin_listener" {
 			foundAdmin = true
 		}
-		if l.Name == ListenerName {
+		if l.Name == HTTPSListenerName {
 			foundAuth = true
 		}
 	}

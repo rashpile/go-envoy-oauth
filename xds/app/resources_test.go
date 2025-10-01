@@ -51,8 +51,8 @@ func TestMakeRoutesWithDomains(t *testing.T) {
 
 	// Check first virtual host (keycloak)
 	vh1 := routeConfig.VirtualHosts[0]
-	if vh1.Name != "keycloak_service_host" {
-		t.Errorf("expected virtual host name 'keycloak_service_host', got %s", vh1.Name)
+	if vh1.Name != "idp_example_com_host" {
+		t.Errorf("expected virtual host name 'idp_example_com_host', got %s", vh1.Name)
 	}
 	if len(vh1.Domains) != 1 || vh1.Domains[0] != "idp.example.com" {
 		t.Errorf("expected domain 'idp.example.com', got %v", vh1.Domains)
@@ -70,8 +70,8 @@ func TestMakeRoutesWithDomains(t *testing.T) {
 
 	// Check second virtual host (app)
 	vh2 := routeConfig.VirtualHosts[1]
-	if vh2.Name != "app_service_host" {
-		t.Errorf("expected virtual host name 'app_service_host', got %s", vh2.Name)
+	if vh2.Name != "app_example_com_host" {
+		t.Errorf("expected virtual host name 'app_example_com_host', got %s", vh2.Name)
 	}
 	if len(vh2.Domains) != 1 || vh2.Domains[0] != "app.example.com" {
 		t.Errorf("expected domain 'app.example.com', got %v", vh2.Domains)

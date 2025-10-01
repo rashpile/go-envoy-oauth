@@ -41,8 +41,9 @@ type OAuthConfig struct {
 
 type ListenerConfig struct {
 	Address string `yaml:"address,omitempty"`
-	Port    uint32 `yaml:"port,omitempty"`
-	TLS     bool   `yaml:"tls,omitempty"` // Enable TLS on listener
+	Port    uint32 `yaml:"port,omitempty"`    // HTTP listener port
+	TLSPort uint32 `yaml:"tls_port,omitempty"` // HTTPS listener port
+	TLS     bool   `yaml:"tls,omitempty"`      // Deprecated: Enable TLS on listener (use tls_port instead)
 }
 
 type SSLConfig struct {
@@ -131,6 +132,11 @@ func overrideFromEnv(config *GatewayConfig) {
 			config.Listener.Port = uint32(port)
 		}
 	}
+	if val := os.Getenv("LISTENER_TLS_PORT"); val != "" {
+		if port, err := strconv.ParseUint(val, 10, 32); err == nil {
+			config.Listener.TLSPort = uint32(port)
+		}
+	}
 	if val := os.Getenv("LISTENER_TLS"); val != "" {
 		config.Listener.TLS = val == "true" || val == "1"
 	}
@@ -185,6 +191,10 @@ func LoadConfig(path string) (*GatewayConfig, error) {
 	}
 	if config.Listener.Port == 0 {
 		config.Listener.Port = 8080
+	}
+	// Set TLS port default when SSL is enabled or legacy TLS flag is set
+	if config.Listener.TLSPort == 0 && (config.SSL.Enabled || config.Listener.TLS) {
+		config.Listener.TLSPort = 8443
 	}
 
 	if config.OAuth.RedirectURL == "" {

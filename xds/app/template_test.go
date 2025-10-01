@@ -74,7 +74,7 @@ func TestMergeTemplateListeners(t *testing.T) {
 
 	// Create auth listeners
 	authListener := &listener.Listener{
-		Name: ListenerName,
+		Name: HTTPListenerName,
 	}
 	authListeners := []types.Resource{authListener}
 

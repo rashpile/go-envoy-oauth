@@ -2,11 +2,11 @@
 # Template configuration (optional)
 # template: example-template.yaml
 
-# Listener configuration
+# Listener configuration - dual HTTP and HTTPS listeners
 listener:
   address: 0.0.0.0
-  port: 8443        # HTTPS port
-  tls: true         # Enable TLS on listener
+  port: 8080        # HTTP port (for ACME challenges and redirects)
+  tls_port: 8443    # HTTPS port (secured with TLS certificates)
 
 # SSL Certificate Management Configuration
 ssl:
