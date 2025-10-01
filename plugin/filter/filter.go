@@ -729,7 +729,7 @@ func (f *Filter) isAPITokenFromQuery(header api.RequestHeaderMap) bool {
 	if path == "" {
 		return false
 	}
-	return strings.Contains(path, "auth-api-key=")
+	return strings.Contains(path, "auth-api-key=") && !strings.Contains(path, "redirect=false")
 }
 
 // removeQueryParam removes a specific query parameter from the path
