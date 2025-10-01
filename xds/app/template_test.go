@@ -30,7 +30,7 @@ func TestLoadTemplate(t *testing.T) {
 		},
 		{
 			name:        "valid template loads successfully",
-			path:        "../example-template.yaml",
+			path:        "testdata/example-template.yaml",
 			expectNil:   false,
 			expectError: false,
 		},
