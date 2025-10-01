@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"strings"
 
 	xdstype "github.com/cncf/xds/go/xds/type/v3"
@@ -22,11 +23,100 @@ import (
 )
 
 const (
-	ListenerName = "listener_0"
-	RouteConfig  = "local_route"
+	HTTPListenerName  = "http_listener"
+	HTTPSListenerName = "https_listener"
+	RouteConfig       = "local_route"
 )
 
 func MakeListener(config *GatewayConfig) ([]types.Resource, error) {
+	var listeners []types.Resource
+
+	// Create shared HTTP connection manager (used by both HTTP and HTTPS listeners)
+	managerAny, err := createHTTPConnectionManager(config)
+	if err != nil {
+		return nil, err
+	}
+
+	// Determine which listeners to create based on configuration
+	createHTTPListener := true
+	createHTTPSListener := config.SSL.Enabled || config.Listener.TLS
+
+	// Backward compatibility: if TLS flag is set but TLSPort is not configured,
+	// create only HTTPS listener on the configured port
+	if config.Listener.TLS && config.Listener.TLSPort == 0 {
+		createHTTPListener = false
+		createHTTPSListener = true
+	}
+
+	// Create HTTP listener
+	if createHTTPListener {
+		httpListener := &listener.Listener{
+			Name: HTTPListenerName,
+			Address: &core.Address{
+				Address: &core.Address_SocketAddress{
+					SocketAddress: &core.SocketAddress{
+						Address: config.Listener.Address,
+						PortSpecifier: &core.SocketAddress_PortValue{
+							PortValue: config.Listener.Port,
+						},
+					},
+				},
+			},
+			FilterChains: []*listener.FilterChain{
+				{
+					Filters: []*listener.Filter{
+						{
+							Name: wellknown.HTTPConnectionManager,
+							ConfigType: &listener.Filter_TypedConfig{
+								TypedConfig: managerAny,
+							},
+						},
+					},
+				},
+			},
+		}
+		listeners = append(listeners, httpListener)
+		log.Printf("HTTP listener configured on %s:%d", config.Listener.Address, config.Listener.Port)
+	}
+
+	// Create HTTPS listener with TLS
+	if createHTTPSListener {
+		// Determine port for HTTPS listener
+		httpsPort := config.Listener.TLSPort
+		if httpsPort == 0 {
+			// Backward compatibility: use main port if TLSPort not set
+			httpsPort = config.Listener.Port
+		}
+
+		// Create filter chain with TLS
+		httpsFilterChain, err := createTLSFilterChain(config, managerAny)
+		if err != nil {
+			return nil, err
+		}
+
+		httpsListener := &listener.Listener{
+			Name: HTTPSListenerName,
+			Address: &core.Address{
+				Address: &core.Address_SocketAddress{
+					SocketAddress: &core.SocketAddress{
+						Address: config.Listener.Address,
+						PortSpecifier: &core.SocketAddress_PortValue{
+							PortValue: httpsPort,
+						},
+					},
+				},
+			},
+			FilterChains: []*listener.FilterChain{httpsFilterChain},
+		}
+		listeners = append(listeners, httpsListener)
+		log.Printf("HTTPS listener configured on %s:%d", config.Listener.Address, httpsPort)
+	}
+
+	return listeners, nil
+}
+
+// createHTTPConnectionManager creates the shared HTTP connection manager configuration
+func createHTTPConnectionManager(config *GatewayConfig) (*anypb.Any, error) {
 	// Create golang filter configuration
 	pluginConfig := map[string]interface{}{
 		"issuer_url":                config.OAuth.IssuerURL,
@@ -157,39 +247,103 @@ func MakeListener(config *GatewayConfig) ([]types.Resource, error) {
 		},
 	}
 
-	managerAny, err := anypb.New(manager)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal HTTP connection manager: %w", err)
-	}
+	return anypb.New(manager)
+}
 
-	// Create listener with configured address and port
-	l := &listener.Listener{
-		Name: ListenerName,
-		Address: &core.Address{
-			Address: &core.Address_SocketAddress{
-				SocketAddress: &core.SocketAddress{
-					Address: config.Listener.Address,
-					PortSpecifier: &core.SocketAddress_PortValue{
-						PortValue: config.Listener.Port,
-					},
+// createTLSFilterChain creates a filter chain with TLS configuration
+func createTLSFilterChain(config *GatewayConfig, managerAny *anypb.Any) (*listener.FilterChain, error) {
+	filterChain := &listener.FilterChain{
+		Filters: []*listener.Filter{
+			{
+				Name: wellknown.HTTPConnectionManager,
+				ConfigType: &listener.Filter_TypedConfig{
+					TypedConfig: managerAny,
 				},
 			},
 		},
-		FilterChains: []*listener.FilterChain{
-			{
-				Filters: []*listener.Filter{
-					{
-						Name: wellknown.HTTPConnectionManager,
-						ConfigType: &listener.Filter_TypedConfig{
-							TypedConfig: managerAny,
+	}
+
+	// Add TLS configuration if SSL is enabled
+	if config.SSL.Enabled {
+		// Collect domains that have TLS enabled
+		var tlsDomains []string
+		for _, client := range config.Clients {
+			if client.TLS && client.Domain != "" {
+				tlsDomains = append(tlsDomains, client.Domain)
+			}
+		}
+
+		if len(tlsDomains) > 0 {
+			// Load ALL domain certificates
+			var sdsConfigs []*tls.SdsSecretConfig
+			for _, domain := range tlsDomains {
+				secretName := GetSecretName(domain)
+				sdsConfigs = append(sdsConfigs, &tls.SdsSecretConfig{
+					Name: secretName,
+					SdsConfig: &core.ConfigSource{
+						ResourceApiVersion: resource.DefaultAPIVersion,
+						ConfigSourceSpecifier: &core.ConfigSource_Ads{
+							Ads: &core.AggregatedConfigSource{},
+						},
+					},
+				})
+			}
+
+			// Create SDS configuration with all certificates
+			tlsContext := &tls.DownstreamTlsContext{
+				CommonTlsContext: &tls.CommonTlsContext{
+					TlsCertificateSdsSecretConfigs: sdsConfigs,
+				},
+			}
+
+			tlsAny, err := anypb.New(tlsContext)
+			if err != nil {
+				return nil, fmt.Errorf("failed to marshal TLS context: %w", err)
+			}
+
+			filterChain.TransportSocket = &core.TransportSocket{
+				Name: "envoy.transport_sockets.tls",
+				ConfigType: &core.TransportSocket_TypedConfig{
+					TypedConfig: tlsAny,
+				},
+			}
+
+			log.Printf("TLS filter chain configured with SDS for domains: %v", tlsDomains)
+		} else {
+			// Use default certificate if no specific domains are configured
+			tlsContext := &tls.DownstreamTlsContext{
+				CommonTlsContext: &tls.CommonTlsContext{
+					TlsCertificateSdsSecretConfigs: []*tls.SdsSecretConfig{
+						{
+							Name: "default_server_cert",
+							SdsConfig: &core.ConfigSource{
+								ResourceApiVersion: resource.DefaultAPIVersion,
+								ConfigSourceSpecifier: &core.ConfigSource_Ads{
+									Ads: &core.AggregatedConfigSource{},
+								},
+							},
 						},
 					},
 				},
-			},
-		},
+			}
+
+			tlsAny, err := anypb.New(tlsContext)
+			if err != nil {
+				return nil, fmt.Errorf("failed to marshal TLS context: %w", err)
+			}
+
+			filterChain.TransportSocket = &core.TransportSocket{
+				Name: "envoy.transport_sockets.tls",
+				ConfigType: &core.TransportSocket_TypedConfig{
+					TypedConfig: tlsAny,
+				},
+			}
+
+			log.Printf("TLS filter chain configured with SDS using default certificate")
+		}
 	}
 
-	return []types.Resource{l}, nil
+	return filterChain, nil
 }
 
 func MakeRoutes(config *GatewayConfig) ([]types.Resource, error) {

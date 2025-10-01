@@ -167,34 +167,64 @@ func MergeTemplateListeners(template *EnvoyTemplate, authListeners []types.Resou
 	}
 
 	result := make([]types.Resource, 0, len(template.Listeners)+len(authListeners))
-	var mainListenerTemplate *listener.Listener
 
-	// First pass: find and extract listener_0 from template if it exists
+	// Map to store template listeners by name for merging
+	templateListeners := make(map[string]*listener.Listener)
+	var otherTemplateListeners []*listener.Listener
+
+	// First pass: parse and categorize template listeners
 	for _, listenerData := range template.Listeners {
 		l := &listener.Listener{}
 		if err := convertToProto(listenerData, l); err != nil {
 			return nil, fmt.Errorf("failed to parse template listener: %w", err)
 		}
 
-		if l.Name == ListenerName {
-			mainListenerTemplate = l
+		// Check if this is a mergeable listener (http_listener or https_listener)
+		if l.Name == HTTPListenerName || l.Name == HTTPSListenerName {
+			templateListeners[l.Name] = l
 		} else {
-			result = append(result, l)
+			otherTemplateListeners = append(otherTemplateListeners, l)
 		}
 	}
 
 	// Second pass: merge or add auth listeners
 	for _, authRes := range authListeners {
-		if authListener, ok := authRes.(*listener.Listener); ok && authListener.Name == ListenerName && mainListenerTemplate != nil {
-			// Merge the main listener from template with OAuth listener
-			merged, err := mergeListeners(mainListenerTemplate, authListener)
+		authListener, ok := authRes.(*listener.Listener)
+		if !ok {
+			result = append(result, authRes)
+			continue
+		}
+
+		// Try to find matching template listener for merging
+		var templateListener *listener.Listener
+
+		// Direct name match (http_listener or https_listener)
+		if tmpl, exists := templateListeners[authListener.Name]; exists {
+			templateListener = tmpl
+			delete(templateListeners, authListener.Name) // Mark as used
+		}
+
+		// If we found a template to merge with, do the merge
+		if templateListener != nil {
+			merged, err := mergeListeners(templateListener, authListener)
 			if err != nil {
 				return nil, fmt.Errorf("failed to merge listeners: %w", err)
 			}
 			result = append(result, merged)
 		} else {
-			result = append(result, authRes)
+			// No template to merge, add auth listener as-is
+			result = append(result, authListener)
 		}
+	}
+
+	// Add any remaining template listeners that weren't merged
+	for _, tmpl := range templateListeners {
+		result = append(result, tmpl)
+	}
+
+	// Add other template listeners (non-mergeable names)
+	for _, tmpl := range otherTemplateListeners {
+		result = append(result, tmpl)
 	}
 
 	return result, nil

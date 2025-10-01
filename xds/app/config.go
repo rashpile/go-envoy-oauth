@@ -15,6 +15,7 @@ type GatewayConfig struct {
 	Clients  []ClientConfig  `yaml:"clients"`
 	Template string          `yaml:"template,omitempty"` // Path to template config file
 	Listener ListenerConfig  `yaml:"listener,omitempty"`
+	SSL      SSLConfig       `yaml:"ssl,omitempty"`      // SSL/TLS configuration for listener
 }
 
 type PluginConfig struct {
@@ -40,7 +41,17 @@ type OAuthConfig struct {
 
 type ListenerConfig struct {
 	Address string `yaml:"address,omitempty"`
-	Port    uint32 `yaml:"port,omitempty"`
+	Port    uint32 `yaml:"port,omitempty"`    // HTTP listener port
+	TLSPort uint32 `yaml:"tls_port,omitempty"` // HTTPS listener port
+	TLS     bool   `yaml:"tls,omitempty"`      // Deprecated: Enable TLS on listener (use tls_port instead)
+}
+
+type SSLConfig struct {
+	Enabled      bool   `yaml:"enabled,omitempty"`      // Enable SSL certificate management
+	Staging      bool   `yaml:"staging,omitempty"`      // Use Let's Encrypt staging
+	ACMEEmail    string `yaml:"acme_email,omitempty"`   // Email for ACME account
+	HTTPPort     uint32 `yaml:"http_port,omitempty"`    // Port for HTTP-01 challenge
+	StoragePath  string `yaml:"storage_path,omitempty"` // Certificate storage path
 }
 
 type ClientConfig struct {
@@ -49,7 +60,8 @@ type ClientConfig struct {
 	HostRewrite  string   `yaml:"host_rewrite,omitempty"`
 	Address      string   `yaml:"address"`
 	Port         uint32   `yaml:"port"`
-	SSL          bool     `yaml:"ssl"`
+	SSL          bool     `yaml:"ssl"`          // Upstream uses SSL/TLS
+	TLS          bool     `yaml:"tls,omitempty"` // Request certificate for this domain
 	Exclude      bool     `yaml:"exclude"`
 	Prefix       string   `yaml:"prefix"`
 	ExcludePaths []string `yaml:"exclude_paths,omitempty"`
@@ -120,6 +132,33 @@ func overrideFromEnv(config *GatewayConfig) {
 			config.Listener.Port = uint32(port)
 		}
 	}
+	if val := os.Getenv("LISTENER_TLS_PORT"); val != "" {
+		if port, err := strconv.ParseUint(val, 10, 32); err == nil {
+			config.Listener.TLSPort = uint32(port)
+		}
+	}
+	if val := os.Getenv("LISTENER_TLS"); val != "" {
+		config.Listener.TLS = val == "true" || val == "1"
+	}
+
+	// SSL config overrides
+	if val := os.Getenv("SSL_ENABLE"); val != "" {
+		config.SSL.Enabled = val == "true" || val == "1"
+	}
+	if val := os.Getenv("SSL_STAGING"); val != "" {
+		config.SSL.Staging = val == "true" || val == "1"
+	}
+	if val := os.Getenv("SSL_ACME_EMAIL"); val != "" {
+		config.SSL.ACMEEmail = val
+	}
+	if val := os.Getenv("CERT_HTTP_PORT"); val != "" {
+		if port, err := strconv.ParseUint(val, 10, 32); err == nil {
+			config.SSL.HTTPPort = uint32(port)
+		}
+	}
+	if val := os.Getenv("XDG_DATA_HOME"); val != "" {
+		config.SSL.StoragePath = val
+	}
 }
 
 func LoadConfig(path string) (*GatewayConfig, error) {
@@ -152,6 +191,10 @@ func LoadConfig(path string) (*GatewayConfig, error) {
 	}
 	if config.Listener.Port == 0 {
 		config.Listener.Port = 8080
+	}
+	// Set TLS port default when SSL is enabled or legacy TLS flag is set
+	if config.Listener.TLSPort == 0 && (config.SSL.Enabled || config.Listener.TLS) {
+		config.Listener.TLSPort = 8443
 	}
 
 	if config.OAuth.RedirectURL == "" {

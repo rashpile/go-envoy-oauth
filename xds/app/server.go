@@ -5,13 +5,17 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/http"
+	"os"
+	"path/filepath"
 	"sync/atomic"
 	"time"
 
+	"github.com/caddyserver/certmagic"
 	"github.com/envoyproxy/go-control-plane/pkg/cache/types"
 	"github.com/envoyproxy/go-control-plane/pkg/cache/v3"
-	"github.com/envoyproxy/go-control-plane/pkg/server/v3"
 	"github.com/envoyproxy/go-control-plane/pkg/resource/v3"
+	"github.com/envoyproxy/go-control-plane/pkg/server/v3"
 	"github.com/fsnotify/fsnotify"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
@@ -21,6 +25,7 @@ import (
 	endpointservice "github.com/envoyproxy/go-control-plane/envoy/service/endpoint/v3"
 	listenerservice "github.com/envoyproxy/go-control-plane/envoy/service/listener/v3"
 	routeservice "github.com/envoyproxy/go-control-plane/envoy/service/route/v3"
+	secretservice "github.com/envoyproxy/go-control-plane/envoy/service/secret/v3"
 )
 
 const (
@@ -35,6 +40,9 @@ type XDSServer struct {
 	cache        cache.SnapshotCache
 	version      uint64
 	grpcServer   *grpc.Server
+	certManager  *certmagic.Config
+	httpServer   *http.Server
+	sdsServer    *SDSServer
 }
 
 func NewXDSServer(configPath, templatePath string) (*XDSServer, error) {
@@ -66,14 +74,44 @@ func NewXDSServer(configPath, templatePath string) (*XDSServer, error) {
 	// Create cache (use nil for logger to use default)
 	snapshotCache := cache.NewSnapshotCache(false, cache.IDHash{}, nil)
 
-	return &XDSServer{
+	server := &XDSServer{
 		config:       config,
 		configPath:   configPath,
 		templatePath: templatePath,
 		template:     template,
 		cache:        snapshotCache,
 		version:      0,
-	}, nil
+	}
+
+	// Initialize CertMagic if SSL is enabled
+	if config.SSL.Enabled {
+		if err := server.initCertMagic(); err != nil {
+			return nil, fmt.Errorf("failed to initialize CertMagic: %w", err)
+		}
+
+		// Initialize SDS server for dynamic certificate serving
+		// Determine certificate storage path
+		storagePath := config.SSL.StoragePath
+		if storagePath == "" {
+			xdg := os.Getenv("XDG_DATA_HOME")
+			if xdg == "" {
+				home, _ := os.UserHomeDir()
+				xdg = filepath.Join(home, ".local", "share")
+			}
+			storagePath = filepath.Join(xdg, "certmagic")
+		}
+
+		sdsServer, err := NewSDSServer(storagePath, snapshotCache)
+		if err != nil {
+			log.Printf("Warning: failed to create SDS server: %v", err)
+			// Continue without SDS - certificates will be served statically
+		} else {
+			server.sdsServer = sdsServer
+			log.Printf("SDS server initialized for certificate path: %s", storagePath)
+		}
+	}
+
+	return server, nil
 }
 
 func (s *XDSServer) updateSnapshot() error {
@@ -82,7 +120,15 @@ func (s *XDSServer) updateSnapshot() error {
 	if err != nil {
 		return fmt.Errorf("failed to reload config: %w", err)
 	}
-	s.config = config
+
+	// Delegate cert management for new domains to SSL helper
+	if s.config.SSL.Enabled && s.certManager != nil {
+		oldCfg := s.config
+		s.handleSSLConfigChange(oldCfg, config)
+		s.config = config
+	} else {
+		s.config = config
+	}
 
 	// Reload template if path is specified
 	templatePath := s.templatePath
@@ -132,6 +178,20 @@ func (s *XDSServer) updateSnapshot() error {
 			resource.ClusterType:  clusters,
 			resource.RouteType:    routes,
 			resource.ListenerType: listeners,
+		}
+	}
+
+	// Preserve existing secrets from the current snapshot if any
+	currentSnapshot, _ := s.cache.GetSnapshot(nodeID)
+	if currentSnapshot != nil {
+		secretsMap := currentSnapshot.GetResources(resource.SecretType)
+		if len(secretsMap) > 0 {
+			secrets := make([]types.Resource, 0, len(secretsMap))
+			for _, secret := range secretsMap {
+				secrets = append(secrets, secret)
+			}
+			resources[resource.SecretType] = secrets
+			log.Printf("Preserving %d secrets in snapshot update", len(secrets))
 		}
 	}
 
@@ -201,7 +261,21 @@ func (s *XDSServer) watchConfig() error {
 }
 
 func (s *XDSServer) Start(port int) error {
-	// Create initial snapshot
+	// Start HTTP challenge server if SSL is enabled
+	if s.config.SSL.Enabled {
+		if err := s.startHTTPChallenge(); err != nil {
+			return fmt.Errorf("failed to start HTTP challenge server: %w", err)
+		}
+
+		// Load existing certificates into SDS if available
+		if s.sdsServer != nil {
+			if err := s.sdsServer.loadCertificates(); err != nil {
+				log.Printf("Warning: failed to load initial certificates for SDS: %v", err)
+			}
+		}
+	}
+
+	// Create initial snapshot (will include secrets if loaded)
 	if err := s.updateSnapshot(); err != nil {
 		return fmt.Errorf("failed to create initial snapshot: %w", err)
 	}
@@ -236,6 +310,12 @@ func (s *XDSServer) Start(port int) error {
 	routeservice.RegisterRouteDiscoveryServiceServer(s.grpcServer, xdsServer)
 	listenerservice.RegisterListenerDiscoveryServiceServer(s.grpcServer, xdsServer)
 
+	// Register SDS service if available
+	if s.sdsServer != nil {
+		secretservice.RegisterSecretDiscoveryServiceServer(s.grpcServer, s.sdsServer)
+		log.Printf("SDS service registered for dynamic certificate serving")
+	}
+
 	// Start listening
 	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
 	if err != nil {
@@ -250,4 +330,8 @@ func (s *XDSServer) Stop() {
 	if s.grpcServer != nil {
 		s.grpcServer.GracefulStop()
 	}
+	if s.sdsServer != nil {
+		s.sdsServer.Stop()
+	}
+	s.stopHTTPChallenge()
 }

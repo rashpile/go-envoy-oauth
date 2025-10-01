@@ -1,0 +1,53 @@
+# Example configuration with SSL certificate management enabled
+# Template configuration (optional)
+# template: example-template.yaml
+
+# Listener configuration - dual HTTP and HTTPS listeners
+listener:
+  address: 0.0.0.0
+  port: 8080        # HTTP port (for ACME challenges and redirects)
+  tls_port: 8443    # HTTPS port (secured with TLS certificates)
+
+# SSL Certificate Management Configuration
+ssl:
+  enabled: true                           # Enable certificate management
+  staging: true                          # Use Let's Encrypt staging (for testing)
+  acme_email: koptilin@gmail.com        # Email for ACME account
+  http_port: 8080                        # Port for HTTP-01 challenges
+  storage_path: /srv/var/ssl             # Certificate storage path
+
+plugin:
+  library_path: /app/go-envoy-oauth.so
+
+oauth:
+  issuer_url: "https://your_issuer_url_here"
+  client_id: "your_client_id_here"
+  client_secret: "your_client_secret_here"
+  redirect_url: "/oauth/callback"
+  enable_api_key: false
+  enable_bearer_token: true
+
+clients:
+  - id: admin_cluster
+    domain: example.com        # Domain to get certificate for
+    address: httpbin.org
+    port: 443
+    ssl: true                  # Upstream uses SSL
+    tls: true                  # Get certificate for this domain
+    exclude: true
+    prefix: /ip
+    exclude_paths:
+      - /healthz
+      - /metrics
+
+  - id: echo_service_cluster
+    domain: echo.example.com   # Another domain for certificate
+    address: httpbin.org
+    port: 443
+    ssl: true                  # Upstream uses SSL
+    tls: true                  # Get certificate for this domain
+    exclude: false
+    prefix: /
+    exclude_paths:
+      - /status/200
+      - /status/201

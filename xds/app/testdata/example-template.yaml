@@ -1,0 +1,44 @@
+# Example template for testing
+# This file demonstrates how to extend the xDS configuration with custom listeners and clusters
+
+listeners:
+  - name: admin_listener
+    address:
+      socket_address:
+        address: 127.0.0.1
+        port_value: 9901
+    filter_chains:
+      - filters:
+          - name: envoy.filters.network.http_connection_manager
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+              stat_prefix: admin
+              route_config:
+                name: admin_routes
+                virtual_hosts:
+                  - name: admin
+                    domains: ["*"]
+                    routes:
+                      - match:
+                          prefix: "/"
+                        route:
+                          cluster: admin_cluster
+              http_filters:
+                - name: envoy.filters.http.router
+                  typed_config:
+                    "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+
+clusters:
+  - name: admin_cluster
+    connect_timeout: 0.25s
+    type: STATIC
+    lb_policy: ROUND_ROBIN
+    load_assignment:
+      cluster_name: admin_cluster
+      endpoints:
+        - lb_endpoints:
+            - endpoint:
+                address:
+                  socket_address:
+                    address: 127.0.0.1
+                    port_value: 8080

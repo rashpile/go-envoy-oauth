@@ -2,6 +2,7 @@ dist
 tmp
 .env
 .plan
+xds-server
 
 # Binaries for programs and plugins
 *.exe
