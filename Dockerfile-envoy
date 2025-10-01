@@ -49,6 +49,9 @@ RUN echo '#!/bin/bash' > /app/entrypoint.sh && \
     echo '/app/xds-server --config=/app/gateway-auth.yaml --port=18000 > /var/log/xds-server.log 2>&1 &' >> /app/entrypoint.sh && \
     echo 'XDS_PID=$!' >> /app/entrypoint.sh && \
     echo '' >> /app/entrypoint.sh && \
+    echo '# Tail XDS logs to stdout' >> /app/entrypoint.sh && \
+    echo 'tail -f /var/log/xds-server.log &' >> /app/entrypoint.sh && \
+    echo '' >> /app/entrypoint.sh && \
     echo '# Wait for XDS server to be ready' >> /app/entrypoint.sh && \
     echo 'sleep 2' >> /app/entrypoint.sh && \
     echo '' >> /app/entrypoint.sh && \
