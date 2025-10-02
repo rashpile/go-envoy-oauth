@@ -367,6 +367,10 @@ func MakeRoutes(config *GatewayConfig) ([]types.Resource, error) {
 		if client.HostRewrite != "" {
 			hostRewrite = client.HostRewrite
 		}
+		timeout, err := time.ParseDuration(client.RouteTimeout)
+		if err != nil {
+			timeout = 30 * time.Second
+		}
 
 		// Create route for this client
 		r := &route.Route{
@@ -383,6 +387,7 @@ func MakeRoutes(config *GatewayConfig) ([]types.Resource, error) {
 					HostRewriteSpecifier: &route.RouteAction_HostRewriteLiteral{
 						HostRewriteLiteral: hostRewrite,
 					},
+					Timeout: durationpb.New(timeout),
 				},
 			},
 		}

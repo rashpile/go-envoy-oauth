@@ -28,6 +28,7 @@ clients:
     exclude: true # default false
     prefix: /ip #default /
     cluster_idle_timeout: 30s
+    route_timeout: 30s
     sso_injection: false # optional, default: false - Enable SSO script injection for HTML pages
     exclude_paths: # optional
       - /healthz

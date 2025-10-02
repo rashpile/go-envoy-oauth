@@ -69,6 +69,7 @@ type ClientConfig struct {
 	SsoAppURL          string   `yaml:"sso_appurl,omitempty"`
 	SsoAppName         string   `yaml:"sso_appname,omitempty"`
 	ClusterIdleTimeout string   `yaml:"cluster_idle_timeout,omitempty"`
+	RouteTimeout       string   `yaml:"route_timeout,omitempty"`
 }
 
 // overrideFromEnv overrides configuration values from environment variables
