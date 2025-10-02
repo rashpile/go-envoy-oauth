@@ -502,7 +502,7 @@ func MakeClusters(config *GatewayConfig) ([]types.Resource, error) {
 		}
 		var httpOptions *http.HttpProtocolOptions
 
-		if client.SSL {
+		if !client.SSL {
 			// For HTTP (non-TLS), use explicit HTTP/1.1
 			httpOptions = &http.HttpProtocolOptions{
 				CommonHttpProtocolOptions: commonOptions,
