@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	xdstype "github.com/cncf/xds/go/xds/type/v3"
 	golang "github.com/envoyproxy/go-control-plane/contrib/envoy/extensions/filters/http/golang/v3alpha"
@@ -15,11 +16,16 @@ import (
 	router "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/router/v3"
 	hcm "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
 	tls "github.com/envoyproxy/go-control-plane/envoy/extensions/transport_sockets/tls/v3"
+	http "github.com/envoyproxy/go-control-plane/envoy/extensions/upstreams/http/v3"
+
 	"github.com/envoyproxy/go-control-plane/pkg/cache/types"
 	"github.com/envoyproxy/go-control-plane/pkg/resource/v3"
 	"github.com/envoyproxy/go-control-plane/pkg/wellknown"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
+	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/structpb"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 )
 
 const (
@@ -482,6 +488,59 @@ func MakeClusters(config *GatewayConfig) ([]types.Resource, error) {
 				},
 			}
 		}
+		clusterIdleTimeout := client.ClusterIdleTimeout
+		if clusterIdleTimeout == "" {
+			clusterIdleTimeout = "30s"
+		}
+		duration, err := time.ParseDuration(clusterIdleTimeout)
+		if err != nil {
+			panic(fmt.Sprintf("failed to parse IdleTimeout: %v", err))
+		}
+
+		commonOptions := &core.HttpProtocolOptions{
+			IdleTimeout: durationpb.New(duration),
+		}
+		var httpOptions *http.HttpProtocolOptions
+
+		if client.SSL {
+			// For HTTP (non-TLS), use explicit HTTP/1.1
+			httpOptions = &http.HttpProtocolOptions{
+				CommonHttpProtocolOptions: commonOptions,
+				UpstreamProtocolOptions: &http.HttpProtocolOptions_ExplicitHttpConfig_{
+					ExplicitHttpConfig: &http.HttpProtocolOptions_ExplicitHttpConfig{
+						ProtocolConfig: &http.HttpProtocolOptions_ExplicitHttpConfig_HttpProtocolOptions{
+							HttpProtocolOptions: &core.Http1ProtocolOptions{
+								// EnableTrailers: true,                // Allows HTTP/1.1 trailers support
+								AcceptHttp_10: false,
+							},
+						},
+					},
+				},
+			}
+		} else {
+			// For HTTPS, use auto config with ALPN
+			httpOptions = &http.HttpProtocolOptions{
+				CommonHttpProtocolOptions: commonOptions,
+				UpstreamProtocolOptions: &http.HttpProtocolOptions_AutoConfig{
+					AutoConfig: &http.HttpProtocolOptions_AutoHttpConfig{
+						Http2ProtocolOptions: &core.Http2ProtocolOptions{
+							// Maximum number of concurrent streams per connection
+							MaxConcurrentStreams: wrapperspb.UInt32(100),
+							// Initial window size for stream-level flow control
+							InitialStreamWindowSize: wrapperspb.UInt32(65536), // 64 KB
+							// Initial window size for connection-level flow control
+							InitialConnectionWindowSize: wrapperspb.UInt32(1048576), // 1 MB
+						},
+					},
+				},
+			}
+		}
+
+		typedConfig := marshalTypedConfig(httpOptions)
+
+		c.TypedExtensionProtocolOptions = map[string]*anypb.Any{
+			"envoy.extensions.upstreams.http.v3.HttpProtocolOptions": typedConfig,
+		}
 
 		clusters = append(clusters, c)
 	}
@@ -507,4 +566,13 @@ func MakeEndpoints(config *GatewayConfig) ([]types.Resource, error) {
 	// Endpoints are included in the cluster LoadAssignment above
 	// Return empty for now as we're using static endpoints
 	return []types.Resource{}, nil
+}
+
+// Helper function to marshal TypedConfig
+func marshalTypedConfig(message proto.Message) *anypb.Any {
+	typedConfig, err := anypb.New(message)
+	if err != nil {
+		panic(fmt.Sprintf("failed to marshal TypedConfig: %v", err))
+	}
+	return typedConfig
 }

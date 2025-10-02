@@ -10,12 +10,12 @@ import (
 )
 
 type GatewayConfig struct {
-	Plugin   PluginConfig    `yaml:"plugin"`
-	OAuth    OAuthConfig     `yaml:"oauth"`
-	Clients  []ClientConfig  `yaml:"clients"`
-	Template string          `yaml:"template,omitempty"` // Path to template config file
-	Listener ListenerConfig  `yaml:"listener,omitempty"`
-	SSL      SSLConfig       `yaml:"ssl,omitempty"`      // SSL/TLS configuration for listener
+	Plugin   PluginConfig   `yaml:"plugin"`
+	OAuth    OAuthConfig    `yaml:"oauth"`
+	Clients  []ClientConfig `yaml:"clients"`
+	Template string         `yaml:"template,omitempty"` // Path to template config file
+	Listener ListenerConfig `yaml:"listener,omitempty"`
+	SSL      SSLConfig      `yaml:"ssl,omitempty"` // SSL/TLS configuration for listener
 }
 
 type PluginConfig struct {
@@ -23,51 +23,52 @@ type PluginConfig struct {
 }
 
 type OAuthConfig struct {
-	IssuerURL           string   `yaml:"issuer_url"`
-	ClientID            string   `yaml:"client_id"`
-	ClientSecret        string   `yaml:"client_secret"`
-	RedirectURL         string   `yaml:"redirect_url"`
-	Scopes              []string `yaml:"scopes,omitempty"`
-	EnableAPIKey        bool     `yaml:"enable_api_key,omitempty"`
-	EnableBearerToken   bool     `yaml:"enable_bearer_token,omitempty"`
-	SessionCookieName   string   `yaml:"session_cookie_name,omitempty"`
-	SessionMaxAge       int      `yaml:"session_max_age,omitempty"`
-	SessionPath         string   `yaml:"session_path,omitempty"`
-	SessionDomain       string   `yaml:"session_domain,omitempty"`
-	SessionSecure       bool     `yaml:"session_secure,omitempty"`
-	SessionHTTPOnly     bool     `yaml:"session_http_only,omitempty"`
-	SessionSameSite     string   `yaml:"session_same_site,omitempty"`
+	IssuerURL         string   `yaml:"issuer_url"`
+	ClientID          string   `yaml:"client_id"`
+	ClientSecret      string   `yaml:"client_secret"`
+	RedirectURL       string   `yaml:"redirect_url"`
+	Scopes            []string `yaml:"scopes,omitempty"`
+	EnableAPIKey      bool     `yaml:"enable_api_key,omitempty"`
+	EnableBearerToken bool     `yaml:"enable_bearer_token,omitempty"`
+	SessionCookieName string   `yaml:"session_cookie_name,omitempty"`
+	SessionMaxAge     int      `yaml:"session_max_age,omitempty"`
+	SessionPath       string   `yaml:"session_path,omitempty"`
+	SessionDomain     string   `yaml:"session_domain,omitempty"`
+	SessionSecure     bool     `yaml:"session_secure,omitempty"`
+	SessionHTTPOnly   bool     `yaml:"session_http_only,omitempty"`
+	SessionSameSite   string   `yaml:"session_same_site,omitempty"`
 }
 
 type ListenerConfig struct {
 	Address string `yaml:"address,omitempty"`
-	Port    uint32 `yaml:"port,omitempty"`    // HTTP listener port
+	Port    uint32 `yaml:"port,omitempty"`     // HTTP listener port
 	TLSPort uint32 `yaml:"tls_port,omitempty"` // HTTPS listener port
 	TLS     bool   `yaml:"tls,omitempty"`      // Deprecated: Enable TLS on listener (use tls_port instead)
 }
 
 type SSLConfig struct {
-	Enabled      bool   `yaml:"enabled,omitempty"`      // Enable SSL certificate management
-	Staging      bool   `yaml:"staging,omitempty"`      // Use Let's Encrypt staging
-	ACMEEmail    string `yaml:"acme_email,omitempty"`   // Email for ACME account
-	HTTPPort     uint32 `yaml:"http_port,omitempty"`    // Port for HTTP-01 challenge
-	StoragePath  string `yaml:"storage_path,omitempty"` // Certificate storage path
+	Enabled     bool   `yaml:"enabled,omitempty"`      // Enable SSL certificate management
+	Staging     bool   `yaml:"staging,omitempty"`      // Use Let's Encrypt staging
+	ACMEEmail   string `yaml:"acme_email,omitempty"`   // Email for ACME account
+	HTTPPort    uint32 `yaml:"http_port,omitempty"`    // Port for HTTP-01 challenge
+	StoragePath string `yaml:"storage_path,omitempty"` // Certificate storage path
 }
 
 type ClientConfig struct {
-	ID           string   `yaml:"id"`
-	Domain       string   `yaml:"domain,omitempty"`
-	HostRewrite  string   `yaml:"host_rewrite,omitempty"`
-	Address      string   `yaml:"address"`
-	Port         uint32   `yaml:"port"`
-	SSL          bool     `yaml:"ssl"`          // Upstream uses SSL/TLS
-	TLS          bool     `yaml:"tls,omitempty"` // Request certificate for this domain
-	Exclude      bool     `yaml:"exclude"`
-	Prefix       string   `yaml:"prefix"`
-	ExcludePaths []string `yaml:"exclude_paths,omitempty"`
-	SsoInjection bool     `yaml:"sso_injection,omitempty"`
-	SsoAppURL    string   `yaml:"sso_appurl,omitempty"`
-	SsoAppName   string   `yaml:"sso_appname,omitempty"`
+	ID                 string   `yaml:"id"`
+	Domain             string   `yaml:"domain,omitempty"`
+	HostRewrite        string   `yaml:"host_rewrite,omitempty"`
+	Address            string   `yaml:"address"`
+	Port               uint32   `yaml:"port"`
+	SSL                bool     `yaml:"ssl"`           // Upstream uses SSL/TLS
+	TLS                bool     `yaml:"tls,omitempty"` // Request certificate for this domain
+	Exclude            bool     `yaml:"exclude"`
+	Prefix             string   `yaml:"prefix"`
+	ExcludePaths       []string `yaml:"exclude_paths,omitempty"`
+	SsoInjection       bool     `yaml:"sso_injection,omitempty"`
+	SsoAppURL          string   `yaml:"sso_appurl,omitempty"`
+	SsoAppName         string   `yaml:"sso_appname,omitempty"`
+	ClusterIdleTimeout string   `yaml:"cluster_idle_timeout,omitempty"`
 }
 
 // overrideFromEnv overrides configuration values from environment variables
@@ -170,9 +171,9 @@ func LoadConfig(path string) (*GatewayConfig, error) {
 	var config GatewayConfig
 
 	// Set defaults BEFORE unmarshaling to handle missing fields
-	config.OAuth.EnableBearerToken = true  // Default to true
-	config.OAuth.SessionSecure = true      // Default to true
-	config.OAuth.SessionHTTPOnly = true    // Default to true
+	config.OAuth.EnableBearerToken = true // Default to true
+	config.OAuth.SessionSecure = true     // Default to true
+	config.OAuth.SessionHTTPOnly = true   // Default to true
 
 	if err := yaml.Unmarshal(data, &config); err != nil {
 		return nil, fmt.Errorf("failed to parse config: %w", err)
