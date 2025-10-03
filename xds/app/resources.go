@@ -358,46 +358,67 @@ func MakeRoutes(config *GatewayConfig) ([]types.Resource, error) {
 	var wildcardRoutes []*route.Route
 
 	for _, client := range config.Clients {
-		// Determine host rewrite value
-		// Priority: HostRewrite > Domain > Address
-		hostRewrite := client.Address
-		if client.Domain != "" {
-			hostRewrite = client.Domain
-		}
-		if client.HostRewrite != "" {
-			hostRewrite = client.HostRewrite
-		}
 		timeout, err := time.ParseDuration(client.RouteTimeout)
 		if err != nil {
 			timeout = 30 * time.Second
 		}
 
-		// Create route for this client
-		r := &route.Route{
-			Match: &route.RouteMatch{
-				PathSpecifier: &route.RouteMatch_Prefix{
-					Prefix: client.Prefix,
-				},
-			},
-			Action: &route.Route_Route{
-				Route: &route.RouteAction{
-					ClusterSpecifier: &route.RouteAction_Cluster{
-						Cluster: client.ID,
+		// Helper function to create a route with specific host rewrite
+		createRoute := func(hostRewrite string) *route.Route {
+			return &route.Route{
+				Match: &route.RouteMatch{
+					PathSpecifier: &route.RouteMatch_Prefix{
+						Prefix: client.Prefix,
 					},
-					HostRewriteSpecifier: &route.RouteAction_HostRewriteLiteral{
-						HostRewriteLiteral: hostRewrite,
-					},
-					Timeout: durationpb.New(timeout),
 				},
-			},
+				Action: &route.Route_Route{
+					Route: &route.RouteAction{
+						ClusterSpecifier: &route.RouteAction_Cluster{
+							Cluster: client.ID,
+						},
+						HostRewriteSpecifier: &route.RouteAction_HostRewriteLiteral{
+							HostRewriteLiteral: hostRewrite,
+						},
+						Timeout: durationpb.New(timeout),
+					},
+				},
+			}
 		}
 
 		if client.Domain != "" {
-			// Group routes by domain
-			domainRoutes[client.Domain] = append(domainRoutes[client.Domain], r)
+			// Split domains and create a route for each with appropriate host rewrite
+			domains := strings.Split(client.Domain, ",")
+			for _, domain := range domains {
+				domain = strings.TrimSpace(domain)
+
+				// Skip empty domains after trimming
+				if domain == "" {
+					continue
+				}
+
+				// Determine host rewrite value for this domain
+				// Priority: HostRewrite > current domain (if not wildcard) > Address
+				hostRewrite := client.Address
+				if client.HostRewrite == "" {
+					// If no explicit HostRewrite and domain is not a wildcard, use the domain
+					if domain != "*" {
+						hostRewrite = domain
+					}
+					// For wildcard domains, fall back to Address (already set)
+				} else {
+					// Use explicit HostRewrite for all domains
+					hostRewrite = client.HostRewrite
+				}
+
+				domainRoutes[domain] = append(domainRoutes[domain], createRoute(hostRewrite))
+			}
 		} else {
-			// Collect routes for wildcard virtual host
-			wildcardRoutes = append(wildcardRoutes, r)
+			// No domain specified - use wildcard with Address or HostRewrite
+			hostRewrite := client.Address
+			if client.HostRewrite != "" {
+				hostRewrite = client.HostRewrite
+			}
+			wildcardRoutes = append(wildcardRoutes, createRoute(hostRewrite))
 		}
 	}
 

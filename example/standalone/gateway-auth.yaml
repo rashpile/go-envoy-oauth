@@ -14,7 +14,7 @@ oauth:
 clients:
   - id: keycloak #required
     address: keycloak # required
-    domain: localhost:8081
+    domain: 192.168.88.100:8081
     port: 8080 # default 8080
     ssl: false # default false
     exclude: true # default false
@@ -59,7 +59,7 @@ clients:
     exclude_paths:
       - /favicon.ico
   - id: shortsui_service_cluster
-    domain: localhost:8081
+    domain: localhost:8081,192.168.88.100:8081
     address: shorts
     port: 8080
     prefix: /sui
