@@ -254,14 +254,15 @@ func (h *OAuthHandlerImpl) HandleCallback(header api.RequestHeaderMap, query str
 
 	// Create a new session for the authenticated user
 	session := &session.Session{
-		ID:           generateRandomState(), // Use a new random ID for the user session
-		UserID:       sub,
-		Token:        token.AccessToken,
-		IDToken:      idToken,
-		RefreshToken: token.RefreshToken, // Store refresh token for future use
-		Claims:       userInfo,
-		CreatedAt:    time.Now(),
-		ExpiresAt:    time.Now().Add(24 * time.Hour),
+		ID:             generateRandomState(), // Use a new random ID for the user session
+		UserID:         sub,
+		Token:          token.AccessToken,
+		TokenExpiresAt: token.Expiry, // Store access token expiry
+		IDToken:        idToken,
+		RefreshToken:   token.RefreshToken, // Store refresh token for future use
+		Claims:         userInfo,
+		CreatedAt:      time.Now(),
+		ExpiresAt:      time.Now().Add(24 * time.Hour), // Session expires in 24 hours
 	}
 	if err := h.sessionStore.Store(session); err != nil {
 		return err
@@ -350,10 +351,20 @@ func (h *OAuthHandlerImpl) HandleLogout(header api.RequestHeaderMap) (string, er
 }
 
 func (h *OAuthHandlerImpl) IsNeedValidateSession(session *session.Session) bool {
+	// Check if access token has expired or will expire soon (within 10 seconds)
+	if !session.TokenExpiresAt.IsZero() {
+		return time.Until(session.TokenExpiresAt) < 10*time.Second
+	}
+	// Fallback to session expiry if token expiry is not set
 	return time.Now().After(session.ExpiresAt)
 }
 
 func (h *OAuthHandlerImpl) ValidateSession(session *session.Session) error {
+	// Check if access token needs refresh
+	if !session.TokenExpiresAt.IsZero() && time.Until(session.TokenExpiresAt) < 10*time.Second {
+		return h.RefreshToken(session)
+	}
+	// Fallback: check session expiry
 	if time.Now().After(session.ExpiresAt) {
 		return h.RefreshToken(session)
 	}
@@ -508,21 +519,34 @@ func (h *OAuthHandlerImpl) GetPostLogoutRedirectURI(header api.RequestHeaderMap)
 
 // RefreshToken attempts to refresh an expired access token
 func (h *OAuthHandlerImpl) RefreshToken(session *session.Session) error {
-	if session.Token == "" {
-		return fmt.Errorf("no token available")
+	if session.RefreshToken == "" {
+		return fmt.Errorf("no refresh token available")
 	}
+
+	h.logger.Debug("Refreshing access token",
+		zap.String("session_id", session.ID),
+		zap.Time("token_expires_at", session.TokenExpiresAt))
 
 	// Get new token using refresh token
 	token, err := h.oauth2Config.TokenSource(context.Background(), &oauth2.Token{
-		AccessToken: session.Token,
+		RefreshToken: session.RefreshToken,
 	}).Token()
 	if err != nil {
-		return err
+		h.logger.Error("Failed to refresh access token", zap.Error(err))
+		return fmt.Errorf("failed to refresh token: %v", err)
 	}
 
-	// Update session with new token
+	// Update session with new token and expiry
 	session.Token = token.AccessToken
-	session.ExpiresAt = time.Now().Add(24 * time.Hour)
+	session.TokenExpiresAt = token.Expiry
+	// Update refresh token if a new one was issued
+	if token.RefreshToken != "" {
+		session.RefreshToken = token.RefreshToken
+	}
+
+	h.logger.Debug("Access token refreshed successfully",
+		zap.String("session_id", session.ID),
+		zap.Time("new_expiry", token.Expiry))
 
 	// Store updated session
 	return h.sessionStore.Store(session)
@@ -551,9 +575,10 @@ func (h *OAuthHandlerImpl) ValidateBearerToken(ctx context.Context, token string
 
 	// Create a session from the token claims
 	sess := &session.Session{
-		ID:     generateRandomState(), // Generate a unique session ID
-		UserID: claims.Subject,
-		Token:  token,
+		ID:             generateRandomState(), // Generate a unique session ID
+		UserID:         claims.Subject,
+		Token:          token,
+		TokenExpiresAt: time.Unix(claims.ExpiresAt, 0), // Set token expiry from claims
 		Claims: map[string]interface{}{
 			"email":              claims.Email,
 			"email_verified":     claims.EmailVerified,
