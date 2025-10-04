@@ -26,26 +26,146 @@ xds/
 
 ## Configuration
 
-Edit `gateway-auth.yaml` to configure:
-- OAuth settings (issuer, client ID/secret)
-- Backend clusters (address, port, SSL)
-- Routing rules and path exclusions
+Edit `gateway-auth.yaml` to configure OAuth settings, listener, and backend clients.
 
-Example:
+### Complete Configuration Example
+
 ```yaml
 plugin:
   library_path: /app/go-envoy-oauth.so
+
+listener:
+  address: 0.0.0.0
+  port: 8080
+  tls_port: 8443  # Optional, for HTTPS
+
 oauth:
   issuer_url: "https://your-idp.example.com"
   client_id: "your-client-id"
-  client_secret: "your-secret"
+  client_secret: "your-client-secret"
+  redirect_url: "/oauth/callback"
+  scopes: ["openid", "profile", "email"]
+
+  # Session configuration
+  session_cookie_name: "session"
+  session_max_age: 86400  # 24 hours in seconds
+  session_path: "/"
+  session_secure: true
+  session_http_only: true
+  session_same_site: "Lax"
+
+  # Optional features
+  enable_api_key: false       # Enable API key generation
+  enable_bearer_token: true   # Enable bearer token authentication
+
 clients:
-  - id: backend_service
-    address: api.example.com
-    port: 443
-    ssl: true
-    prefix: /api
-    exclude_paths: ["/health", "/metrics"]
+  - id: backend_service       # Required: Unique cluster identifier
+    address: api.example.com  # Required: Backend hostname/IP
+    port: 443                 # Default: 8080
+    ssl: true                 # Default: false - Use SSL for upstream
+    domain: "app.example.com" # Optional: Route specific domain to this client
+    prefix: /api              # Default: "/" - Path prefix for routing
+    exclude: false            # Default: false - Bypass authentication
+    exclude_paths:            # Optional: Specific paths to exclude
+      - /health
+      - /metrics
+    host_rewrite: "api.example.com"  # Optional: Rewrite Host header
+    add_token: true           # Default: false - Add Authorization header
+    cluster_idle_timeout: "300s"     # Optional: Connection idle timeout
+    route_timeout: "15s"      # Optional: Per-route timeout
+
+    # SSO injection (optional)
+    sso_injection: true
+    sso_appurl: "https://app.example.com"
+    sso_appname: "My Application"
+```
+
+### Configuration Sections
+
+#### Plugin Configuration
+
+| Field | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `library_path` | No | `/app/go-envoy-oauth.so` | Path to the filter shared object file |
+
+#### Listener Configuration
+
+| Field | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `address` | No | `0.0.0.0` | Listener address |
+| `port` | No | `8080` | HTTP listener port |
+| `tls_port` | No | - | HTTPS listener port (enables TLS when set) |
+
+#### OAuth Configuration
+
+| Field | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `issuer_url` | Yes | - | OAuth/OIDC provider issuer URL |
+| `client_id` | Yes | - | OAuth client ID |
+| `client_secret` | No | - | OAuth client secret |
+| `redirect_url` | No | `/oauth/callback` | OAuth callback path |
+| `scopes` | No | `["openid", "profile", "email"]` | OAuth scopes |
+| `session_cookie_name` | No | `session` | Session cookie name |
+| `session_max_age` | No | `86400` | Session expiration in seconds |
+| `session_path` | No | `/` | Cookie path |
+| `session_secure` | No | `true` | Secure cookie flag |
+| `session_http_only` | No | `true` | HttpOnly cookie flag |
+| `session_same_site` | No | `Lax` | SameSite cookie attribute |
+| `enable_api_key` | No | `false` | Enable API key generation feature |
+| `enable_bearer_token` | No | `true` | Enable bearer token authentication |
+
+#### Client Configuration
+
+Each client in the `clients` array represents a backend service cluster.
+
+| Field | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `id` | Yes | - | Unique identifier for the Envoy cluster |
+| `address` | Yes | - | Backend service hostname or IP |
+| `port` | No | `8080` | Backend service port |
+| `ssl` | No | `false` | Use SSL/TLS for upstream connections |
+| `tls` | No | `false` | Request Let's Encrypt certificate for this domain |
+| `domain` | No | - | Route requests for specific domain(s). Supports comma-separated multiple domains |
+| `prefix` | No | `/` | URL path prefix for routing |
+| `exclude` | No | `false` | Bypass authentication for all requests to this service |
+| `exclude_paths` | No | `[]` | List of specific paths to exclude from authentication |
+| `host_rewrite` | No | - | Rewrite the Host header for upstream requests |
+| `add_token` | No | `false` | Add `Authorization: Bearer <token>` header to upstream |
+| `cluster_idle_timeout` | No | - | Connection idle timeout (e.g., `300s`) |
+| `route_timeout` | No | - | Request timeout for this route (e.g., `15s`) |
+| `sso_injection` | No | `false` | Inject this app into SSO portal |
+| `sso_appurl` | No | - | Application URL for SSO portal |
+| `sso_appname` | No | - | Display name in SSO portal |
+
+### Multi-Domain Routing Example
+
+```yaml
+clients:
+  # Route multiple domains to the same backend
+  - id: web_app
+    address: web-backend
+    port: 8080
+    domain: "app.example.com,www.example.com"
+    prefix: /
+    sso_injection: true
+    sso_appurl: "https://app.example.com"
+    sso_appname: "Web App"
+
+  # Domain-specific API routing
+  - id: api_service
+    address: api-backend
+    port: 9000
+    domain: "api.example.com"
+    prefix: /v1
+    add_token: true
+    route_timeout: "30s"
+
+  # Public service without authentication
+  - id: public_site
+    address: public-backend
+    port: 8080
+    domain: "public.example.com"
+    exclude: true
 ```
 
 ## Building and Running

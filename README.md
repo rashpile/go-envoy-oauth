@@ -75,7 +75,7 @@ http_filters:
         issuer_url: "https://your-oauth-provider.com"
         client_id: "your-client-id"
         client_secret: "your-client-secret"
-        redirect_url: "http://localhost:8080/oauth/callback"
+        redirect_url: "/oauth/callback"
         scopes: ["openid", "profile", "email"]
 
         # Session configuration
@@ -93,8 +93,53 @@ http_filters:
         user_username_header_name: "X-User-Username"
         skip_auth_header_name: "X-Skip-Auth"
 
-        # Paths that should be excluded from authentication
+        # Optional features
+        enable_api_key: false       # Enable API key generation
+        enable_bearer_token: true   # Enable bearer token authentication
+
+        # Global paths excluded from authentication
         exclude_paths: ["/health"]
+
+        # Cluster-specific configurations
+        clusters:
+          backend_service_cluster:
+            exclude_paths: ["/status", "/metrics"]
+          public_api_cluster:
+            exclude: true  # Bypass auth for entire cluster
+          protected_api_cluster:
+            add_token: true  # Add Authorization header with token
+```
+
+#### Cluster Configuration Options
+
+The `clusters` section allows per-cluster authentication settings. Each cluster name must match the cluster name defined in your Envoy route configuration.
+
+**Available cluster options:**
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `exclude` | boolean | false | Bypass authentication for all requests to this cluster |
+| `exclude_paths` | string[] | [] | Specific paths to exclude from authentication |
+| `add_token` | boolean | false | Add `Authorization: Bearer <token>` header to upstream requests |
+
+**Example with multiple clusters:**
+
+```yaml
+clusters:
+  # Public endpoints - no authentication required
+  health_cluster:
+    exclude: true
+
+  # API with selective path exclusion
+  api_cluster:
+    exclude_paths:
+      - /health
+      - /metrics
+      - /version
+
+  # Protected service that needs the token
+  backend_cluster:
+    add_token: true
 ```
 
 ### OAuth Provider Configuration

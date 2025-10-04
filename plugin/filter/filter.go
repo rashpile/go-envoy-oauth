@@ -274,6 +274,10 @@ func (f *Filter) handleAuthSuccess(header api.RequestHeaderMap, session *session
 		header.Set(userEmailHeader, email)
 	}
 
+	if f.config.Clusters[f.cluster].TokenInclude && session.Token != "" {
+		header.Set("authorization", "Bearer "+session.Token)
+	}
+
 	// Add username from claims if available
 	if username, ok := session.Claims["preferred_username"].(string); ok {
 		header.Set(userUsernameHeader, username)
@@ -692,76 +696,6 @@ func (f *Filter) extractBearerToken(header api.RequestHeaderMap) string {
 	}
 
 	return parts[1]
-}
-
-func (f *Filter) extractAPIToken(header api.RequestHeaderMap) string {
-	// Check API-KEY header first
-	if apiKey, _ := header.Get("api-key"); apiKey != "" {
-		return apiKey
-	}
-
-	// Also check X-API-KEY header (common variation)
-	if apiKey, _ := header.Get("x-api-key"); apiKey != "" {
-		return apiKey
-	}
-
-	// Check query parameter
-	path, _ := header.Get(":path")
-	if path != "" {
-		// Parse query string from path
-		if idx := strings.Index(path, "?"); idx > 0 {
-			query := path[idx+1:]
-			values, err := url.ParseQuery(query)
-			if err == nil {
-				if apiKey := values.Get("auth-api-key"); apiKey != "" {
-					return apiKey
-				}
-			}
-		}
-	}
-
-	return ""
-}
-
-// isAPITokenFromQuery checks if API token came from query parameter
-func (f *Filter) isAPITokenFromQuery(header api.RequestHeaderMap) bool {
-	path, _ := header.Get(":path")
-	if path == "" {
-		return false
-	}
-	return strings.Contains(path, "auth-api-key=") && !strings.Contains(path, "redirect=false")
-}
-
-// removeQueryParam removes a specific query parameter from the path
-func removeQueryParam(path string, paramToRemove string) string {
-	if path == "" {
-		return path
-	}
-
-	// Split path and query string
-	idx := strings.Index(path, "?")
-	if idx < 0 {
-		return path // No query string
-	}
-
-	basePath := path[:idx]
-	query := path[idx+1:]
-
-	// Parse query parameters
-	values, err := url.ParseQuery(query)
-	if err != nil {
-		return basePath // Return base path if query parsing fails
-	}
-
-	// Remove the parameter
-	values.Del(paramToRemove)
-
-	// Rebuild the path
-	newQuery := values.Encode()
-	if newQuery != "" {
-		return basePath + "?" + newQuery
-	}
-	return basePath
 }
 
 func (f *Filter) OnLog(reqHeaders api.RequestHeaderMap, reqTrailers api.RequestTrailerMap,

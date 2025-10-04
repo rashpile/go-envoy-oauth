@@ -2,6 +2,7 @@ package filter
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/envoyproxy/envoy/contrib/golang/common/go/api"
@@ -92,4 +93,42 @@ func (f *Filter) handleOfflineCallback(header api.RequestHeaderMap, path string)
 		"",
 	)
 	return api.LocalReply
+}
+
+func (f *Filter) extractAPIToken(header api.RequestHeaderMap) string {
+	// Check API-KEY header first
+	if apiKey, _ := header.Get("api-key"); apiKey != "" {
+		return apiKey
+	}
+
+	// Also check X-API-KEY header (common variation)
+	if apiKey, _ := header.Get("x-api-key"); apiKey != "" {
+		return apiKey
+	}
+
+	// Check query parameter
+	path, _ := header.Get(":path")
+	if path != "" {
+		// Parse query string from path
+		if idx := strings.Index(path, "?"); idx > 0 {
+			query := path[idx+1:]
+			values, err := url.ParseQuery(query)
+			if err == nil {
+				if apiKey := values.Get("auth-api-key"); apiKey != "" {
+					return apiKey
+				}
+			}
+		}
+	}
+
+	return ""
+}
+
+// isAPITokenFromQuery checks if API token came from query parameter
+func (f *Filter) isAPITokenFromQuery(header api.RequestHeaderMap) bool {
+	path, _ := header.Get(":path")
+	if path == "" {
+		return false
+	}
+	return strings.Contains(path, "auth-api-key=") && !strings.Contains(path, "redirect=false")
 }

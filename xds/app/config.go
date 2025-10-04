@@ -68,6 +68,7 @@ type ClientConfig struct {
 	SsoInjection       bool     `yaml:"sso_injection,omitempty"`
 	SsoAppURL          string   `yaml:"sso_appurl,omitempty"`
 	SsoAppName         string   `yaml:"sso_appname,omitempty"`
+	AddToken           bool     `yaml:"add_token,omitempty"`
 	ClusterIdleTimeout string   `yaml:"cluster_idle_timeout,omitempty"`
 	RouteTimeout       string   `yaml:"route_timeout,omitempty"`
 }

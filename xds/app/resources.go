@@ -181,6 +181,9 @@ func createHTTPConnectionManager(config *GatewayConfig) (*anypb.Any, error) {
 		if client.SsoAppName != "" {
 			clientConfig["sso_appname"] = client.SsoAppName
 		}
+		if client.AddToken {
+			clientConfig["add_token"] = true
+		}
 		if len(clientConfig) > 0 {
 			clusters[client.ID] = clientConfig
 		}

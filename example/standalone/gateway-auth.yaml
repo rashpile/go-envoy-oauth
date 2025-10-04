@@ -42,6 +42,7 @@ clients:
     port: 8080
     ssl: false
     exclude: false
+    add_token: true
     prefix: /echo
     sso_injection: true
     sso_appurl: http://localhost:8081/echo

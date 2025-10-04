@@ -24,6 +24,7 @@ type ClusterConfig struct {
 	SsoAppURL    string
 	SsoAppName   string
 	ExcludePaths []string
+	TokenInclude bool
 }
 
 // OAuthConfig represents the OAuth filter configuration
@@ -233,6 +234,9 @@ func (p *Parser) Parse(any *anypb.Any, callbacks api.ConfigCallbackHandler) (int
 				}
 				if ssoAppName, ok := config["sso_appname"].(string); ok {
 					clusterConf.SsoAppName = ssoAppName
+				}
+				if tokenInclude, ok := config["add_token"].(bool); ok {
+					clusterConf.TokenInclude = tokenInclude
 				}
 				conf.Clusters[clusterName] = clusterConf
 			}

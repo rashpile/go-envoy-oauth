@@ -29,6 +29,7 @@ clients:
     prefix: /ip #default /
     cluster_idle_timeout: 30s
     route_timeout: 30s
+    add_token: true # optional, default: false - Add bearer token to upstream request headers
     sso_injection: false # optional, default: false - Enable SSO script injection for HTML pages
     exclude_paths: # optional
       - /healthz
