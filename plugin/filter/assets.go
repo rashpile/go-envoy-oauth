@@ -106,7 +106,7 @@ func getSSOScript() string {
             console.info('SSO: No container with id="sso-menu" found, creating absolute positioned menu');
             container = document.createElement('div');
             container.id = 'sso-menu-absolute';
-            container.style.cssText = 'position: fixed; top: 20px; right: 20px; z-index: 9999;';
+            container.style.cssText = 'position: absolute; top: 20px; right: 20px; z-index: 9999;';
             document.body.appendChild(container);
             isAbsolute = true;
         }
@@ -115,7 +115,7 @@ func getSSOScript() string {
         const style = document.createElement('style');
         style.textContent = ` + "`" + `
             #sso-menu-absolute {
-                position: fixed !important;
+                position: absolute !important;
                 top: 20px !important;
                 right: 20px !important;
                 z-index: 9999 !important;
