@@ -14,6 +14,7 @@ import (
 	listener "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3"
 	route "github.com/envoyproxy/go-control-plane/envoy/config/route/v3"
 	router "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/router/v3"
+	matcher "github.com/envoyproxy/go-control-plane/envoy/type/matcher/v3"
 	hcm "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
 	tls "github.com/envoyproxy/go-control-plane/envoy/extensions/transport_sockets/tls/v3"
 	http "github.com/envoyproxy/go-control-plane/envoy/extensions/upstreams/http/v3"
@@ -366,8 +367,41 @@ func MakeRoutes(config *GatewayConfig) ([]types.Resource, error) {
 			timeout = 30 * time.Second
 		}
 
-		// Helper function to create a route with specific host rewrite
-		createRoute := func(hostRewrite string) *route.Route {
+		// Helper function to create a route with specific host rewrite and optional prefix rewrite
+		createRoute := func(hostRewrite string, prefixRewrite string) *route.Route {
+			routeAction := &route.RouteAction{
+				ClusterSpecifier: &route.RouteAction_Cluster{
+					Cluster: client.ID,
+				},
+				HostRewriteSpecifier: &route.RouteAction_HostRewriteLiteral{
+					HostRewriteLiteral: hostRewrite,
+				},
+				Timeout: durationpb.New(timeout),
+			}
+
+			// Add regex rewrite if prefix_rewrite is configured
+			if prefixRewrite != "" {
+				// Build regex pattern: ^{prefix}/(.*)
+				// This matches the prefix followed by a slash and captures everything after
+				pattern := fmt.Sprintf("^%s/(.*)", strings.TrimSuffix(client.Prefix, "/"))
+
+				// Build substitution based on prefix_rewrite value
+				var substitution string
+				if prefixRewrite == "/" {
+					substitution = "/\\1"
+				} else {
+					// Ensure prefix_rewrite ends with / for proper path construction
+					substitution = fmt.Sprintf("%s/\\1", strings.TrimSuffix(prefixRewrite, "/"))
+				}
+
+				routeAction.RegexRewrite = &matcher.RegexMatchAndSubstitute{
+					Pattern: &matcher.RegexMatcher{
+						Regex: pattern,
+					},
+					Substitution: substitution,
+				}
+			}
+
 			return &route.Route{
 				Match: &route.RouteMatch{
 					PathSpecifier: &route.RouteMatch_Prefix{
@@ -375,15 +409,7 @@ func MakeRoutes(config *GatewayConfig) ([]types.Resource, error) {
 					},
 				},
 				Action: &route.Route_Route{
-					Route: &route.RouteAction{
-						ClusterSpecifier: &route.RouteAction_Cluster{
-							Cluster: client.ID,
-						},
-						HostRewriteSpecifier: &route.RouteAction_HostRewriteLiteral{
-							HostRewriteLiteral: hostRewrite,
-						},
-						Timeout: durationpb.New(timeout),
-					},
+					Route: routeAction,
 				},
 			}
 		}
@@ -413,7 +439,7 @@ func MakeRoutes(config *GatewayConfig) ([]types.Resource, error) {
 					hostRewrite = client.HostRewrite
 				}
 
-				domainRoutes[domain] = append(domainRoutes[domain], createRoute(hostRewrite))
+				domainRoutes[domain] = append(domainRoutes[domain], createRoute(hostRewrite, client.PrefixRewrite))
 			}
 		} else {
 			// No domain specified - use wildcard with Address or HostRewrite
@@ -421,7 +447,7 @@ func MakeRoutes(config *GatewayConfig) ([]types.Resource, error) {
 			if client.HostRewrite != "" {
 				hostRewrite = client.HostRewrite
 			}
-			wildcardRoutes = append(wildcardRoutes, createRoute(hostRewrite))
+			wildcardRoutes = append(wildcardRoutes, createRoute(hostRewrite, client.PrefixRewrite))
 		}
 	}
 

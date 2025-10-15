@@ -64,6 +64,7 @@ type ClientConfig struct {
 	TLS                bool     `yaml:"tls,omitempty"` // Request certificate for this domain
 	Exclude            bool     `yaml:"exclude"`
 	Prefix             string   `yaml:"prefix"`
+	PrefixRewrite      string   `yaml:"prefix_rewrite,omitempty"`
 	ExcludePaths       []string `yaml:"exclude_paths,omitempty"`
 	SsoInjection       bool     `yaml:"sso_injection,omitempty"`
 	SsoAppURL          string   `yaml:"sso_appurl,omitempty"`

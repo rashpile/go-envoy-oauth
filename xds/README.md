@@ -70,6 +70,7 @@ clients:
       - /health
       - /metrics
     host_rewrite: "api.example.com"  # Optional: Rewrite Host header
+    prefix_rewrite: "/v2"     # Optional: Rewrite path prefix for upstream
     add_token: true           # Default: false - Add Authorization header
     cluster_idle_timeout: "300s"     # Optional: Connection idle timeout
     route_timeout: "15s"      # Optional: Per-route timeout
@@ -130,6 +131,7 @@ Each client in the `clients` array represents a backend service cluster.
 | `exclude` | No | `false` | Bypass authentication for all requests to this service |
 | `exclude_paths` | No | `[]` | List of specific paths to exclude from authentication |
 | `host_rewrite` | No | - | Rewrite the Host header for upstream requests |
+| `prefix_rewrite` | No | - | Rewrite path prefix for upstream requests (see [Path Rewriting](#path-rewriting)) |
 | `add_token` | No | `false` | Add `Authorization: Bearer <token>` header to upstream |
 | `cluster_idle_timeout` | No | - | Connection idle timeout (e.g., `300s`) |
 | `route_timeout` | No | - | Request timeout for this route (e.g., `15s`) |
@@ -167,6 +169,67 @@ clients:
     domain: "public.example.com"
     exclude: true
 ```
+
+### Path Rewriting
+
+The `prefix_rewrite` option allows you to rewrite the request path before forwarding to the upstream service. This is useful when the external path structure differs from the internal service paths.
+
+#### How It Works
+
+Path rewriting uses regex substitution to transform incoming request paths:
+- The `prefix` defines what paths to match
+- The `prefix_rewrite` defines the new prefix for upstream requests
+
+#### Examples
+
+**Example 1: Rewrite to different path**
+```yaml
+clients:
+  - id: api_v1
+    address: backend
+    port: 8080
+    prefix: /api
+    prefix_rewrite: /v1
+```
+- Request: `/api/users` → Upstream: `/v1/users`
+- Request: `/api/posts/123` → Upstream: `/v1/posts/123`
+
+**Example 2: Strip prefix completely**
+```yaml
+clients:
+  - id: echo_service
+    address: http-echo
+    port: 8080
+    prefix: /echo
+    prefix_rewrite: /
+```
+- Request: `/echo/test` → Upstream: `/test`
+- Request: `/echo/foo/bar` → Upstream: `/foo/bar`
+
+**Example 3: Rewrite for legacy API paths**
+```yaml
+clients:
+  - id: legacy_api
+    address: old-service
+    port: 9000
+    prefix: /new-api
+    prefix_rewrite: /api/v2
+```
+- Request: `/new-api/resource` → Upstream: `/api/v2/resource`
+
+**Example 4: Combine with host rewrite**
+```yaml
+clients:
+  - id: external_service
+    address: internal-backend
+    port: 8080
+    domain: "api.example.com"
+    prefix: /external
+    prefix_rewrite: /internal
+    host_rewrite: "internal.service.local"
+```
+- Request to `api.example.com/external/data`
+- Upstream receives: Host: `internal.service.local`, Path: `/internal/data`
 
 ## Building and Running
 
