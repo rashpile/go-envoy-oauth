@@ -26,7 +26,7 @@ services:
       - envoy-network
 
   pk-shorts:
-    image: rashpile/pk-shorts
+    image: ghcr.io/rashpile/pk-shorts
     container_name: shorts
     volumes:
       - shorts_data:/app/data

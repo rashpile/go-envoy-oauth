@@ -44,6 +44,7 @@ clients:
     exclude: false
     add_token: true
     prefix: /echo
+    prefix_rewrite: /get
     sso_injection: true
     sso_appurl: http://localhost:8081/echo
     sso_appname: Echo
