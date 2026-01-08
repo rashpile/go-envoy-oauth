@@ -185,6 +185,14 @@ func createHTTPConnectionManager(config *GatewayConfig) (*anypb.Any, error) {
 		if client.AddToken {
 			clientConfig["add_token"] = true
 		}
+		// Add websocket_exclude_paths configuration
+		if len(client.WebSocketExcludePaths) > 0 {
+			wsExcludePathsInterface := make([]interface{}, len(client.WebSocketExcludePaths))
+			for i, path := range client.WebSocketExcludePaths {
+				wsExcludePathsInterface[i] = path
+			}
+			clientConfig["websocket_exclude_paths"] = wsExcludePathsInterface
+		}
 		if len(clientConfig) > 0 {
 			clusters[client.ID] = clientConfig
 		}
@@ -239,6 +247,12 @@ func createHTTPConnectionManager(config *GatewayConfig) (*anypb.Any, error) {
 						Ads: &core.AggregatedConfigSource{},
 					},
 				},
+			},
+		},
+		// Enable WebSocket upgrades
+		UpgradeConfigs: []*hcm.HttpConnectionManager_UpgradeConfig{
+			{
+				UpgradeType: "websocket",
 			},
 		},
 		HttpFilters: []*hcm.HttpFilter{

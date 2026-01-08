@@ -19,12 +19,13 @@ import (
 
 // ClusterConfig represents the configuration for a specific cluster
 type ClusterConfig struct {
-	Exclude      bool
-	SsoInjection bool
-	SsoAppURL    string
-	SsoAppName   string
-	ExcludePaths []string
-	TokenInclude bool
+	Exclude               bool
+	SsoInjection          bool
+	SsoAppURL             string
+	SsoAppName            string
+	ExcludePaths          []string
+	TokenInclude          bool
+	WebSocketExcludePaths []string
 }
 
 // OAuthConfig represents the OAuth filter configuration
@@ -54,6 +55,9 @@ type OAuthConfig struct {
 
 	// Paths that should be excluded from authentication
 	ExcludePaths []string `json:"exclude_paths"`
+
+	// WebSocket paths that should be excluded from authentication
+	WebSocketExcludePaths []string `json:"websocket_exclude_paths"`
 
 	// Cluster-specific configurations
 	Clusters map[string]ClusterConfig `json:"clusters"`
@@ -171,6 +175,16 @@ func (p *Parser) Parse(any *anypb.Any, callbacks api.ConfigCallbackHandler) (int
 		}
 	}
 
+	// Parse WebSocket exclude paths
+	if wsExcludes, ok := v.AsMap()["websocket_exclude_paths"].([]interface{}); ok {
+		conf.WebSocketExcludePaths = make([]string, len(wsExcludes))
+		for i, exclude := range wsExcludes {
+			if path, ok := exclude.(string); ok {
+				conf.WebSocketExcludePaths[i] = path
+			}
+		}
+	}
+
 	// Parse header configuration
 	if userIDHeaderName, ok := v.AsMap()["user_id_header_name"].(string); ok {
 		conf.UserIDHeaderName = userIDHeaderName
@@ -237,6 +251,14 @@ func (p *Parser) Parse(any *anypb.Any, callbacks api.ConfigCallbackHandler) (int
 				}
 				if tokenInclude, ok := config["add_token"].(bool); ok {
 					clusterConf.TokenInclude = tokenInclude
+				}
+				if wsExcludes, ok := config["websocket_exclude_paths"].([]interface{}); ok {
+					clusterConf.WebSocketExcludePaths = make([]string, len(wsExcludes))
+					for i, exclude := range wsExcludes {
+						if path, ok := exclude.(string); ok {
+							clusterConf.WebSocketExcludePaths[i] = path
+						}
+					}
 				}
 				conf.Clusters[clusterName] = clusterConf
 			}

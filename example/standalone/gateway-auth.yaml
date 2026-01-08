@@ -51,15 +51,22 @@ clients:
     exclude_paths:
       - /status/200
       - /status/201
-  - id: echo2_service_cluster
+#  - id: echo2_service_cluster
+#    domain: local.home:8081
+#    host_rewrite: httpbin.org
+#    address: http-echo
+#    port: 8080
+#    ssl: false
+#    exclude: false
+#    exclude_paths:
+#      - /favicon.ico
+  # websocket example
+  - id: chat_service_cluster
     domain: local.home:8081
-    host_rewrite: httpbin.org
-    address: http-echo
-    port: 8080
+    address: host.docker.internal
+    port: 9888
     ssl: false
     exclude: false
-    exclude_paths:
-      - /favicon.ico
   - id: shortsui_service_cluster
     domain: localhost:8081,192.168.88.100:8081
     address: shorts

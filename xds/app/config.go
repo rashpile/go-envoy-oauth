@@ -55,23 +55,24 @@ type SSLConfig struct {
 }
 
 type ClientConfig struct {
-	ID                 string   `yaml:"id"`
-	Domain             string   `yaml:"domain,omitempty"`
-	HostRewrite        string   `yaml:"host_rewrite,omitempty"`
-	Address            string   `yaml:"address"`
-	Port               uint32   `yaml:"port"`
-	SSL                bool     `yaml:"ssl"`           // Upstream uses SSL/TLS
-	TLS                bool     `yaml:"tls,omitempty"` // Request certificate for this domain
-	Exclude            bool     `yaml:"exclude"`
-	Prefix             string   `yaml:"prefix"`
-	PrefixRewrite      string   `yaml:"prefix_rewrite,omitempty"`
-	ExcludePaths       []string `yaml:"exclude_paths,omitempty"`
-	SsoInjection       bool     `yaml:"sso_injection,omitempty"`
-	SsoAppURL          string   `yaml:"sso_appurl,omitempty"`
-	SsoAppName         string   `yaml:"sso_appname,omitempty"`
-	AddToken           bool     `yaml:"add_token,omitempty"`
-	ClusterIdleTimeout string   `yaml:"cluster_idle_timeout,omitempty"`
-	RouteTimeout       string   `yaml:"route_timeout,omitempty"`
+	ID                    string   `yaml:"id"`
+	Domain                string   `yaml:"domain,omitempty"`
+	HostRewrite           string   `yaml:"host_rewrite,omitempty"`
+	Address               string   `yaml:"address"`
+	Port                  uint32   `yaml:"port"`
+	SSL                   bool     `yaml:"ssl"`           // Upstream uses SSL/TLS
+	TLS                   bool     `yaml:"tls,omitempty"` // Request certificate for this domain
+	Exclude               bool     `yaml:"exclude"`
+	Prefix                string   `yaml:"prefix"`
+	PrefixRewrite         string   `yaml:"prefix_rewrite,omitempty"`
+	ExcludePaths          []string `yaml:"exclude_paths,omitempty"`
+	WebSocketExcludePaths []string `yaml:"websocket_exclude_paths,omitempty"` // WebSocket paths that skip auth
+	SsoInjection          bool     `yaml:"sso_injection,omitempty"`
+	SsoAppURL             string   `yaml:"sso_appurl,omitempty"`
+	SsoAppName            string   `yaml:"sso_appname,omitempty"`
+	AddToken              bool     `yaml:"add_token,omitempty"`
+	ClusterIdleTimeout    string   `yaml:"cluster_idle_timeout,omitempty"`
+	RouteTimeout          string   `yaml:"route_timeout,omitempty"`
 }
 
 // overrideFromEnv overrides configuration values from environment variables
