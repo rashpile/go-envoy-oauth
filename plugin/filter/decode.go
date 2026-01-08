@@ -61,6 +61,27 @@ func (f *Filter) DecodeHeaders(header api.RequestHeaderMap, endStream bool) api.
 		return api.Continue
 	}
 
+	// Check if this is a WebSocket upgrade request
+	isWebSocket := f.isWebSocketUpgrade(header)
+	if isWebSocket {
+		f.logger.Debug("WebSocket upgrade request detected",
+			zap.String("path", sanitizePathForLogging(path)),
+			zap.String("trace_id", traceID))
+
+		// Check if WebSocket path is excluded from auth
+		if f.isWebSocketPathExcluded(path, cluster) {
+			f.logger.Debug("WebSocket path excluded from authentication",
+				zap.String("path", sanitizePathForLogging(path)),
+				zap.String("trace_id", traceID))
+			return api.Continue
+		}
+
+		// For WebSocket, we authenticate but handle failures differently
+		// Browsers cannot follow redirects during WebSocket handshake,
+		// so we return 401 instead of redirecting to login
+		return f.handleWebSocketAuth(header, path, traceID)
+	}
+
 	// Initialize OAuth handler if needed (before handling any OAuth endpoints)
 	if f.oauthHandler == nil {
 		return f.handleAsyncOAuthHandler(header, traceID, path, f.handleDecodeHeaders)
