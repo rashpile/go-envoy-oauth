@@ -154,6 +154,15 @@ func createHTTPConnectionManager(config *GatewayConfig) (*anypb.Any, error) {
 		pluginConfig["scopes"] = scopesInterface
 	}
 
+	// Add global super_users to plugin config
+	if len(config.SuperUsers) > 0 {
+		superUsersInterface := make([]interface{}, len(config.SuperUsers))
+		for i, user := range config.SuperUsers {
+			superUsersInterface[i] = strings.ToLower(user)
+		}
+		pluginConfig["super_users"] = superUsersInterface
+	}
+
 	// Add cluster-specific configurations
 	clusters := make(map[string]interface{})
 	for _, client := range config.Clients {
@@ -192,6 +201,14 @@ func createHTTPConnectionManager(config *GatewayConfig) (*anypb.Any, error) {
 				wsExcludePathsInterface[i] = path
 			}
 			clientConfig["websocket_exclude_paths"] = wsExcludePathsInterface
+		}
+		// Add allowed_users to cluster config
+		if len(client.AllowedUsers) > 0 {
+			allowedUsersInterface := make([]interface{}, len(client.AllowedUsers))
+			for i, user := range client.AllowedUsers {
+				allowedUsersInterface[i] = strings.ToLower(user)
+			}
+			clientConfig["allowed_users"] = allowedUsersInterface
 		}
 		if len(clientConfig) > 0 {
 			clusters[client.ID] = clientConfig

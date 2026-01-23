@@ -249,6 +249,36 @@ func (f *Filter) handleAuthFailure(statusCode int, message string) api.StatusTyp
 func (f *Filter) handleAuthSuccess(header api.RequestHeaderMap, session *session.Session) api.StatusType {
 	traceID := f.getTraceID(header)
 
+	// Check user permissions before granting access
+	if !f.isUserPermitted(session) {
+		username := ""
+		if u, ok := session.Claims["preferred_username"].(string); ok {
+			username = u
+		}
+
+		// Audit log: permission denied
+		f.logger.Info("Access denied: user not permitted",
+			zap.String("user", username),
+			zap.String("cluster", f.cluster),
+			zap.String("trace_id", traceID),
+			zap.String("action", "DENY"))
+
+		return f.handleAccessDenied(header)
+	}
+
+	// Audit log: permission granted (only if allowed_users is configured)
+	if clusterConfig, exists := f.config.Clusters[f.cluster]; exists && len(clusterConfig.AllowedUsers) > 0 {
+		username := ""
+		if u, ok := session.Claims["preferred_username"].(string); ok {
+			username = u
+		}
+		f.logger.Info("Access permitted",
+			zap.String("user", username),
+			zap.String("cluster", f.cluster),
+			zap.String("trace_id", traceID),
+			zap.String("action", "PERMIT"))
+	}
+
 	// Store the current session for SSO script injection
 	f.currentSession = session
 
@@ -298,6 +328,16 @@ func createAuthErrorHeaders() map[string][]string {
 	headers["content-type"] = []string{"text/plain"}
 	headers["www-authenticate"] = []string{"Bearer"}
 	return headers
+}
+
+// handleAccessDenied redirects to the access denied page
+func (f *Filter) handleAccessDenied(header api.RequestHeaderMap) api.StatusType {
+	return f.handleRedirect("/oauth/access-denied", "")
+}
+
+// handleAccessDeniedPage renders the access denied page
+func (f *Filter) handleAccessDeniedPage(header api.RequestHeaderMap) api.StatusType {
+	return f.errorHandler.HandleAccessDenied()
 }
 
 // handleRedirect creates a redirect response using SendLocalReply
@@ -570,6 +610,8 @@ func (f *Filter) handleOAuthEndpoints(header api.RequestHeaderMap, path string) 
 		return f.handleOfflineRedirect(header)
 	case basePath == "/oauth/offline-callback":
 		return f.handleOfflineCallback(header, path)
+	case basePath == "/oauth/access-denied":
+		return f.handleAccessDeniedPage(header)
 	case strings.HasPrefix(basePath, "/oauth/assets/"):
 		return f.handleAssets(header)
 	default:
@@ -801,4 +843,45 @@ func getClusterName(callbacks api.FilterCallbackHandler) string {
 		return ""
 	}
 	return clusterName
+}
+
+// isUserPermitted checks if the user is permitted to access the current cluster
+// Default: all users denied unless explicitly permitted via super_users or allowed_users
+// Use "*" in allowed_users to allow any authenticated user for a specific cluster
+func (f *Filter) isUserPermitted(session *session.Session) bool {
+	// Get username from session claims
+	username := ""
+	if u, ok := session.Claims["preferred_username"].(string); ok {
+		username = strings.ToLower(u)
+	}
+
+	if username == "" {
+		f.logger.Warn("No preferred_username in session claims")
+		return false
+	}
+
+	// Check super users first (always permitted)
+	for _, superUser := range f.config.SuperUsers {
+		if username == superUser {
+			return true
+		}
+	}
+
+	// Get cluster config
+	clusterConfig, exists := f.config.Clusters[f.cluster]
+	if !exists {
+		// No cluster config = deny by default
+		return false
+	}
+
+	// Check if user is in allowed list
+	for _, allowedUser := range clusterConfig.AllowedUsers {
+		// Wildcard "*" allows any authenticated user
+		if allowedUser == "*" || username == allowedUser {
+			return true
+		}
+	}
+
+	// Default: deny access
+	return false
 }

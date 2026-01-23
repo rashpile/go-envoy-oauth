@@ -134,6 +134,104 @@ func (eh *ErrorHandler) HandleAuthFailure(statusCode int, message string) api.St
 	return api.LocalReply
 }
 
+// HandleAccessDenied returns the access denied page
+func (eh *ErrorHandler) HandleAccessDenied() api.StatusType {
+	eh.logger.Info("Rendering access denied page")
+
+	html := `<!DOCTYPE html>
+<html>
+<head>
+    <title>Access Denied</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background-color: #f5f5f5;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+        }
+        .error-container {
+            text-align: center;
+            background: white;
+            padding: 40px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            max-width: 500px;
+        }
+        h1 {
+            color: #e74c3c;
+            margin-bottom: 20px;
+        }
+        p {
+            color: #666;
+            line-height: 1.6;
+            margin-bottom: 20px;
+        }
+        .info-box {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 5px;
+            margin-top: 20px;
+            text-align: left;
+        }
+        .button {
+            display: inline-block;
+            margin-top: 20px;
+            padding: 12px 24px;
+            background-color: #007bff;
+            color: white;
+            text-decoration: none;
+            border-radius: 5px;
+            transition: background-color 0.3s;
+            margin-right: 10px;
+        }
+        .button:hover {
+            background-color: #0056b3;
+        }
+        .button.secondary {
+            background-color: #6c757d;
+        }
+        .button.secondary:hover {
+            background-color: #545b62;
+        }
+    </style>
+</head>
+<body>
+    <div class="error-container">
+        <h1>Access Denied</h1>
+        <p>You don't have permission to access this resource.</p>
+        <div class="info-box">
+            <p><strong>What you can do:</strong></p>
+            <ul style="color: #666;">
+                <li>Contact your administrator to request access</li>
+                <li>Verify you're using the correct account</li>
+                <li>Try logging in with a different account</li>
+            </ul>
+        </div>
+        <a href="/" class="button">Go Home</a>
+        <a href="/oauth/logout" class="button secondary">Switch Account</a>
+    </div>
+</body>
+</html>`
+
+	headers := map[string][]string{
+		"Content-Type":  {"text/html; charset=utf-8"},
+		"Cache-Control": {"no-cache, no-store, must-revalidate"},
+	}
+
+	eh.callbacks.DecoderFilterCallbacks().SendLocalReply(
+		403,              // Forbidden
+		html,             // HTML body
+		headers,          // headers
+		-1,               // grpcStatus
+		"access_denied",  // details
+	)
+
+	return api.LocalReply
+}
+
 // IDPRetryManager manages retry logic for IDP unavailability
 type IDPRetryManager struct {
 	handlerError      error
