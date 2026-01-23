@@ -26,6 +26,7 @@ type ClusterConfig struct {
 	ExcludePaths          []string
 	TokenInclude          bool
 	WebSocketExcludePaths []string
+	AllowedUsers          []string // Per-client allowed users (normalized to lowercase)
 }
 
 // OAuthConfig represents the OAuth filter configuration
@@ -67,6 +68,9 @@ type OAuthConfig struct {
 
 	// Bearer token authentication
 	EnableBearerToken bool `json:"enable_bearer_token"`
+
+	// Authorization: global super users (bypass all client restrictions)
+	SuperUsers []string `json:"super_users"`
 
 	// Session store
 	SessionStore session.SessionStore
@@ -221,6 +225,17 @@ func (p *Parser) Parse(any *anypb.Any, callbacks api.ConfigCallbackHandler) (int
 		log.Printf("enable_bearer_token not found in config, using default: %v", conf.EnableBearerToken)
 	}
 
+	// Parse global super_users
+	if superUsers, ok := v.AsMap()["super_users"].([]interface{}); ok {
+		conf.SuperUsers = make([]string, 0, len(superUsers))
+		for _, user := range superUsers {
+			if u, ok := user.(string); ok {
+				conf.SuperUsers = append(conf.SuperUsers, strings.ToLower(u))
+			}
+		}
+		log.Printf("Parsed super_users from config: %v", conf.SuperUsers)
+	}
+
 	// Parse cluster-specific configurations
 	if clusters, ok := v.AsMap()["clusters"].(map[string]interface{}); ok {
 		for clusterName, clusterConfig := range clusters {
@@ -257,6 +272,15 @@ func (p *Parser) Parse(any *anypb.Any, callbacks api.ConfigCallbackHandler) (int
 					for i, exclude := range wsExcludes {
 						if path, ok := exclude.(string); ok {
 							clusterConf.WebSocketExcludePaths[i] = path
+						}
+					}
+				}
+				// Parse allowed_users for per-client authorization
+				if allowedUsers, ok := config["allowed_users"].([]interface{}); ok {
+					clusterConf.AllowedUsers = make([]string, 0, len(allowedUsers))
+					for _, user := range allowedUsers {
+						if u, ok := user.(string); ok {
+							clusterConf.AllowedUsers = append(clusterConf.AllowedUsers, strings.ToLower(u))
 						}
 					}
 				}
@@ -326,6 +350,7 @@ func (p *Parser) Merge(parent interface{}, child interface{}) interface{} {
 		SessionStore:      parentConfig.SessionStore,
 		EnableAPIKey:      parentConfig.EnableAPIKey,
 		EnableBearerToken: parentConfig.EnableBearerToken,
+		SuperUsers:        slices.Clone(parentConfig.SuperUsers),
 	}
 
 	// Override with child values if specified
@@ -383,11 +408,17 @@ func (p *Parser) Merge(parent interface{}, child interface{}) interface{} {
 		newConfig.EnableBearerToken = childConfig.EnableBearerToken
 	}
 
+	// Override SuperUsers if child config has any
+	if len(childConfig.SuperUsers) > 0 {
+		newConfig.SuperUsers = slices.Clone(childConfig.SuperUsers)
+	}
+
 	// Copy parent cluster configs first
 	for clusterName, parentClusterConfig := range parentConfig.Clusters {
 		newClusterConfig := ClusterConfig{
 			ExcludePaths: slices.Clone(parentClusterConfig.ExcludePaths),
 			Exclude:      parentClusterConfig.Exclude,
+			AllowedUsers: slices.Clone(parentClusterConfig.AllowedUsers),
 		}
 		newConfig.Clusters[clusterName] = newClusterConfig
 	}
@@ -401,11 +432,17 @@ func (p *Parser) Merge(parent interface{}, child interface{}) interface{} {
 			if childClusterConfig.Exclude != parentClusterConfig.Exclude {
 				parentClusterConfig.Exclude = childClusterConfig.Exclude
 			}
+			// Override AllowedUsers if child has any
+			if len(childClusterConfig.AllowedUsers) > 0 {
+				parentClusterConfig.AllowedUsers = slices.Clone(childClusterConfig.AllowedUsers)
+			}
+			newConfig.Clusters[clusterName] = parentClusterConfig
 		} else {
 			// Add new cluster config
 			newClusterConfig := ClusterConfig{
 				ExcludePaths: slices.Clone(childClusterConfig.ExcludePaths),
 				Exclude:      childClusterConfig.Exclude,
+				AllowedUsers: slices.Clone(childClusterConfig.AllowedUsers),
 			}
 			newConfig.Clusters[clusterName] = newClusterConfig
 		}

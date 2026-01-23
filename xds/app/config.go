@@ -10,12 +10,13 @@ import (
 )
 
 type GatewayConfig struct {
-	Plugin   PluginConfig   `yaml:"plugin"`
-	OAuth    OAuthConfig    `yaml:"oauth"`
-	Clients  []ClientConfig `yaml:"clients"`
-	Template string         `yaml:"template,omitempty"` // Path to template config file
-	Listener ListenerConfig `yaml:"listener,omitempty"`
-	SSL      SSLConfig      `yaml:"ssl,omitempty"` // SSL/TLS configuration for listener
+	Plugin     PluginConfig   `yaml:"plugin"`
+	OAuth      OAuthConfig    `yaml:"oauth"`
+	Clients    []ClientConfig `yaml:"clients"`
+	Template   string         `yaml:"template,omitempty"` // Path to template config file
+	Listener   ListenerConfig `yaml:"listener,omitempty"`
+	SSL        SSLConfig      `yaml:"ssl,omitempty"`        // SSL/TLS configuration for listener
+	SuperUsers []string       `yaml:"super_users,omitempty"` // Global super users (bypass all client restrictions)
 }
 
 type PluginConfig struct {
@@ -73,6 +74,7 @@ type ClientConfig struct {
 	AddToken              bool     `yaml:"add_token,omitempty"`
 	ClusterIdleTimeout    string   `yaml:"cluster_idle_timeout,omitempty"`
 	RouteTimeout          string   `yaml:"route_timeout,omitempty"`
+	AllowedUsers          []string `yaml:"allowed_users,omitempty"` // Per-client allowed users
 }
 
 // overrideFromEnv overrides configuration values from environment variables
