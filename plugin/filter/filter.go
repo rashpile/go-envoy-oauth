@@ -175,6 +175,9 @@ func (f *Filter) ensureHandlersInitialized() error {
 }
 
 func (f *Filter) createOAuthHandler(config *OAuthConfig, cookieManager *session.CookieManager) (oauth.OAuthHandler, error) {
+	// Extract IDP name for metrics
+	idp := metrics.GetIDPName(config.IssuerURL)
+
 	// Create OAuth handler
 	oauthConfig := &oauth.OIDCConfig{
 		IssuerURL:    config.IssuerURL,
@@ -191,10 +194,15 @@ func (f *Filter) createOAuthHandler(config *OAuthConfig, cookieManager *session.
 			zap.String("error", err.Error()),
 			zap.String("issuer_url", config.IssuerURL),
 			zap.String("client_id", config.ClientID))
+		// Mark IDP as unavailable
+		metrics.UpdateIDPAvailability(idp, false)
 		return nil, fmt.Errorf("failed to create OAuth handler: %v", err)
 	}
 	config.OAuthHandler = oauthHandler
 	f.oauthHandler = config.OAuthHandler
+
+	// Mark IDP as available
+	metrics.UpdateIDPAvailability(idp, true)
 
 	// Create offline token handler if API key feature is enabled
 	if config.EnableAPIKey {
