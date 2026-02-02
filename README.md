@@ -149,6 +149,27 @@ You'll need to configure your OAuth provider with:
 - Redirect URL (matching the `redirect_url` in the Envoy config)
 - Required scopes (typically "openid", "profile", "email")
 
+## Environment Variables
+
+The filter supports the following environment variables:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LOG_LEVEL` | INFO | Logging level (DEBUG, INFO, WARN, ERROR) |
+| `ACCESS_LOG` | - | Access log format (plain, json) |
+| `METRICS_PORT` | (disabled) | Port for Prometheus metrics endpoint. If unset, metrics server is disabled. |
+
+**Metrics Endpoint:**
+
+When `METRICS_PORT` is set (e.g., `9102`), the filter exposes a `/metrics` endpoint with:
+- Go runtime metrics (`go_goroutines`, `go_memstats_*`)
+- Process metrics (`process_cpu_seconds_total`, `process_resident_memory_bytes`)
+
+Example:
+```bash
+curl http://localhost:9102/metrics
+```
+
 ## Authentication Flow
 
 1. **Initial Request**: User accesses a protected resource
