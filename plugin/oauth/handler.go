@@ -273,6 +273,7 @@ func (h *OAuthHandlerImpl) HandleCallback(header api.RequestHeaderMap, query str
 		TokenExpiresAt: token.Expiry, // Store access token expiry
 		IDToken:        idToken,
 		RefreshToken:   token.RefreshToken, // Store refresh token for future use
+		IDP:            idp,                // Identity provider for metrics
 		Claims:         userInfo,
 		CreatedAt:      time.Now(),
 		ExpiresAt:      time.Now().Add(24 * time.Hour), // Session expires in 24 hours
@@ -609,6 +610,7 @@ func (h *OAuthHandlerImpl) ValidateBearerToken(ctx context.Context, token string
 		UserID:         claims.Subject,
 		Token:          token,
 		TokenExpiresAt: time.Unix(claims.ExpiresAt, 0), // Set token expiry from claims
+		IDP:            metrics.GetIDPName(h.config.IssuerURL),
 		Claims: map[string]interface{}{
 			"email":              claims.Email,
 			"email_verified":     claims.EmailVerified,

@@ -17,6 +17,7 @@ type Session struct {
 	TokenExpiresAt  time.Time              // When the access token expires
 	IDToken         string                 // OAuth ID token for logout hint
 	RefreshToken    string                 // OAuth refresh token (API key)
+	IDP             string                 // Identity provider hostname for metrics
 	Claims          map[string]interface{} // Additional claims from token
 	CreatedAt       time.Time              // When the session was created
 	ExpiresAt       time.Time              // When the session expires
