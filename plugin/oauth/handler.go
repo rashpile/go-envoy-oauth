@@ -572,6 +572,9 @@ func (h *OAuthHandlerImpl) RefreshToken(session *session.Session) error {
 		return fmt.Errorf("no refresh token available")
 	}
 
+	// Extract IDP name for metrics
+	idp := metrics.GetIDPName(h.config.IssuerURL)
+
 	h.logger.Debug("Refreshing access token",
 		zap.String("session_id", session.ID),
 		zap.Time("token_expires_at", session.TokenExpiresAt))
@@ -582,6 +585,7 @@ func (h *OAuthHandlerImpl) RefreshToken(session *session.Session) error {
 	}).Token()
 	if err != nil {
 		h.logger.Error("Failed to refresh access token", zap.Error(err))
+		metrics.RecordTokenRefresh(idp, "failure")
 		return fmt.Errorf("failed to refresh token: %v", err)
 	}
 
@@ -596,6 +600,8 @@ func (h *OAuthHandlerImpl) RefreshToken(session *session.Session) error {
 	h.logger.Debug("Access token refreshed successfully",
 		zap.String("session_id", session.ID),
 		zap.Time("new_expiry", token.Expiry))
+
+	metrics.RecordTokenRefresh(idp, "success")
 
 	// Store updated session
 	return h.sessionStore.Store(session)
@@ -667,10 +673,14 @@ func (h *OAuthHandlerImpl) ExchangeRefreshToken(ctx context.Context, refreshToke
 		if time.Now().Add(1 * time.Minute).Before(cached.expiry) {
 			h.cacheMu.RUnlock()
 			h.logger.Debug("Using cached access token for refresh token")
+			// Cache hit - no IDP call made, don't record metrics
 			return cached.accessToken, nil
 		}
 	}
 	h.cacheMu.RUnlock()
+
+	// Extract IDP name for metrics (only recorded for actual IDP calls)
+	idp := metrics.GetIDPName(h.config.IssuerURL)
 
 	// Use OAuth2 token endpoint to exchange refresh token
 	tokenSource := h.oauth2Config.TokenSource(ctx, &oauth2.Token{
@@ -682,6 +692,7 @@ func (h *OAuthHandlerImpl) ExchangeRefreshToken(ctx context.Context, refreshToke
 	if err != nil {
 		h.logger.Error("Failed to exchange refresh token for access token",
 			zap.Error(err))
+		metrics.RecordTokenRefresh(idp, "failure")
 		return "", fmt.Errorf("failed to exchange refresh token: %v", err)
 	}
 
@@ -703,6 +714,8 @@ func (h *OAuthHandlerImpl) ExchangeRefreshToken(ctx context.Context, refreshToke
 	h.logger.Debug("Successfully exchanged refresh token for access token",
 		zap.String("token_type", token.TokenType),
 		zap.Time("expiry", token.Expiry))
+
+	metrics.RecordTokenRefresh(idp, "success")
 
 	return token.AccessToken, nil
 }
