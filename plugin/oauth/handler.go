@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/envoyproxy/envoy/contrib/golang/common/go/api"
+	"github.com/rashpile/go-envoy-oauth/plugin/metrics"
 	"github.com/rashpile/go-envoy-oauth/plugin/session"
 	"go.uber.org/zap"
 	"golang.org/x/oauth2"
@@ -190,25 +191,32 @@ func (h *OAuthHandlerImpl) HandleAuthRedirect(header api.RequestHeaderMap, redir
 }
 
 func (h *OAuthHandlerImpl) HandleCallback(header api.RequestHeaderMap, query string) error {
+	// Extract IDP name for metrics
+	idp := metrics.GetIDPName(h.config.IssuerURL)
+
 	values, err := url.ParseQuery(query)
 	if err != nil {
+		metrics.RecordLogin(idp, "failure", "invalid_query")
 		return err
 	}
 
 	// Get the raw state parameter
 	state := values.Get("state")
 	if state == "" {
+		metrics.RecordLogin(idp, "failure", "invalid_state")
 		return fmt.Errorf("state parameter not found")
 	}
 
 	// Get the state from the session store
 	stateSession, err := h.sessionStore.Get(state)
 	if err != nil {
+		metrics.RecordLogin(idp, "failure", "invalid_state")
 		return fmt.Errorf("invalid or expired state parameter")
 	}
 
 	// Validate the state session
 	if time.Now().After(stateSession.ExpiresAt) {
+		metrics.RecordLogin(idp, "failure", "expired")
 		return fmt.Errorf("state parameter expired")
 	}
 
@@ -220,12 +228,14 @@ func (h *OAuthHandlerImpl) HandleCallback(header api.RequestHeaderMap, query str
 	// Extract the original request path from the state parameter
 	parts := strings.Split(state, "|")
 	if len(parts) != 2 {
+		metrics.RecordLogin(idp, "failure", "invalid_state")
 		return fmt.Errorf("invalid state parameter format")
 	}
 	originalPath := parts[1]
 
 	code := values.Get("code")
 	if code == "" {
+		metrics.RecordLogin(idp, "failure", "missing_code")
 		return fmt.Errorf("authorization code not found")
 	}
 
@@ -233,16 +243,19 @@ func (h *OAuthHandlerImpl) HandleCallback(header api.RequestHeaderMap, query str
 	oauth2Config := h.GetOAuthConfig(header)
 	token, err := oauth2Config.Exchange(context.Background(), code)
 	if err != nil {
+		metrics.RecordLogin(idp, "failure", metrics.ClassifyLoginError(err))
 		return err
 	}
 
 	userInfo, err := h.getUserInfo(token.AccessToken)
 	if err != nil {
+		metrics.RecordLogin(idp, "failure", "idp_error")
 		return err
 	}
 
 	sub, ok := userInfo["sub"].(string)
 	if !ok {
+		metrics.RecordLogin(idp, "failure", "invalid_token")
 		return fmt.Errorf("invalid user info: sub claim not found")
 	}
 
@@ -265,8 +278,13 @@ func (h *OAuthHandlerImpl) HandleCallback(header api.RequestHeaderMap, query str
 		ExpiresAt:      time.Now().Add(24 * time.Hour), // Session expires in 24 hours
 	}
 	if err := h.sessionStore.Store(session); err != nil {
+		metrics.RecordLogin(idp, "failure", "unknown")
 		return err
 	}
+
+	// Record successful login and session creation
+	metrics.RecordLogin(idp, "success", "")
+	metrics.RecordSessionCreated(idp)
 
 	if err := h.cookieManager.SetCookie(header, session.ID); err != nil {
 		return err

@@ -54,6 +54,9 @@ func startServer(port string) error {
 	// Register request metrics (envoy_oauth_requests_total, envoy_oauth_request_duration_seconds)
 	RegisterRequestMetrics(registry)
 
+	// Register authentication metrics (envoy_oauth_login_total, envoy_oauth_logout_total, etc.)
+	RegisterAuthMetrics(registry)
+
 	// Create HTTP handler for custom registry
 	handler := promhttp.HandlerFor(registry, promhttp.HandlerOpts{
 		EnableOpenMetrics: true,
