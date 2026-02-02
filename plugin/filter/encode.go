@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/envoyproxy/envoy/contrib/golang/common/go/api"
+	"github.com/rashpile/go-envoy-oauth/plugin/metrics"
 	"go.uber.org/zap"
 )
 
@@ -114,41 +115,55 @@ func (f *Filter) EncodeHeaders(header api.ResponseHeaderMap, endStream bool) api
 		}
 	}
 
-	// Log access if enabled
-	if IsAccessLogEnabled() && f.requestStart.Unix() > 0 {
+	// Record metrics and access log if request tracking is active
+	if !f.requestStart.IsZero() {
 		statusStr, _ := header.Get(":status")
-		statusCode := 200 // default
-		if statusStr != "" {
-			// Parse status code from string
-			if len(statusStr) >= 3 {
-				switch statusStr[0] {
-				case '2':
-					statusCode = 200
-				case '3':
-					statusCode = 300
-				case '4':
-					statusCode = 400
-				case '5':
-					statusCode = 500
-				}
-				// Try to parse the actual code
-				var code int
-				if n, _ := fmt.Sscanf(statusStr, "%d", &code); n == 1 {
-					statusCode = code
-				}
-			}
+		statusCode := parseStatusCode(statusStr)
+		duration := time.Since(f.requestStart)
+
+		// Record request metrics (always, even if access log is disabled)
+		metrics.RecordRequest(statusCode, duration.Seconds())
+
+		// Log access if enabled
+		if IsAccessLogEnabled() {
+			responseTime := duration.Seconds() * 1000 // convert to ms
+			LogAccess(f.requestMethod, f.requestPath, f.requestHost,
+				f.clientIP, f.userAgent, statusCode, responseTime)
 		}
 
-		// Calculate response time
-		responseTime := time.Since(f.requestStart).Seconds() * 1000 // convert to ms
-
-		// Log the access
-		LogAccess(f.requestMethod, f.requestPath, f.requestHost,
-			f.clientIP, f.userAgent, statusCode, responseTime)
-
-		// Reset the request tracking
+		// Reset the request tracking to prevent double-counting
 		f.requestStart = time.Time{}
 	}
 
 	return api.Continue
+}
+
+// parseStatusCode parses an HTTP status code from a string.
+// Returns 200 as default if parsing fails.
+func parseStatusCode(statusStr string) int {
+	if statusStr == "" {
+		return 200
+	}
+
+	// Try to parse the actual numeric code
+	var code int
+	if n, _ := fmt.Sscanf(statusStr, "%d", &code); n == 1 {
+		return code
+	}
+
+	// Fallback: determine from first digit
+	if len(statusStr) >= 1 {
+		switch statusStr[0] {
+		case '2':
+			return 200
+		case '3':
+			return 300
+		case '4':
+			return 400
+		case '5':
+			return 500
+		}
+	}
+
+	return 200
 }
