@@ -194,9 +194,13 @@ func (h *OAuthHandlerImpl) HandleCallback(header api.RequestHeaderMap, query str
 	// Extract IDP name for metrics
 	idp := metrics.GetIDPName(h.config.IssuerURL)
 
+	// Start timing for callback duration metric
+	startTime := time.Now()
+
 	values, err := url.ParseQuery(query)
 	if err != nil {
 		metrics.RecordLogin(idp, "failure", "invalid_query")
+		metrics.RecordCallbackDuration(idp, time.Since(startTime).Seconds())
 		return err
 	}
 
@@ -204,6 +208,7 @@ func (h *OAuthHandlerImpl) HandleCallback(header api.RequestHeaderMap, query str
 	state := values.Get("state")
 	if state == "" {
 		metrics.RecordLogin(idp, "failure", "invalid_state")
+		metrics.RecordCallbackDuration(idp, time.Since(startTime).Seconds())
 		return fmt.Errorf("state parameter not found")
 	}
 
@@ -211,17 +216,20 @@ func (h *OAuthHandlerImpl) HandleCallback(header api.RequestHeaderMap, query str
 	stateSession, err := h.sessionStore.Get(state)
 	if err != nil {
 		metrics.RecordLogin(idp, "failure", "invalid_state")
+		metrics.RecordCallbackDuration(idp, time.Since(startTime).Seconds())
 		return fmt.Errorf("invalid or expired state parameter")
 	}
 
 	// Validate the state session
 	if time.Now().After(stateSession.ExpiresAt) {
 		metrics.RecordLogin(idp, "failure", "expired")
+		metrics.RecordCallbackDuration(idp, time.Since(startTime).Seconds())
 		return fmt.Errorf("state parameter expired")
 	}
 
 	// Delete the state session
 	if err := h.sessionStore.Delete(state); err != nil {
+		metrics.RecordCallbackDuration(idp, time.Since(startTime).Seconds())
 		return fmt.Errorf("failed to delete state: %v", err)
 	}
 
@@ -229,6 +237,7 @@ func (h *OAuthHandlerImpl) HandleCallback(header api.RequestHeaderMap, query str
 	parts := strings.Split(state, "|")
 	if len(parts) != 2 {
 		metrics.RecordLogin(idp, "failure", "invalid_state")
+		metrics.RecordCallbackDuration(idp, time.Since(startTime).Seconds())
 		return fmt.Errorf("invalid state parameter format")
 	}
 	originalPath := parts[1]
@@ -236,6 +245,7 @@ func (h *OAuthHandlerImpl) HandleCallback(header api.RequestHeaderMap, query str
 	code := values.Get("code")
 	if code == "" {
 		metrics.RecordLogin(idp, "failure", "missing_code")
+		metrics.RecordCallbackDuration(idp, time.Since(startTime).Seconds())
 		return fmt.Errorf("authorization code not found")
 	}
 
@@ -244,18 +254,21 @@ func (h *OAuthHandlerImpl) HandleCallback(header api.RequestHeaderMap, query str
 	token, err := oauth2Config.Exchange(context.Background(), code)
 	if err != nil {
 		metrics.RecordLogin(idp, "failure", metrics.ClassifyLoginError(err))
+		metrics.RecordCallbackDuration(idp, time.Since(startTime).Seconds())
 		return err
 	}
 
 	userInfo, err := h.getUserInfo(token.AccessToken)
 	if err != nil {
 		metrics.RecordLogin(idp, "failure", "idp_error")
+		metrics.RecordCallbackDuration(idp, time.Since(startTime).Seconds())
 		return err
 	}
 
 	sub, ok := userInfo["sub"].(string)
 	if !ok {
 		metrics.RecordLogin(idp, "failure", "invalid_token")
+		metrics.RecordCallbackDuration(idp, time.Since(startTime).Seconds())
 		return fmt.Errorf("invalid user info: sub claim not found")
 	}
 
@@ -280,6 +293,7 @@ func (h *OAuthHandlerImpl) HandleCallback(header api.RequestHeaderMap, query str
 	}
 	if err := h.sessionStore.Store(session); err != nil {
 		metrics.RecordLogin(idp, "failure", "unknown")
+		metrics.RecordCallbackDuration(idp, time.Since(startTime).Seconds())
 		return err
 	}
 
@@ -288,8 +302,12 @@ func (h *OAuthHandlerImpl) HandleCallback(header api.RequestHeaderMap, query str
 	metrics.RecordSessionCreated(idp)
 
 	if err := h.cookieManager.SetCookie(header, session.ID); err != nil {
+		metrics.RecordCallbackDuration(idp, time.Since(startTime).Seconds())
 		return err
 	}
+
+	// Record callback duration on success path
+	metrics.RecordCallbackDuration(idp, time.Since(startTime).Seconds())
 
 	// Set the original request path in the location header
 	header.Set("location", originalPath)
