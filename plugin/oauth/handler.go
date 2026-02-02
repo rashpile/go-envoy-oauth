@@ -615,8 +615,12 @@ func (h *OAuthHandlerImpl) GetSessionStore() session.SessionStore {
 // ValidateBearerToken validates a bearer token and returns a session
 func (h *OAuthHandlerImpl) ValidateBearerToken(ctx context.Context, token string) (*session.Session, error) {
 	if h.tokenValidator == nil {
+		// Configuration issue - don't record metrics
 		return nil, fmt.Errorf("bearer token validation not available")
 	}
+
+	// Extract IDP name for metrics
+	idp := metrics.GetIDPName(h.config.IssuerURL)
 
 	// Try to validate as access token (more lenient)
 	claims, err := h.tokenValidator.ValidateAccessToken(ctx, token)
@@ -624,9 +628,13 @@ func (h *OAuthHandlerImpl) ValidateBearerToken(ctx context.Context, token string
 		// If access token validation fails, try as ID token
 		claims, err = h.tokenValidator.ValidateToken(ctx, token)
 		if err != nil {
+			metrics.RecordTokenValidation(idp, "invalid")
 			return nil, fmt.Errorf("token validation failed: %v", err)
 		}
 	}
+
+	// Token validated successfully
+	metrics.RecordTokenValidation(idp, "valid")
 
 	// Create a session from the token claims
 	sess := &session.Session{
