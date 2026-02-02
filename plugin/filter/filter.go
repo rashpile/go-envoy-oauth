@@ -133,6 +133,9 @@ func (f *Filter) ensureHandlersInitialized() error {
 		retryInfo := f.config.RetryManager.GetRetryInfo()
 		f.logger.Debug("OAuth handler initialization in backoff period",
 			zap.String("retry_info", retryInfo))
+		// When in backoff, IDP is considered down
+		idp := metrics.GetIDPName(f.config.IssuerURL)
+		metrics.UpdateIDPAvailability(idp, false)
 		return f.config.RetryManager.GetError()
 	}
 
