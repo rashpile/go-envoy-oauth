@@ -11,6 +11,8 @@ oauth:
   session_secure: false
   session_http_only: true
   session_same_site: Lax
+super_users:
+  - demo
 clients:
   - id: keycloak #required
     address: keycloak # required
@@ -48,6 +50,8 @@ clients:
     sso_injection: true
     sso_appurl: http://localhost:8081/echo
     sso_appname: Echo
+    allowed_users:
+      - admin
     exclude_paths:
       - /status/200
       - /status/201
