@@ -45,9 +45,11 @@ services:
       - OAUTH_ENABLE_API_KEY=true
       - LOG_LEVEL=INFO
       - ACCESS_LOG=plain
+      - METRICS_PORT=9102
     ports:
       - "8081:8081"
       - "127.0.0.1:9901:9901"
+      - "9102:9102"
     networks:
       - envoy-network
 
