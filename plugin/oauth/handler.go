@@ -296,6 +296,9 @@ func (h *OAuthHandlerImpl) HandleCallback(header api.RequestHeaderMap, query str
 }
 
 func (h *OAuthHandlerImpl) HandleLogout(header api.RequestHeaderMap) (string, error) {
+	// Extract IDP name for metrics
+	idp := metrics.GetIDPName(h.config.IssuerURL)
+
 	h.logger.Debug("HandleLogout started",
 		zap.String("provider_issuer", h.provider.Issuer),
 		zap.String("end_session_endpoint", h.provider.EndSessionEndpoint),
@@ -304,6 +307,8 @@ func (h *OAuthHandlerImpl) HandleLogout(header api.RequestHeaderMap) (string, er
 	sessionID, err := h.cookieManager.GetCookie(header)
 	if err != nil {
 		h.logger.Debug("No session cookie found", zap.Error(err))
+		// No cookie means user is effectively logged out already - success
+		metrics.RecordLogout(idp, "success", "")
 		return "", err
 	}
 
@@ -313,6 +318,8 @@ func (h *OAuthHandlerImpl) HandleLogout(header api.RequestHeaderMap) (string, er
 		// Session not found, just clear the cookie
 		h.logger.Debug("Session not found, clearing cookie", zap.Error(err))
 		h.cookieManager.DeleteCookie(header)
+		// Session already gone - logout is effectively successful
+		metrics.RecordLogout(idp, "success", "")
 		return "/", nil
 	}
 
@@ -322,11 +329,16 @@ func (h *OAuthHandlerImpl) HandleLogout(header api.RequestHeaderMap) (string, er
 
 	// Delete the session from store
 	if err := h.sessionStore.Delete(sessionID); err != nil {
+		metrics.RecordLogout(idp, "failure", "session_not_found")
 		return "", err
 	}
 
 	// Clear the cookie
 	h.cookieManager.DeleteCookie(header)
+
+	// Record successful logout and session ended
+	metrics.RecordSessionEnded(idp, "logout")
+	metrics.RecordLogout(idp, "success", "")
 
 	// If IDP supports end_session_endpoint, redirect to it
 	if h.provider.EndSessionEndpoint != "" {
