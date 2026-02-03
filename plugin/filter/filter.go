@@ -279,11 +279,25 @@ func (f *Filter) recordAndSendLocalReply(statusCode int, bodyText string,
 	return api.LocalReply
 }
 
+// knownClusterNames builds a map of configured cluster names for cardinality-bounded metrics.
+func (f *Filter) knownClusterNames() map[string]bool {
+	known := make(map[string]bool, len(f.config.Clusters))
+	for name := range f.config.Clusters {
+		known[name] = true
+	}
+	return known
+}
+
 // handleAuthFailure creates appropriate response for authentication failures
 func (f *Filter) handleAuthFailure(statusCode int, message string) api.StatusType {
 	f.logger.Debug("Authentication failure",
 		zap.Int("status_code", statusCode),
 		zap.String("message", message))
+
+	// Record cluster auth failure metric
+	clusterLabel := metrics.GetClusterLabel(f.cluster, f.knownClusterNames())
+	realm := metrics.GetRealm(f.config.IssuerURL)
+	metrics.RecordClusterAuth(clusterLabel, realm, "failure")
 
 	headers := createAuthErrorHeaders()
 
@@ -323,6 +337,11 @@ func (f *Filter) handleAuthSuccess(header api.RequestHeaderMap, session *session
 			zap.String("trace_id", traceID),
 			zap.String("action", "PERMIT"))
 	}
+
+	// Record cluster auth success metric (after permission check, before header manipulation)
+	clusterLabel := metrics.GetClusterLabel(f.cluster, f.knownClusterNames())
+	realm := metrics.GetRealm(f.config.IssuerURL)
+	metrics.RecordClusterAuth(clusterLabel, realm, "success")
 
 	// Store the current session for SSO script injection
 	f.currentSession = session
