@@ -33,7 +33,7 @@ func (f *Filter) serveSSOScript(header api.RequestHeaderMap) api.StatusType {
 	header.Set("cache-control", "public, max-age=3600")
 
 	// Send the JavaScript content
-	f.callbacks.DecoderFilterCallbacks().SendLocalReply(
+	return f.recordAndSendLocalReply(
 		200,
 		getSSOScript(),
 		map[string][]string{
@@ -43,8 +43,6 @@ func (f *Filter) serveSSOScript(header api.RequestHeaderMap) api.StatusType {
 		-1,
 		"",
 	)
-
-	return api.LocalReply
 }
 
 // getSSOScript returns the SSO JavaScript content
