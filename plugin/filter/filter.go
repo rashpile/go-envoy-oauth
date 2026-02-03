@@ -498,11 +498,18 @@ func (f *Filter) handleDecodeHeaders(header api.RequestHeaderMap, path string, t
 			// Exchange refresh token for access token
 			accessToken, err := f.oauthHandler.ExchangeRefreshToken(context.Background(), apiToken)
 			if err != nil {
+				// Record API key authentication failure with classified reason
+				reason := metrics.ClassifyAPIKeyError(err)
+				metrics.RecordAPIKeyAuth("failure", reason)
+
 				f.logger.Debug("Failed to exchange API token for access token",
 					zap.String("trace_id", traceID),
 					zap.Error(err))
 				// Don't fail here, let it continue to check for other auth methods
 			} else {
+				// Record API key authentication success
+				metrics.RecordAPIKeyAuth("success", "")
+
 				// Successfully exchanged
 				f.logger.Debug("Successfully exchanged API token for access token",
 					zap.String("trace_id", traceID))
