@@ -41,6 +41,13 @@ var (
 	// SessionEndedTotal counts total sessions ended.
 	// Incremented on logout or session expiry.
 	SessionEndedTotal *prometheus.CounterVec
+
+	// ClusterAuthTotal counts total authentication attempts per cluster.
+	// Labels:
+	//   - cluster: Configured cluster name (or "unknown" for unbounded cardinality safety)
+	//   - realm: Keycloak realm extracted from issuer URL (or "unknown")
+	//   - result: "success" or "failure"
+	ClusterAuthTotal *prometheus.CounterVec
 )
 
 // RegisterAuthMetrics registers the authentication metrics with the provided registry.
@@ -78,10 +85,19 @@ func RegisterAuthMetrics(registry *prometheus.Registry) {
 		[]string{"idp", "reason"},
 	)
 
+	ClusterAuthTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "envoy_oauth_cluster_auth_total",
+			Help: "Total authentication attempts per cluster (all auth methods)",
+		},
+		[]string{"cluster", "realm", "result"},
+	)
+
 	registry.MustRegister(LoginTotal)
 	registry.MustRegister(LogoutTotal)
 	registry.MustRegister(SessionCreatedTotal)
 	registry.MustRegister(SessionEndedTotal)
+	registry.MustRegister(ClusterAuthTotal)
 }
 
 // RecordLogin records a login attempt with the given IDP, status, and reason.
@@ -157,4 +173,43 @@ func ClassifyLoginError(err error) string {
 	default:
 		return ReasonUnknown
 	}
+}
+
+// GetClusterLabel returns a bounded cluster label for metrics.
+// Returns cluster name if it's in the knownClusters set, otherwise "unknown".
+// This prevents cardinality explosion from unconfigured cluster names.
+func GetClusterLabel(cluster string, knownClusters map[string]bool) string {
+	if cluster == "" {
+		return "unknown"
+	}
+	if knownClusters[cluster] {
+		return cluster
+	}
+	return "unknown"
+}
+
+// GetRealm extracts the Keycloak realm from the issuer URL path.
+// Example: "https://keycloak.example.com/auth/realms/test" -> "test"
+// Returns "unknown" if the realm cannot be extracted.
+func GetRealm(issuerURL string) string {
+	u, err := url.Parse(issuerURL)
+	if err != nil || u.Path == "" {
+		return "unknown"
+	}
+	segments := strings.Split(strings.Trim(u.Path, "/"), "/")
+	for i, seg := range segments {
+		if seg == "realms" && i+1 < len(segments) && segments[i+1] != "" {
+			return segments[i+1]
+		}
+	}
+	return "unknown"
+}
+
+// RecordClusterAuth records a cluster authentication attempt with the given labels.
+// Safe to call even if metrics server is disabled (metrics will be nil).
+func RecordClusterAuth(cluster, realm, result string) {
+	if ClusterAuthTotal == nil {
+		return
+	}
+	ClusterAuthTotal.WithLabelValues(cluster, realm, result).Inc()
 }
