@@ -91,8 +91,21 @@ func NewFilter(config *OAuthConfig, callbacks api.FilterCallbackHandler) (*Filte
 		cookieManager:       cookieManager,
 		callbacks:           callbacks,
 		logger:              logger,
-		errorHandler:        NewErrorHandler(logger, callbacks),
 	}
+
+	// Create error handler with metrics recording closure
+	filter.errorHandler = NewErrorHandler(logger, callbacks, func(statusCode int) {
+		if !filter.requestStart.IsZero() {
+			duration := time.Since(filter.requestStart)
+			metrics.RecordRequest(statusCode, duration.Seconds())
+			if IsAccessLogEnabled() {
+				responseTime := duration.Seconds() * 1000
+				LogAccess(filter.requestMethod, filter.requestPath, filter.requestHost,
+					filter.clientIP, filter.userAgent, statusCode, responseTime)
+			}
+			filter.requestStart = time.Time{}
+		}
+	})
 
 	// If OAuth handler already exists and API key feature is enabled, try to create offline handler
 	if config.EnableAPIKey && filter.oauthHandler != nil && filter.offlineTokenHandler == nil {
