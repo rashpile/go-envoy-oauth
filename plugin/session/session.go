@@ -7,6 +7,8 @@ import (
 	"math/rand"
 	"sync"
 	"time"
+
+	"github.com/rashpile/go-envoy-oauth/plugin/metrics"
 )
 
 // Session represents a user session
@@ -17,6 +19,7 @@ type Session struct {
 	TokenExpiresAt  time.Time              // When the access token expires
 	IDToken         string                 // OAuth ID token for logout hint
 	RefreshToken    string                 // OAuth refresh token (API key)
+	IDP             string                 // Identity provider hostname for metrics
 	Claims          map[string]interface{} // Additional claims from token
 	CreatedAt       time.Time              // When the session was created
 	ExpiresAt       time.Time              // When the session expires
@@ -68,8 +71,8 @@ func NewInMemorySessionStore() *InMemorySessionStore {
 
 // Get retrieves a session by ID
 func (s *InMemorySessionStore) Get(id string) (*Session, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	session, exists := s.sessions[id]
 	if !exists {
@@ -77,6 +80,8 @@ func (s *InMemorySessionStore) Get(id string) (*Session, error) {
 	}
 
 	if session.IsExpired() {
+		// Record session ended due to expiry (detected on access)
+		metrics.RecordSessionEnded(session.IDP, "expired")
 		delete(s.sessions, id)
 		return nil, fmt.Errorf("session expired")
 	}
@@ -118,6 +123,8 @@ func (s *InMemorySessionStore) Cleanup() {
 	now := time.Now()
 	for id, session := range s.sessions {
 		if now.After(session.ExpiresAt) {
+			// Record session ended due to expiry (during cleanup)
+			metrics.RecordSessionEnded(session.IDP, "expired")
 			delete(s.sessions, id)
 		}
 	}

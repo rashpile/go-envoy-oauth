@@ -25,14 +25,7 @@ func (f *Filter) handleOfflineConsent(header api.RequestHeaderMap) api.StatusTyp
 	}
 
 	statusCode, body, headers := f.offlineTokenHandler.HandleConsentPage(header)
-	f.callbacks.DecoderFilterCallbacks().SendLocalReply(
-		statusCode,
-		body,
-		headers,
-		0,
-		"",
-	)
-	return api.LocalReply
+	return f.recordAndSendLocalReply(statusCode, body, headers, 0, "")
 }
 
 // handleOfflineRedirect initiates OAuth flow for API key generation
@@ -52,14 +45,7 @@ func (f *Filter) handleOfflineRedirect(header api.RequestHeaderMap) api.StatusTy
 	}
 
 	statusCode, body, headers := f.offlineTokenHandler.HandleOfflineAuthRedirect(header)
-	f.callbacks.DecoderFilterCallbacks().SendLocalReply(
-		statusCode,
-		body,
-		headers,
-		0,
-		"",
-	)
-	return api.LocalReply
+	return f.recordAndSendLocalReply(statusCode, body, headers, 0, "")
 }
 
 // handleOfflineCallback processes OAuth callback for API key generation
@@ -85,14 +71,7 @@ func (f *Filter) handleOfflineCallback(header api.RequestHeaderMap, path string)
 	}
 
 	statusCode, body, headers := f.offlineTokenHandler.HandleOfflineCallback(header, query)
-	f.callbacks.DecoderFilterCallbacks().SendLocalReply(
-		statusCode,
-		body,
-		headers,
-		0,
-		"",
-	)
-	return api.LocalReply
+	return f.recordAndSendLocalReply(statusCode, body, headers, 0, "")
 }
 
 func (f *Filter) extractAPIToken(header api.RequestHeaderMap) string {

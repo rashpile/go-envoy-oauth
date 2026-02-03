@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/envoyproxy/envoy/contrib/golang/common/go/api"
+	"github.com/rashpile/go-envoy-oauth/plugin/metrics"
 	"github.com/rashpile/go-envoy-oauth/plugin/session"
 	"go.uber.org/zap"
 	"golang.org/x/oauth2"
@@ -190,42 +191,61 @@ func (h *OAuthHandlerImpl) HandleAuthRedirect(header api.RequestHeaderMap, redir
 }
 
 func (h *OAuthHandlerImpl) HandleCallback(header api.RequestHeaderMap, query string) error {
+	// Extract IDP name for metrics
+	idp := metrics.GetIDPName(h.config.IssuerURL)
+
+	// Start timing for callback duration metric
+	startTime := time.Now()
+
 	values, err := url.ParseQuery(query)
 	if err != nil {
+		metrics.RecordLogin(idp, "failure", "invalid_query")
+		metrics.RecordCallbackDuration(idp, time.Since(startTime).Seconds())
 		return err
 	}
 
 	// Get the raw state parameter
 	state := values.Get("state")
 	if state == "" {
+		metrics.RecordLogin(idp, "failure", "invalid_state")
+		metrics.RecordCallbackDuration(idp, time.Since(startTime).Seconds())
 		return fmt.Errorf("state parameter not found")
 	}
 
 	// Get the state from the session store
 	stateSession, err := h.sessionStore.Get(state)
 	if err != nil {
+		metrics.RecordLogin(idp, "failure", "invalid_state")
+		metrics.RecordCallbackDuration(idp, time.Since(startTime).Seconds())
 		return fmt.Errorf("invalid or expired state parameter")
 	}
 
 	// Validate the state session
 	if time.Now().After(stateSession.ExpiresAt) {
+		metrics.RecordLogin(idp, "failure", "expired")
+		metrics.RecordCallbackDuration(idp, time.Since(startTime).Seconds())
 		return fmt.Errorf("state parameter expired")
 	}
 
 	// Delete the state session
 	if err := h.sessionStore.Delete(state); err != nil {
+		metrics.RecordCallbackDuration(idp, time.Since(startTime).Seconds())
 		return fmt.Errorf("failed to delete state: %v", err)
 	}
 
 	// Extract the original request path from the state parameter
 	parts := strings.Split(state, "|")
 	if len(parts) != 2 {
+		metrics.RecordLogin(idp, "failure", "invalid_state")
+		metrics.RecordCallbackDuration(idp, time.Since(startTime).Seconds())
 		return fmt.Errorf("invalid state parameter format")
 	}
 	originalPath := parts[1]
 
 	code := values.Get("code")
 	if code == "" {
+		metrics.RecordLogin(idp, "failure", "missing_code")
+		metrics.RecordCallbackDuration(idp, time.Since(startTime).Seconds())
 		return fmt.Errorf("authorization code not found")
 	}
 
@@ -233,16 +253,22 @@ func (h *OAuthHandlerImpl) HandleCallback(header api.RequestHeaderMap, query str
 	oauth2Config := h.GetOAuthConfig(header)
 	token, err := oauth2Config.Exchange(context.Background(), code)
 	if err != nil {
+		metrics.RecordLogin(idp, "failure", metrics.ClassifyLoginError(err))
+		metrics.RecordCallbackDuration(idp, time.Since(startTime).Seconds())
 		return err
 	}
 
 	userInfo, err := h.getUserInfo(token.AccessToken)
 	if err != nil {
+		metrics.RecordLogin(idp, "failure", "idp_error")
+		metrics.RecordCallbackDuration(idp, time.Since(startTime).Seconds())
 		return err
 	}
 
 	sub, ok := userInfo["sub"].(string)
 	if !ok {
+		metrics.RecordLogin(idp, "failure", "invalid_token")
+		metrics.RecordCallbackDuration(idp, time.Since(startTime).Seconds())
 		return fmt.Errorf("invalid user info: sub claim not found")
 	}
 
@@ -260,17 +286,28 @@ func (h *OAuthHandlerImpl) HandleCallback(header api.RequestHeaderMap, query str
 		TokenExpiresAt: token.Expiry, // Store access token expiry
 		IDToken:        idToken,
 		RefreshToken:   token.RefreshToken, // Store refresh token for future use
+		IDP:            idp,                // Identity provider for metrics
 		Claims:         userInfo,
 		CreatedAt:      time.Now(),
 		ExpiresAt:      time.Now().Add(24 * time.Hour), // Session expires in 24 hours
 	}
 	if err := h.sessionStore.Store(session); err != nil {
+		metrics.RecordLogin(idp, "failure", "unknown")
+		metrics.RecordCallbackDuration(idp, time.Since(startTime).Seconds())
 		return err
 	}
 
+	// Record successful login and session creation
+	metrics.RecordLogin(idp, "success", "")
+	metrics.RecordSessionCreated(idp)
+
 	if err := h.cookieManager.SetCookie(header, session.ID); err != nil {
+		metrics.RecordCallbackDuration(idp, time.Since(startTime).Seconds())
 		return err
 	}
+
+	// Record callback duration on success path
+	metrics.RecordCallbackDuration(idp, time.Since(startTime).Seconds())
 
 	// Set the original request path in the location header
 	header.Set("location", originalPath)
@@ -278,6 +315,9 @@ func (h *OAuthHandlerImpl) HandleCallback(header api.RequestHeaderMap, query str
 }
 
 func (h *OAuthHandlerImpl) HandleLogout(header api.RequestHeaderMap) (string, error) {
+	// Extract IDP name for metrics
+	idp := metrics.GetIDPName(h.config.IssuerURL)
+
 	h.logger.Debug("HandleLogout started",
 		zap.String("provider_issuer", h.provider.Issuer),
 		zap.String("end_session_endpoint", h.provider.EndSessionEndpoint),
@@ -286,6 +326,8 @@ func (h *OAuthHandlerImpl) HandleLogout(header api.RequestHeaderMap) (string, er
 	sessionID, err := h.cookieManager.GetCookie(header)
 	if err != nil {
 		h.logger.Debug("No session cookie found", zap.Error(err))
+		// No cookie means user is effectively logged out already - success
+		metrics.RecordLogout(idp, "success", "")
 		return "", err
 	}
 
@@ -295,6 +337,8 @@ func (h *OAuthHandlerImpl) HandleLogout(header api.RequestHeaderMap) (string, er
 		// Session not found, just clear the cookie
 		h.logger.Debug("Session not found, clearing cookie", zap.Error(err))
 		h.cookieManager.DeleteCookie(header)
+		// Session already gone - logout is effectively successful
+		metrics.RecordLogout(idp, "success", "")
 		return "/", nil
 	}
 
@@ -304,11 +348,16 @@ func (h *OAuthHandlerImpl) HandleLogout(header api.RequestHeaderMap) (string, er
 
 	// Delete the session from store
 	if err := h.sessionStore.Delete(sessionID); err != nil {
+		metrics.RecordLogout(idp, "failure", "session_not_found")
 		return "", err
 	}
 
 	// Clear the cookie
 	h.cookieManager.DeleteCookie(header)
+
+	// Record successful logout and session ended
+	metrics.RecordSessionEnded(idp, "logout")
+	metrics.RecordLogout(idp, "success", "")
 
 	// If IDP supports end_session_endpoint, redirect to it
 	if h.provider.EndSessionEndpoint != "" {
@@ -523,6 +572,9 @@ func (h *OAuthHandlerImpl) RefreshToken(session *session.Session) error {
 		return fmt.Errorf("no refresh token available")
 	}
 
+	// Extract IDP name for metrics
+	idp := metrics.GetIDPName(h.config.IssuerURL)
+
 	h.logger.Debug("Refreshing access token",
 		zap.String("session_id", session.ID),
 		zap.Time("token_expires_at", session.TokenExpiresAt))
@@ -533,6 +585,7 @@ func (h *OAuthHandlerImpl) RefreshToken(session *session.Session) error {
 	}).Token()
 	if err != nil {
 		h.logger.Error("Failed to refresh access token", zap.Error(err))
+		metrics.RecordTokenRefresh(idp, "failure")
 		return fmt.Errorf("failed to refresh token: %v", err)
 	}
 
@@ -548,6 +601,8 @@ func (h *OAuthHandlerImpl) RefreshToken(session *session.Session) error {
 		zap.String("session_id", session.ID),
 		zap.Time("new_expiry", token.Expiry))
 
+	metrics.RecordTokenRefresh(idp, "success")
+
 	// Store updated session
 	return h.sessionStore.Store(session)
 }
@@ -560,8 +615,12 @@ func (h *OAuthHandlerImpl) GetSessionStore() session.SessionStore {
 // ValidateBearerToken validates a bearer token and returns a session
 func (h *OAuthHandlerImpl) ValidateBearerToken(ctx context.Context, token string) (*session.Session, error) {
 	if h.tokenValidator == nil {
+		// Configuration issue - don't record metrics
 		return nil, fmt.Errorf("bearer token validation not available")
 	}
+
+	// Extract IDP name for metrics
+	idp := metrics.GetIDPName(h.config.IssuerURL)
 
 	// Try to validate as access token (more lenient)
 	claims, err := h.tokenValidator.ValidateAccessToken(ctx, token)
@@ -569,9 +628,13 @@ func (h *OAuthHandlerImpl) ValidateBearerToken(ctx context.Context, token string
 		// If access token validation fails, try as ID token
 		claims, err = h.tokenValidator.ValidateToken(ctx, token)
 		if err != nil {
+			metrics.RecordTokenValidation(idp, "invalid")
 			return nil, fmt.Errorf("token validation failed: %v", err)
 		}
 	}
+
+	// Token validated successfully
+	metrics.RecordTokenValidation(idp, "valid")
 
 	// Create a session from the token claims
 	sess := &session.Session{
@@ -579,6 +642,7 @@ func (h *OAuthHandlerImpl) ValidateBearerToken(ctx context.Context, token string
 		UserID:         claims.Subject,
 		Token:          token,
 		TokenExpiresAt: time.Unix(claims.ExpiresAt, 0), // Set token expiry from claims
+		IDP:            metrics.GetIDPName(h.config.IssuerURL),
 		Claims: map[string]interface{}{
 			"email":              claims.Email,
 			"email_verified":     claims.EmailVerified,
@@ -617,10 +681,14 @@ func (h *OAuthHandlerImpl) ExchangeRefreshToken(ctx context.Context, refreshToke
 		if time.Now().Add(1 * time.Minute).Before(cached.expiry) {
 			h.cacheMu.RUnlock()
 			h.logger.Debug("Using cached access token for refresh token")
+			// Cache hit - no IDP call made, don't record metrics
 			return cached.accessToken, nil
 		}
 	}
 	h.cacheMu.RUnlock()
+
+	// Extract IDP name for metrics (only recorded for actual IDP calls)
+	idp := metrics.GetIDPName(h.config.IssuerURL)
 
 	// Use OAuth2 token endpoint to exchange refresh token
 	tokenSource := h.oauth2Config.TokenSource(ctx, &oauth2.Token{
@@ -632,6 +700,7 @@ func (h *OAuthHandlerImpl) ExchangeRefreshToken(ctx context.Context, refreshToke
 	if err != nil {
 		h.logger.Error("Failed to exchange refresh token for access token",
 			zap.Error(err))
+		metrics.RecordTokenRefresh(idp, "failure")
 		return "", fmt.Errorf("failed to exchange refresh token: %v", err)
 	}
 
@@ -653,6 +722,8 @@ func (h *OAuthHandlerImpl) ExchangeRefreshToken(ctx context.Context, refreshToke
 	h.logger.Debug("Successfully exchanged refresh token for access token",
 		zap.String("token_type", token.TokenType),
 		zap.Time("expiry", token.Expiry))
+
+	metrics.RecordTokenRefresh(idp, "success")
 
 	return token.AccessToken, nil
 }

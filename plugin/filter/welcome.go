@@ -53,7 +53,7 @@ func (f *Filter) handleWelcome(header api.RequestHeaderMap) api.StatusType {
 	header.Set("cache-control", "no-cache, no-store, must-revalidate")
 
 	// Send the welcome page HTML
-	f.callbacks.DecoderFilterCallbacks().SendLocalReply(
+	return f.recordAndSendLocalReply(
 		200, // HTTP 200 OK
 		getWelcomeHTML(homeURL),
 		map[string][]string{
@@ -63,8 +63,6 @@ func (f *Filter) handleWelcome(header api.RequestHeaderMap) api.StatusType {
 		-1, // grpcStatus (-1 means not a gRPC response)
 		"", // no additional details
 	)
-
-	return api.LocalReply
 }
 
 // getWelcomeHTML returns the HTML content for the welcome page

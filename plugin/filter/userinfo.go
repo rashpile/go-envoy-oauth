@@ -85,7 +85,12 @@ func (f *Filter) serveUserInfo(header api.RequestHeaderMap) api.StatusType {
 	header.Set("cache-control", "no-cache, no-store, must-revalidate")
 
 	// Send the JSON response
-	f.callbacks.DecoderFilterCallbacks().SendLocalReply(
+	f.logger.Debug("User info served successfully",
+		zap.String("name", userName),
+		zap.String("email", userEmail),
+		zap.Int("app_count", len(apps)))
+
+	return f.recordAndSendLocalReply(
 		200,
 		string(jsonData),
 		map[string][]string{
@@ -95,13 +100,6 @@ func (f *Filter) serveUserInfo(header api.RequestHeaderMap) api.StatusType {
 		-1,
 		"",
 	)
-
-	f.logger.Debug("User info served successfully",
-		zap.String("name", userName),
-		zap.String("email", userEmail),
-		zap.Int("app_count", len(apps)))
-
-	return api.LocalReply
 }
 
 // handleUserInfo handles the /oauth/user endpoint

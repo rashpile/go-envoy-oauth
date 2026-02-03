@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/envoyproxy/envoy/contrib/golang/common/go/api"
+	"github.com/rashpile/go-envoy-oauth/plugin/metrics"
 	"github.com/rashpile/go-envoy-oauth/plugin/oauth"
 	"github.com/rashpile/go-envoy-oauth/plugin/session"
 	"go.uber.org/zap"
@@ -90,8 +91,21 @@ func NewFilter(config *OAuthConfig, callbacks api.FilterCallbackHandler) (*Filte
 		cookieManager:       cookieManager,
 		callbacks:           callbacks,
 		logger:              logger,
-		errorHandler:        NewErrorHandler(logger, callbacks),
 	}
+
+	// Create error handler with metrics recording closure
+	filter.errorHandler = NewErrorHandler(logger, callbacks, func(statusCode int) {
+		if !filter.requestStart.IsZero() {
+			duration := time.Since(filter.requestStart)
+			metrics.RecordRequest(statusCode, duration.Seconds())
+			if IsAccessLogEnabled() {
+				responseTime := duration.Seconds() * 1000
+				LogAccess(filter.requestMethod, filter.requestPath, filter.requestHost,
+					filter.clientIP, filter.userAgent, statusCode, responseTime)
+			}
+			filter.requestStart = time.Time{}
+		}
+	})
 
 	// If OAuth handler already exists and API key feature is enabled, try to create offline handler
 	if config.EnableAPIKey && filter.oauthHandler != nil && filter.offlineTokenHandler == nil {
@@ -132,6 +146,9 @@ func (f *Filter) ensureHandlersInitialized() error {
 		retryInfo := f.config.RetryManager.GetRetryInfo()
 		f.logger.Debug("OAuth handler initialization in backoff period",
 			zap.String("retry_info", retryInfo))
+		// When in backoff, IDP is considered down
+		idp := metrics.GetIDPName(f.config.IssuerURL)
+		metrics.UpdateIDPAvailability(idp, false)
 		return f.config.RetryManager.GetError()
 	}
 
@@ -174,6 +191,9 @@ func (f *Filter) ensureHandlersInitialized() error {
 }
 
 func (f *Filter) createOAuthHandler(config *OAuthConfig, cookieManager *session.CookieManager) (oauth.OAuthHandler, error) {
+	// Extract IDP name for metrics
+	idp := metrics.GetIDPName(config.IssuerURL)
+
 	// Create OAuth handler
 	oauthConfig := &oauth.OIDCConfig{
 		IssuerURL:    config.IssuerURL,
@@ -190,10 +210,15 @@ func (f *Filter) createOAuthHandler(config *OAuthConfig, cookieManager *session.
 			zap.String("error", err.Error()),
 			zap.String("issuer_url", config.IssuerURL),
 			zap.String("client_id", config.ClientID))
+		// Mark IDP as unavailable
+		metrics.UpdateIDPAvailability(idp, false)
 		return nil, fmt.Errorf("failed to create OAuth handler: %v", err)
 	}
 	config.OAuthHandler = oauthHandler
 	f.oauthHandler = config.OAuthHandler
+
+	// Mark IDP as available
+	metrics.UpdateIDPAvailability(idp, true)
 
 	// Create offline token handler if API key feature is enabled
 	if config.EnableAPIKey {
@@ -218,31 +243,65 @@ func (f *Filter) createOAuthHandler(config *OAuthConfig, cookieManager *session.
 	return oauthHandler, nil
 }
 
+// recordAndSendLocalReply wraps SendLocalReply with metrics recording and access logging.
+// This ensures that locally-generated responses (auth failures, redirects, etc.) are
+// properly tracked in metrics, closing the gap where SendLocalReply bypasses EncodeHeaders.
+func (f *Filter) recordAndSendLocalReply(statusCode int, bodyText string,
+	headers map[string][]string, grpcStatus int64, details string) api.StatusType {
+
+	// Record metrics and access log if request tracking is active
+	if !f.requestStart.IsZero() {
+		duration := time.Since(f.requestStart)
+
+		// Record request metrics (nil-safe, always record)
+		metrics.RecordRequest(statusCode, duration.Seconds())
+
+		// Log access if enabled
+		if IsAccessLogEnabled() {
+			responseTime := duration.Seconds() * 1000 // convert to ms
+			LogAccess(f.requestMethod, f.requestPath, f.requestHost,
+				f.clientIP, f.userAgent, statusCode, responseTime)
+		}
+
+		// Reset the request tracking to prevent double-counting in EncodeHeaders
+		f.requestStart = time.Time{}
+	}
+
+	// Send the local reply
+	f.callbacks.DecoderFilterCallbacks().SendLocalReply(
+		statusCode,
+		bodyText,
+		headers,
+		grpcStatus,
+		details,
+	)
+
+	return api.LocalReply
+}
+
+// knownClusterNames builds a map of configured cluster names for cardinality-bounded metrics.
+func (f *Filter) knownClusterNames() map[string]bool {
+	known := make(map[string]bool, len(f.config.Clusters))
+	for name := range f.config.Clusters {
+		known[name] = true
+	}
+	return known
+}
+
 // handleAuthFailure creates appropriate response for authentication failures
 func (f *Filter) handleAuthFailure(statusCode int, message string) api.StatusType {
 	f.logger.Debug("Authentication failure",
 		zap.Int("status_code", statusCode),
 		zap.String("message", message))
 
-	// Log access if enabled
-	if IsAccessLogEnabled() && f.requestStart.Unix() > 0 {
-		responseTime := time.Since(f.requestStart).Seconds() * 1000
-		LogAccess(f.requestMethod, f.requestPath, f.requestHost,
-			f.clientIP, f.userAgent, statusCode, responseTime)
-		f.requestStart = time.Time{} // Reset
-	}
+	// Record cluster auth failure metric
+	clusterLabel := metrics.GetClusterLabel(f.cluster, f.knownClusterNames())
+	realm := metrics.GetRealm(f.config.IssuerURL)
+	metrics.RecordClusterAuth(clusterLabel, realm, "failure")
 
 	headers := createAuthErrorHeaders()
 
-	f.callbacks.DecoderFilterCallbacks().SendLocalReply(
-		statusCode,     // responseCode
-		message,        // bodyText
-		headers,        // headers
-		-1,             // grpcStatus
-		"auth_failure", // details
-	)
-
-	return api.LocalReply
+	return f.recordAndSendLocalReply(statusCode, message, headers, -1, "auth_failure")
 }
 
 // handleAuthSuccess processes a successful authentication
@@ -278,6 +337,11 @@ func (f *Filter) handleAuthSuccess(header api.RequestHeaderMap, session *session
 			zap.String("trace_id", traceID),
 			zap.String("action", "PERMIT"))
 	}
+
+	// Record cluster auth success metric (after permission check, before header manipulation)
+	clusterLabel := metrics.GetClusterLabel(f.cluster, f.knownClusterNames())
+	realm := metrics.GetRealm(f.config.IssuerURL)
+	metrics.RecordClusterAuth(clusterLabel, realm, "success")
 
 	// Store the current session for SSO script injection
 	f.currentSession = session
@@ -346,14 +410,6 @@ func (f *Filter) handleRedirect(url string, cookieValue string) api.StatusType {
 		zap.String("url", url),
 		zap.Bool("has_cookie", cookieValue != ""))
 
-	// Log access if enabled
-	if IsAccessLogEnabled() && f.requestStart.Unix() > 0 {
-		responseTime := time.Since(f.requestStart).Seconds() * 1000
-		LogAccess(f.requestMethod, f.requestPath, f.requestHost,
-			f.clientIP, f.userAgent, http.StatusFound, responseTime)
-		f.requestStart = time.Time{} // Reset
-	}
-
 	headers := map[string][]string{
 		"Location":     {url},
 		"Content-Type": {"text/html"},
@@ -362,15 +418,7 @@ func (f *Filter) handleRedirect(url string, cookieValue string) api.StatusType {
 		headers["Set-Cookie"] = []string{cookieValue}
 	}
 
-	f.callbacks.DecoderFilterCallbacks().SendLocalReply(
-		http.StatusFound, // 302
-		"",               // empty body
-		headers,
-		0,  // no grpc status
-		"", // no details
-	)
-
-	return api.LocalReply
+	return f.recordAndSendLocalReply(http.StatusFound, "", headers, 0, "")
 }
 
 // getTraceID extracts the trace ID from the request headers
@@ -450,11 +498,18 @@ func (f *Filter) handleDecodeHeaders(header api.RequestHeaderMap, path string, t
 			// Exchange refresh token for access token
 			accessToken, err := f.oauthHandler.ExchangeRefreshToken(context.Background(), apiToken)
 			if err != nil {
+				// Record API key authentication failure with classified reason
+				reason := metrics.ClassifyAPIKeyError(err)
+				metrics.RecordAPIKeyAuth("failure", reason)
+
 				f.logger.Debug("Failed to exchange API token for access token",
 					zap.String("trace_id", traceID),
 					zap.Error(err))
 				// Don't fail here, let it continue to check for other auth methods
 			} else {
+				// Record API key authentication success
+				metrics.RecordAPIKeyAuth("success", "")
+
 				// Successfully exchanged
 				f.logger.Debug("Successfully exchanged API token for access token",
 					zap.String("trace_id", traceID))

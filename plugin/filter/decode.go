@@ -16,9 +16,11 @@ func (f *Filter) DecodeHeaders(header api.RequestHeaderMap, endStream bool) api.
 	host, _ := header.Get(":authority")
 	traceID := f.getTraceID(header)
 
-	// Capture request information for access logging
+	// Start request timing for metrics (always, independent of access logging)
+	f.requestStart = time.Now()
+
+	// Capture additional request information for access logging
 	if IsAccessLogEnabled() {
-		f.requestStart = time.Now()
 		f.requestMethod = method
 		f.requestPath = path
 		f.requestHost = host

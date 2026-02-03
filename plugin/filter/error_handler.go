@@ -11,21 +11,28 @@ import (
 
 // ErrorHandler manages error responses and IDP unavailability
 type ErrorHandler struct {
-	logger    *zap.Logger
-	callbacks api.FilterCallbackHandler
+	logger        *zap.Logger
+	callbacks     api.FilterCallbackHandler
+	recordMetrics func(statusCode int) // callback to record metrics before sending reply
 }
 
 // NewErrorHandler creates a new error handler
-func NewErrorHandler(logger *zap.Logger, callbacks api.FilterCallbackHandler) *ErrorHandler {
+func NewErrorHandler(logger *zap.Logger, callbacks api.FilterCallbackHandler, recordMetrics func(statusCode int)) *ErrorHandler {
 	return &ErrorHandler{
-		logger:    logger,
-		callbacks: callbacks,
+		logger:        logger,
+		callbacks:     callbacks,
+		recordMetrics: recordMetrics,
 	}
 }
 
 // HandleIDPUnavailable returns a user-friendly error page when IDP is unavailable
 func (eh *ErrorHandler) HandleIDPUnavailable() api.StatusType {
 	eh.logger.Warn("Identity Provider is temporarily unavailable")
+
+	// Record metrics before sending reply
+	if eh.recordMetrics != nil {
+		eh.recordMetrics(503)
+	}
 
 	html := `<!DOCTYPE html>
 <html>
@@ -118,6 +125,11 @@ func (eh *ErrorHandler) HandleAuthFailure(statusCode int, message string) api.St
 		zap.Int("status_code", statusCode),
 		zap.String("message", message))
 
+	// Record metrics before sending reply
+	if eh.recordMetrics != nil {
+		eh.recordMetrics(statusCode)
+	}
+
 	headers := map[string][]string{
 		"content-type":     {"text/plain"},
 		"www-authenticate": {"Bearer"},
@@ -137,6 +149,11 @@ func (eh *ErrorHandler) HandleAuthFailure(statusCode int, message string) api.St
 // HandleAccessDenied returns the access denied page
 func (eh *ErrorHandler) HandleAccessDenied() api.StatusType {
 	eh.logger.Info("Rendering access denied page")
+
+	// Record metrics before sending reply
+	if eh.recordMetrics != nil {
+		eh.recordMetrics(403)
+	}
 
 	html := `<!DOCTYPE html>
 <html>
