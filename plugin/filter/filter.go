@@ -230,31 +230,51 @@ func (f *Filter) createOAuthHandler(config *OAuthConfig, cookieManager *session.
 	return oauthHandler, nil
 }
 
+// recordAndSendLocalReply wraps SendLocalReply with metrics recording and access logging.
+// This ensures that locally-generated responses (auth failures, redirects, etc.) are
+// properly tracked in metrics, closing the gap where SendLocalReply bypasses EncodeHeaders.
+func (f *Filter) recordAndSendLocalReply(statusCode int, bodyText string,
+	headers map[string][]string, grpcStatus int64, details string) api.StatusType {
+
+	// Record metrics and access log if request tracking is active
+	if !f.requestStart.IsZero() {
+		duration := time.Since(f.requestStart)
+
+		// Record request metrics (nil-safe, always record)
+		metrics.RecordRequest(statusCode, duration.Seconds())
+
+		// Log access if enabled
+		if IsAccessLogEnabled() {
+			responseTime := duration.Seconds() * 1000 // convert to ms
+			LogAccess(f.requestMethod, f.requestPath, f.requestHost,
+				f.clientIP, f.userAgent, statusCode, responseTime)
+		}
+
+		// Reset the request tracking to prevent double-counting in EncodeHeaders
+		f.requestStart = time.Time{}
+	}
+
+	// Send the local reply
+	f.callbacks.DecoderFilterCallbacks().SendLocalReply(
+		statusCode,
+		bodyText,
+		headers,
+		grpcStatus,
+		details,
+	)
+
+	return api.LocalReply
+}
+
 // handleAuthFailure creates appropriate response for authentication failures
 func (f *Filter) handleAuthFailure(statusCode int, message string) api.StatusType {
 	f.logger.Debug("Authentication failure",
 		zap.Int("status_code", statusCode),
 		zap.String("message", message))
 
-	// Log access if enabled
-	if IsAccessLogEnabled() && f.requestStart.Unix() > 0 {
-		responseTime := time.Since(f.requestStart).Seconds() * 1000
-		LogAccess(f.requestMethod, f.requestPath, f.requestHost,
-			f.clientIP, f.userAgent, statusCode, responseTime)
-		f.requestStart = time.Time{} // Reset
-	}
-
 	headers := createAuthErrorHeaders()
 
-	f.callbacks.DecoderFilterCallbacks().SendLocalReply(
-		statusCode,     // responseCode
-		message,        // bodyText
-		headers,        // headers
-		-1,             // grpcStatus
-		"auth_failure", // details
-	)
-
-	return api.LocalReply
+	return f.recordAndSendLocalReply(statusCode, message, headers, -1, "auth_failure")
 }
 
 // handleAuthSuccess processes a successful authentication
@@ -358,14 +378,6 @@ func (f *Filter) handleRedirect(url string, cookieValue string) api.StatusType {
 		zap.String("url", url),
 		zap.Bool("has_cookie", cookieValue != ""))
 
-	// Log access if enabled
-	if IsAccessLogEnabled() && f.requestStart.Unix() > 0 {
-		responseTime := time.Since(f.requestStart).Seconds() * 1000
-		LogAccess(f.requestMethod, f.requestPath, f.requestHost,
-			f.clientIP, f.userAgent, http.StatusFound, responseTime)
-		f.requestStart = time.Time{} // Reset
-	}
-
 	headers := map[string][]string{
 		"Location":     {url},
 		"Content-Type": {"text/html"},
@@ -374,15 +386,7 @@ func (f *Filter) handleRedirect(url string, cookieValue string) api.StatusType {
 		headers["Set-Cookie"] = []string{cookieValue}
 	}
 
-	f.callbacks.DecoderFilterCallbacks().SendLocalReply(
-		http.StatusFound, // 302
-		"",               // empty body
-		headers,
-		0,  // no grpc status
-		"", // no details
-	)
-
-	return api.LocalReply
+	return f.recordAndSendLocalReply(http.StatusFound, "", headers, 0, "")
 }
 
 // getTraceID extracts the trace ID from the request headers
