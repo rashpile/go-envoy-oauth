@@ -20,6 +20,14 @@ const (
 	ReasonUnknown      = "unknown"
 )
 
+// Error classification constants for API key authentication failures
+const (
+	ReasonAPIKeyInvalid        = "invalid"
+	ReasonAPIKeyExpired        = "expired"
+	ReasonAPIKeyRevoked        = "revoked"
+	ReasonAPIKeyExchangeFailed = "exchange_failed"
+)
+
 // Authentication metrics for tracking OAuth login/logout events.
 // Labels:
 //   - idp: Identity provider hostname (e.g., "keycloak.example.com")
@@ -48,6 +56,12 @@ var (
 	//   - realm: Keycloak realm extracted from issuer URL (or "unknown")
 	//   - result: "success" or "failure"
 	ClusterAuthTotal *prometheus.CounterVec
+
+	// APIKeyAuthTotal counts total API key (offline token) authentication attempts.
+	// Labels:
+	//   - result: "success" or "failure"
+	//   - reason: Failure reason (only for failures)
+	APIKeyAuthTotal *prometheus.CounterVec
 )
 
 // RegisterAuthMetrics registers the authentication metrics with the provided registry.
@@ -93,11 +107,20 @@ func RegisterAuthMetrics(registry *prometheus.Registry) {
 		[]string{"cluster", "realm", "result"},
 	)
 
+	APIKeyAuthTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "envoy_oauth_api_key_auth_total",
+			Help: "Total API key (offline token) authentication attempts",
+		},
+		[]string{"result", "reason"},
+	)
+
 	registry.MustRegister(LoginTotal)
 	registry.MustRegister(LogoutTotal)
 	registry.MustRegister(SessionCreatedTotal)
 	registry.MustRegister(SessionEndedTotal)
 	registry.MustRegister(ClusterAuthTotal)
+	registry.MustRegister(APIKeyAuthTotal)
 }
 
 // RecordLogin records a login attempt with the given IDP, status, and reason.
@@ -212,4 +235,35 @@ func RecordClusterAuth(cluster, realm, result string) {
 		return
 	}
 	ClusterAuthTotal.WithLabelValues(cluster, realm, result).Inc()
+}
+
+// RecordAPIKeyAuth records an API key authentication attempt with the given result and reason.
+// Safe to call even if metrics server is disabled (metrics will be nil).
+func RecordAPIKeyAuth(result, reason string) {
+	if APIKeyAuthTotal == nil {
+		return
+	}
+	APIKeyAuthTotal.WithLabelValues(result, reason).Inc()
+}
+
+// ClassifyAPIKeyError maps error messages to reason labels for API key authentication failures.
+// Uses pattern matching on error strings to categorize failures.
+func ClassifyAPIKeyError(err error) string {
+	if err == nil {
+		return ReasonUnknown
+	}
+
+	errMsg := strings.ToLower(err.Error())
+
+	// Check for specific error patterns
+	switch {
+	case strings.Contains(errMsg, "invalid") && (strings.Contains(errMsg, "token") || strings.Contains(errMsg, "grant")):
+		return ReasonAPIKeyInvalid
+	case strings.Contains(errMsg, "expired"):
+		return ReasonAPIKeyExpired
+	case strings.Contains(errMsg, "revoked"):
+		return ReasonAPIKeyRevoked
+	default:
+		return ReasonAPIKeyExchangeFailed
+	}
 }
