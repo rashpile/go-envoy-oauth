@@ -1,0 +1,60 @@
+groups:
+  - name: auth-gateway-alerts
+    interval: 15s
+    rules:
+      - alert: HighLoginFailureRate
+        expr: |
+          sum(rate(envoy_oauth_login_total{status="failure"}[5m]))
+          /
+          sum(rate(envoy_oauth_login_total[5m]))
+          > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High login failure rate ({{ $value | humanizePercentage }})"
+          description: "More than 10% of login attempts are failing over the last 5 minutes."
+
+      - alert: IDPDown
+        expr: envoy_oauth_idp_up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Identity provider {{ $labels.idp }} is down"
+          description: "IDP has been unreachable for more than 2 minutes."
+
+      - alert: SlowOAuthCallbacks
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(envoy_oauth_callback_duration_seconds_bucket[5m])) by (le, idp)
+          ) > 3
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Slow OAuth callbacks for {{ $labels.idp }}"
+          description: "95th percentile callback latency exceeds 3 seconds."
+
+      - alert: SessionExpirySpikeRate
+        expr: |
+          sum(rate(envoy_oauth_session_ended_total{reason="expired"}[5m])) > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Session expiry spike detected"
+          description: "More than 10 sessions per second are expiring."
+
+      - alert: TokenRefreshFailures
+        expr: |
+          sum(rate(envoy_oauth_token_refresh_total{result="failure"}[5m]))
+          /
+          sum(rate(envoy_oauth_token_refresh_total[5m]))
+          > 0.2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High token refresh failure rate ({{ $value | humanizePercentage }})"
+          description: "More than 20% of token refresh attempts are failing."
