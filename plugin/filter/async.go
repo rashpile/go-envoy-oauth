@@ -23,7 +23,7 @@ func (f *Filter) handleAsyncDecodeHeaders(
 				f.logger.Error("Panic in async decode headers",
 					zap.String("trace_id", traceID),
 					zap.Any("panic", r))
-				f.handleAuthFailure(500, "Internal Server Error")
+				f.handleRedirect("/", "")
 			}
 		}()
 
@@ -62,7 +62,7 @@ func (f *Filter) handleAsyncOAuthHandler(
 		defer func() {
 			if r := recover(); r != nil {
 				f.logger.Error("Panic in async callback", zap.Any("panic", r))
-				f.handleAuthFailure(500, "Internal Server Error")
+				f.handleRedirect("/", "")
 			}
 		}()
 
@@ -123,7 +123,7 @@ func (f *Filter) handleAsyncValidateSession(
 		defer func() {
 			if r := recover(); r != nil {
 				f.logger.Error("Panic in async callback", zap.Any("panic", r))
-				f.handleAuthFailure(500, "Internal Server Error")
+				f.handleRedirect("/", "")
 			}
 		}()
 
@@ -153,7 +153,7 @@ func (f *Filter) handleAsyncCallback(header api.RequestHeaderMap, query string, 
 		defer func() {
 			if r := recover(); r != nil {
 				f.logger.Error("Panic in async callback", zap.Any("panic", r))
-				f.handleAuthFailure(500, "Internal Server Error")
+				f.handleRedirect("/", "")
 			}
 		}()
 		err := f.oauthHandler.HandleCallback(header, query)
@@ -161,8 +161,8 @@ func (f *Filter) handleAsyncCallback(header api.RequestHeaderMap, query string, 
 			f.logger.Error("Failed to handle OAuth callback",
 				zap.String("trace_id", traceID),
 				zap.Error(err))
-			f.handleAuthFailure(400, "Bad Request: Invalid OAuth callback")
-			// Don't need to return anything - SendLocalReply already called
+			// Redirect to home instead of showing error page (e.g. expired session/state)
+			f.handleRedirect("/", "")
 			return
 		}
 
@@ -172,7 +172,8 @@ func (f *Filter) handleAsyncCallback(header api.RequestHeaderMap, query string, 
 			f.logger.Error("Failed to get session cookie",
 				zap.String("trace_id", traceID),
 				zap.Error(err))
-			f.handleAuthFailure(500, "Internal Server Error: Failed to get session cookie")
+			// Redirect to home instead of showing error page
+			f.handleRedirect("/", "")
 			return
 		}
 
