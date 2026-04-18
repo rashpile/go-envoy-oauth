@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/envoyproxy/envoy/contrib/golang/common/go/api"
@@ -20,8 +21,48 @@ import (
 	"golang.org/x/oauth2"
 )
 
+// normalizeIssuer strips trailing slashes and lowercases an issuer URL for
+// case-insensitive, slash-tolerant comparison (D-03).
+func normalizeIssuer(s string) string {
+	return strings.ToLower(strings.TrimRight(s, "/"))
+}
+
+// extractIssuerFromJWT extracts the iss claim from a JWT's payload segment
+// without performing signature validation. Returns empty string on any error.
+// Full signature validation is done separately via TokenValidator.
+func extractIssuerFromJWT(tokenStr string) string {
+	parts := strings.Split(tokenStr, ".")
+	if len(parts) != 3 {
+		return ""
+	}
+	// Add padding if needed
+	payload := parts[1]
+	switch len(payload) % 4 {
+	case 2:
+		payload += "=="
+	case 3:
+		payload += "="
+	}
+	decoded, err := base64.URLEncoding.DecodeString(payload)
+	if err != nil {
+		// Try raw URL encoding (no padding)
+		decoded, err = base64.RawURLEncoding.DecodeString(parts[1])
+		if err != nil {
+			return ""
+		}
+	}
+	var claims struct {
+		Iss string `json:"iss"`
+	}
+	if err := json.Unmarshal(decoded, &claims); err != nil {
+		return ""
+	}
+	return claims.Iss
+}
+
 // OIDCConfig represents the OpenID Connect configuration
 type OIDCConfig struct {
+	ProviderName string // Named provider identifier (used by ProviderRegistry)
 	IssuerURL    string
 	ClientID     string
 	ClientSecret string
@@ -48,6 +89,13 @@ type OAuthHandler interface {
 	IsNeedValidateSession(session *session.Session) bool
 	ValidateBearerToken(ctx context.Context, token string) (*session.Session, error)
 	ExchangeRefreshToken(ctx context.Context, refreshToken string) (string, error)
+	GetSessionCookie(header api.RequestHeaderMap) (string, error)
+	DeleteSessionCookie(header api.RequestHeaderMap)
+	SetSessionCookie(header api.RequestHeaderMap, value string) error
+	FormatSessionCookie(value string) string
+	// HealthState returns the current health state of the provider (D-07).
+	// Ready/Degraded continue serving; Down requests MUST receive 503 (D-03).
+	HealthState() ProviderState
 }
 
 type tokenCacheEntry struct {
@@ -57,6 +105,7 @@ type tokenCacheEntry struct {
 
 type OAuthHandlerImpl struct {
 	config            *OIDCConfig
+	providerName      string // named provider identifier from OIDCConfig.ProviderName
 	provider          *OIDCProvider
 	oauth2Config      *oauth2.Config
 	sessionStore      session.SessionStore
@@ -64,8 +113,12 @@ type OAuthHandlerImpl struct {
 	tokenValidator    *TokenValidator
 	refreshTokenCache map[string]*tokenCacheEntry // maps refresh token hash -> access token
 	cacheMu           sync.RWMutex
-	mu                sync.Mutex
+	mu                sync.RWMutex
 	logger            *zap.Logger
+	// Phase 5 (HLTH-02): health state machine. Writes are refresher-only (D-06).
+	healthState  atomic.Int32 // holds ProviderState; default 0 == StateReady
+	jwksFailures int          // consecutive refresh failure count; written by refresher goroutine only
+	jwksStaleAt  time.Time    // time of first failure that moved state out of ready; refresher-only
 }
 
 // NewOAuthHandler creates a new OAuth handler
@@ -107,8 +160,20 @@ func NewOAuthHandler(config *OIDCConfig, sessionStore session.SessionStore, cook
 		tokenValidator = nil
 	}
 
+	// Fallback when ProviderName is not supplied (defensive — parser.go sets
+	// "default" for the legacy single-provider path). Without this the idp
+	// metric label would collapse to "" and silently break dashboards. Using
+	// "default" instead of the issuer hostname keeps the label format stable
+	// after the Phase 04 switch to registry-key labels (OBS-01).
+	providerName := config.ProviderName
+	if providerName == "" {
+		providerName = "default"
+	}
+
+	metrics.UpdateIDPState(providerName, StateReady.String())
 	return &OAuthHandlerImpl{
 		config:            config,
+		providerName:      providerName,
 		provider:          provider,
 		oauth2Config:      oauth2Config,
 		sessionStore:      sessionStore,
@@ -132,7 +197,7 @@ func (h *OAuthHandlerImpl) GetAbsoluteRedirectURL(header api.RequestHeaderMap) s
 	}
 
 	// Ensure the redirect URL is absolute and properly formatted
-	redirectURL := h.oauth2Config.RedirectURL
+	redirectURL := h.getOAuth2Config().RedirectURL
 	if !strings.HasPrefix(redirectURL, "http://") && !strings.HasPrefix(redirectURL, "https://") {
 		// If no scheme is specified, use the same scheme as the request
 		scheme := "http"
@@ -152,47 +217,45 @@ func (h *OAuthHandlerImpl) GetAbsoluteRedirectURL(header api.RequestHeaderMap) s
 // GetOAuthConfig returns a new OAuth2 config with the absolute redirect URL
 func (h *OAuthHandlerImpl) GetOAuthConfig(header api.RequestHeaderMap) *oauth2.Config {
 	redirectURL := h.GetAbsoluteRedirectURL(header)
+	base := h.getOAuth2Config()
 	return &oauth2.Config{
-		ClientID:     h.oauth2Config.ClientID,
-		ClientSecret: h.oauth2Config.ClientSecret,
+		ClientID:     base.ClientID,
+		ClientSecret: base.ClientSecret,
 		RedirectURL:  redirectURL,
-		Scopes:       h.oauth2Config.Scopes,
-		Endpoint:     h.oauth2Config.Endpoint,
+		Scopes:       base.Scopes,
+		Endpoint:     base.Endpoint,
 	}
 }
 
 func (h *OAuthHandlerImpl) HandleAuthRedirect(header api.RequestHeaderMap, redirectURI string) error {
-	// Generate a random state and combine it with the original request path
-	state := generateRandomState() + "|" + redirectURI
+	// Generate a pure random nonce as the OAuth state parameter (D-01).
+	// All context (provider, path, PKCE verifier) is stored server-side.
+	nonce := generateRandomState()
 
-	// Store the state in a temporary session
-	session := &session.Session{
-		ID:        state,
-		UserID:    "",
-		Token:     "",
-		Claims:    nil,
-		CreatedAt: time.Now(),
-		ExpiresAt: time.Now().Add(5 * time.Minute),
-	}
-	if err := h.sessionStore.Store(session); err != nil {
-		return fmt.Errorf("failed to store state: %v", err)
-	}
+	// Generate PKCE code verifier and compute S256 challenge (D-04, D-05).
+	verifier := oauth2.GenerateVerifier()
 
-	// Set the state in a cookie
-	if err := h.cookieManager.SetCookie(header, state); err != nil {
-		return fmt.Errorf("failed to set state cookie: %v", err)
+	// Store server-side pending-auth entry mapping nonce -> {provider, path, verifier} (D-01, D-02, D-05).
+	pa := &session.PendingAuth{
+		ProviderName: h.providerName,
+		OriginalPath: redirectURI,
+		CodeVerifier: verifier,
+		Expiry:       time.Now().Add(5 * time.Minute),
+	}
+	if err := session.StorePendingAuth(h.sessionStore, nonce, pa); err != nil {
+		return fmt.Errorf("failed to store pending auth state: %v", err)
 	}
 
-	// Use the configured RedirectURL from oauth2Config
+	// Build authorization URL with PKCE S256 challenge (D-04).
 	oauth2Config := h.GetOAuthConfig(header)
-	authURL := oauth2Config.AuthCodeURL(state)
+	authURL := oauth2Config.AuthCodeURL(nonce, oauth2.S256ChallengeOption(verifier))
 	header.Set("location", authURL)
 	return nil
 }
 
 func (h *OAuthHandlerImpl) HandleCallback(header api.RequestHeaderMap, query string) error {
 	// Extract IDP name for metrics
-	idp := metrics.GetIDPName(h.config.IssuerURL)
+	idp := h.providerName
 
 	// Start timing for callback duration metric
 	startTime := time.Now()
@@ -204,43 +267,23 @@ func (h *OAuthHandlerImpl) HandleCallback(header api.RequestHeaderMap, query str
 		return err
 	}
 
-	// Get the raw state parameter
-	state := values.Get("state")
-	if state == "" {
+	// Get the raw state parameter (nonce only — per D-01, no "|" splitting).
+	nonce := values.Get("state")
+	if nonce == "" {
 		metrics.RecordLogin(idp, "failure", "invalid_state")
 		metrics.RecordCallbackDuration(idp, time.Since(startTime).Seconds())
 		return fmt.Errorf("state parameter not found")
 	}
 
-	// Get the state from the session store
-	stateSession, err := h.sessionStore.Get(state)
+	// Retrieve and delete pending-auth entry (single-use per D-01).
+	// GetPendingAuth handles expiry validation, sentinel check, and deletion.
+	pa, err := session.GetPendingAuth(h.sessionStore, nonce)
 	if err != nil {
 		metrics.RecordLogin(idp, "failure", "invalid_state")
 		metrics.RecordCallbackDuration(idp, time.Since(startTime).Seconds())
-		return fmt.Errorf("invalid or expired state parameter")
+		return fmt.Errorf("invalid or expired state parameter: %w", err)
 	}
-
-	// Validate the state session
-	if time.Now().After(stateSession.ExpiresAt) {
-		metrics.RecordLogin(idp, "failure", "expired")
-		metrics.RecordCallbackDuration(idp, time.Since(startTime).Seconds())
-		return fmt.Errorf("state parameter expired")
-	}
-
-	// Delete the state session
-	if err := h.sessionStore.Delete(state); err != nil {
-		metrics.RecordCallbackDuration(idp, time.Since(startTime).Seconds())
-		return fmt.Errorf("failed to delete state: %v", err)
-	}
-
-	// Extract the original request path from the state parameter
-	parts := strings.Split(state, "|")
-	if len(parts) != 2 {
-		metrics.RecordLogin(idp, "failure", "invalid_state")
-		metrics.RecordCallbackDuration(idp, time.Since(startTime).Seconds())
-		return fmt.Errorf("invalid state parameter format")
-	}
-	originalPath := parts[1]
+	originalPath := pa.OriginalPath
 
 	code := values.Get("code")
 	if code == "" {
@@ -249,13 +292,34 @@ func (h *OAuthHandlerImpl) HandleCallback(header api.RequestHeaderMap, query str
 		return fmt.Errorf("authorization code not found")
 	}
 
-	// Use the configured RedirectURL from oauth2Config
+	// Exchange code with PKCE verifier (D-04, D-05).
 	oauth2Config := h.GetOAuthConfig(header)
-	token, err := oauth2Config.Exchange(context.Background(), code)
+	token, err := oauth2Config.Exchange(context.Background(), code, oauth2.VerifierOption(pa.CodeVerifier))
 	if err != nil {
 		metrics.RecordLogin(idp, "failure", metrics.ClassifyLoginError(err))
 		metrics.RecordCallbackDuration(idp, time.Since(startTime).Seconds())
 		return err
+	}
+
+	// Validate issuer from ID token (D-03, AUTH-03).
+	// The issuer check is mandatory for OIDC flows — reject if id_token is absent.
+	idTokenRaw, hasIDToken := token.Extra("id_token").(string)
+	if !hasIDToken || idTokenRaw == "" {
+		metrics.RecordLogin(idp, "failure", "invalid_token")
+		metrics.RecordCallbackDuration(idp, time.Since(startTime).Seconds())
+		return fmt.Errorf("token response missing id_token for provider %q — issuer cannot be verified", h.config.ProviderName)
+	}
+	iss := extractIssuerFromJWT(idTokenRaw)
+	if iss == "" {
+		metrics.RecordLogin(idp, "failure", "invalid_token")
+		metrics.RecordCallbackDuration(idp, time.Since(startTime).Seconds())
+		return fmt.Errorf("failed to extract issuer from id_token for provider %q", h.config.ProviderName)
+	}
+	p := h.getProvider()
+	if normalizeIssuer(iss) != normalizeIssuer(p.Issuer) {
+		metrics.RecordLogin(idp, "failure", "invalid_token")
+		metrics.RecordCallbackDuration(idp, time.Since(startTime).Seconds())
+		return fmt.Errorf("issuer mismatch: token issuer %q does not match provider issuer %q", iss, p.Issuer)
 	}
 
 	userInfo, err := h.getUserInfo(token.AccessToken)
@@ -287,6 +351,7 @@ func (h *OAuthHandlerImpl) HandleCallback(header api.RequestHeaderMap, query str
 		IDToken:        idToken,
 		RefreshToken:   token.RefreshToken, // Store refresh token for future use
 		IDP:            idp,                // Identity provider for metrics
+		ProviderName:   h.providerName,     // Named provider registry key (SESS-02 verification)
 		Claims:         userInfo,
 		CreatedAt:      time.Now(),
 		ExpiresAt:      time.Now().Add(24 * time.Hour), // Session expires in 24 hours
@@ -316,12 +381,13 @@ func (h *OAuthHandlerImpl) HandleCallback(header api.RequestHeaderMap, query str
 
 func (h *OAuthHandlerImpl) HandleLogout(header api.RequestHeaderMap) (string, error) {
 	// Extract IDP name for metrics
-	idp := metrics.GetIDPName(h.config.IssuerURL)
+	idp := h.providerName
 
+	provider := h.getProvider()
 	h.logger.Debug("HandleLogout started",
-		zap.String("provider_issuer", h.provider.Issuer),
-		zap.String("end_session_endpoint", h.provider.EndSessionEndpoint),
-		zap.Bool("has_end_session", h.provider.EndSessionEndpoint != ""))
+		zap.String("provider_issuer", provider.Issuer),
+		zap.String("end_session_endpoint", provider.EndSessionEndpoint),
+		zap.Bool("has_end_session", provider.EndSessionEndpoint != ""))
 
 	sessionID, err := h.cookieManager.GetCookie(header)
 	if err != nil {
@@ -360,9 +426,9 @@ func (h *OAuthHandlerImpl) HandleLogout(header api.RequestHeaderMap) (string, er
 	metrics.RecordLogout(idp, "success", "")
 
 	// If IDP supports end_session_endpoint, redirect to it
-	if h.provider.EndSessionEndpoint != "" {
+	if provider.EndSessionEndpoint != "" {
 		// Build the logout URL with required parameters
-		logoutURL, err := url.Parse(h.provider.EndSessionEndpoint)
+		logoutURL, err := url.Parse(provider.EndSessionEndpoint)
 		if err != nil {
 			return "", fmt.Errorf("failed to parse end_session_endpoint: %v", err)
 		}
@@ -387,7 +453,7 @@ func (h *OAuthHandlerImpl) HandleLogout(header api.RequestHeaderMap) (string, er
 
 		h.logger.Debug("Redirecting to IDP logout endpoint",
 			zap.String("logout_url", logoutURL.String()),
-			zap.String("endpoint", h.provider.EndSessionEndpoint),
+			zap.String("endpoint", provider.EndSessionEndpoint),
 			zap.Bool("has_id_token", sess.IDToken != ""),
 			zap.String("post_logout_redirect", postLogoutRedirectURI))
 
@@ -397,6 +463,35 @@ func (h *OAuthHandlerImpl) HandleLogout(header api.RequestHeaderMap) (string, er
 	// No IDP logout endpoint, just redirect to home
 	h.logger.Debug("IDP does not support end_session_endpoint, performing local logout only")
 	return "/", nil
+}
+
+// GetSessionCookie reads the provider-namespaced session cookie value from the
+// request header using this handler's CookieManager. Filter code resolves the
+// correct handler via cluster config (D-06) before calling this, so the cookie
+// name is always the one owned by this provider (D-09).
+func (h *OAuthHandlerImpl) GetSessionCookie(header api.RequestHeaderMap) (string, error) {
+	return h.cookieManager.GetCookie(header)
+}
+
+// DeleteSessionCookie clears the provider-namespaced session cookie on the
+// response using this handler's CookieManager. Called by the filter on
+// provider-mismatch (D-05) to evict the attacker-origin cookie using the
+// correct cookie name — Pitfall 3 in 03-RESEARCH.md.
+func (h *OAuthHandlerImpl) DeleteSessionCookie(header api.RequestHeaderMap) {
+	h.cookieManager.DeleteCookie(header)
+}
+
+// SetSessionCookie writes a Set-Cookie header whose Name is this handler's
+// provider-namespaced cookie name (D-09). Delegates to the per-provider CookieManager.
+func (h *OAuthHandlerImpl) SetSessionCookie(header api.RequestHeaderMap, value string) error {
+	return h.cookieManager.SetCookie(header, value)
+}
+
+// FormatSessionCookie returns a pre-formatted cookie string (name=value; attrs...)
+// for this handler's provider-namespaced cookie name. Used by the filter to
+// attach cookies onto redirect responses.
+func (h *OAuthHandlerImpl) FormatSessionCookie(value string) string {
+	return h.cookieManager.FormatCookie(value)
 }
 
 func (h *OAuthHandlerImpl) IsNeedValidateSession(session *session.Session) bool {
@@ -423,7 +518,7 @@ func (h *OAuthHandlerImpl) ValidateSession(session *session.Session) error {
 // getUserInfo retrieves user information from the OpenID Connect provider
 func (h *OAuthHandlerImpl) getUserInfo(accessToken string) (map[string]interface{}, error) {
 	client := &http.Client{}
-	req, err := http.NewRequest("GET", h.provider.UserInfoEndpoint, nil)
+	req, err := http.NewRequest("GET", h.getProvider().UserInfoEndpoint, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -573,14 +668,14 @@ func (h *OAuthHandlerImpl) RefreshToken(session *session.Session) error {
 	}
 
 	// Extract IDP name for metrics
-	idp := metrics.GetIDPName(h.config.IssuerURL)
+	idp := h.providerName
 
 	h.logger.Debug("Refreshing access token",
 		zap.String("session_id", session.ID),
 		zap.Time("token_expires_at", session.TokenExpiresAt))
 
 	// Get new token using refresh token
-	token, err := h.oauth2Config.TokenSource(context.Background(), &oauth2.Token{
+	token, err := h.getOAuth2Config().TokenSource(context.Background(), &oauth2.Token{
 		RefreshToken: session.RefreshToken,
 	}).Token()
 	if err != nil {
@@ -614,19 +709,20 @@ func (h *OAuthHandlerImpl) GetSessionStore() session.SessionStore {
 
 // ValidateBearerToken validates a bearer token and returns a session
 func (h *OAuthHandlerImpl) ValidateBearerToken(ctx context.Context, token string) (*session.Session, error) {
-	if h.tokenValidator == nil {
+	tv := h.getTokenValidator()
+	if tv == nil {
 		// Configuration issue - don't record metrics
 		return nil, fmt.Errorf("bearer token validation not available")
 	}
 
 	// Extract IDP name for metrics
-	idp := metrics.GetIDPName(h.config.IssuerURL)
+	idp := h.providerName
 
 	// Try to validate as access token (more lenient)
-	claims, err := h.tokenValidator.ValidateAccessToken(ctx, token)
+	claims, err := tv.ValidateAccessToken(ctx, token)
 	if err != nil {
 		// If access token validation fails, try as ID token
-		claims, err = h.tokenValidator.ValidateToken(ctx, token)
+		claims, err = tv.ValidateToken(ctx, token)
 		if err != nil {
 			metrics.RecordTokenValidation(idp, "invalid")
 			return nil, fmt.Errorf("token validation failed: %v", err)
@@ -643,6 +739,7 @@ func (h *OAuthHandlerImpl) ValidateBearerToken(ctx context.Context, token string
 		Token:          token,
 		TokenExpiresAt: time.Unix(claims.ExpiresAt, 0), // Set token expiry from claims
 		IDP:            metrics.GetIDPName(h.config.IssuerURL),
+		ProviderName:   h.providerName, // Named provider registry key (SESS-02 verification)
 		Claims: map[string]interface{}{
 			"email":              claims.Email,
 			"email_verified":     claims.EmailVerified,
@@ -688,10 +785,10 @@ func (h *OAuthHandlerImpl) ExchangeRefreshToken(ctx context.Context, refreshToke
 	h.cacheMu.RUnlock()
 
 	// Extract IDP name for metrics (only recorded for actual IDP calls)
-	idp := metrics.GetIDPName(h.config.IssuerURL)
+	idp := h.providerName
 
 	// Use OAuth2 token endpoint to exchange refresh token
-	tokenSource := h.oauth2Config.TokenSource(ctx, &oauth2.Token{
+	tokenSource := h.getOAuth2Config().TokenSource(ctx, &oauth2.Token{
 		RefreshToken: refreshToken,
 	})
 
@@ -727,3 +824,6 @@ func (h *OAuthHandlerImpl) ExchangeRefreshToken(ctx context.Context, refreshToke
 
 	return token.AccessToken, nil
 }
+
+// Compile-time check: OAuthHandlerImpl must implement OAuthHandler (incl. HealthState).
+var _ OAuthHandler = (*OAuthHandlerImpl)(nil)

@@ -2,21 +2,38 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 )
 
+// validProviderName matches provider names: alphanumeric start, followed by alphanumeric or hyphens
+var validProviderName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9-]*$`)
+
+// ProviderConfig holds OAuth 2.0/OIDC provider credentials and endpoints.
+// Multiple providers can be configured to support multi-tenant or multi-IDP deployments.
+type ProviderConfig struct {
+	IssuerURL    string   `yaml:"issuer_url"`
+	ClientID     string   `yaml:"client_id"`
+	ClientSecret string   `yaml:"client_secret"`
+	RedirectURL  string   `yaml:"redirect_url,omitempty"`
+	Scopes       []string `yaml:"scopes,omitempty"`
+}
+
 type GatewayConfig struct {
-	Plugin     PluginConfig   `yaml:"plugin"`
-	OAuth      OAuthConfig    `yaml:"oauth"`
-	Clients    []ClientConfig `yaml:"clients"`
-	Template   string         `yaml:"template,omitempty"` // Path to template config file
-	Listener   ListenerConfig `yaml:"listener,omitempty"`
-	SSL        SSLConfig      `yaml:"ssl,omitempty"`        // SSL/TLS configuration for listener
-	SuperUsers []string       `yaml:"super_users,omitempty"` // Global super users (bypass all client restrictions)
+	Plugin          PluginConfig              `yaml:"plugin"`
+	OAuth           OAuthConfig               `yaml:"oauth"`
+	Providers       map[string]ProviderConfig `yaml:"providers,omitempty"`
+	DefaultProvider string                    `yaml:"default_provider,omitempty"`
+	Clients         []ClientConfig            `yaml:"clients"`
+	Template        string                    `yaml:"template,omitempty"` // Path to template config file
+	Listener        ListenerConfig            `yaml:"listener,omitempty"`
+	SSL             SSLConfig                 `yaml:"ssl,omitempty"`        // SSL/TLS configuration for listener
+	SuperUsers      []string                  `yaml:"super_users,omitempty"` // Global super users (bypass all client restrictions)
 }
 
 type PluginConfig struct {
@@ -75,6 +92,89 @@ type ClientConfig struct {
 	ClusterIdleTimeout    string   `yaml:"cluster_idle_timeout,omitempty"`
 	RouteTimeout          string   `yaml:"route_timeout,omitempty"`
 	AllowedUsers          []string `yaml:"allowed_users,omitempty"` // Per-client allowed users
+	Provider              string   `yaml:"provider,omitempty"`      // Named provider reference; empty means use default_provider
+}
+
+// normalizeProviders ensures the providers map is populated.
+// For legacy configs (no providers map), it builds a "default" provider from the oauth.* fields.
+// For configs that already have a providers map, it warns if legacy env vars are also set.
+func normalizeProviders(config *GatewayConfig) error {
+	if len(config.Providers) == 0 {
+		// Legacy config path: build providers map from oauth.* fields
+		if config.OAuth.IssuerURL == "" || config.OAuth.ClientID == "" || config.OAuth.ClientSecret == "" {
+			return fmt.Errorf("legacy 'oauth' block requires issuer_url, client_id, and client_secret when no 'providers' map is set")
+		}
+		config.Providers = map[string]ProviderConfig{
+			"default": {
+				IssuerURL:    config.OAuth.IssuerURL,
+				ClientID:     config.OAuth.ClientID,
+				ClientSecret: config.OAuth.ClientSecret,
+				RedirectURL:  config.OAuth.RedirectURL,
+				Scopes:       config.OAuth.Scopes,
+			},
+		}
+		config.DefaultProvider = "default"
+		return nil
+	}
+
+	// Named providers map is set — warn if legacy env vars are also present
+	if os.Getenv("OAUTH_ISSUERURL") != "" || os.Getenv("OAUTH_CLIENTID") != "" || os.Getenv("OAUTH_CLIENTSECRET") != "" {
+		log.Printf("WARNING: environment variables OAUTH_ISSUERURL/OAUTH_CLIENTID/OAUTH_CLIENTSECRET are ignored when 'providers' map is configured (per D-11)")
+	}
+	return nil
+}
+
+// validateProviders checks all provider registry rules:
+// - Provider names must be alphanumeric with optional hyphens, not starting with hyphen
+// - Each provider must have issuer_url, client_id, client_secret
+// - default_provider must reference a defined provider
+// - Each client's provider field (if non-empty) must reference a defined provider
+// - No two providers may share the same issuer_url + client_id combination
+func validateProviders(config *GatewayConfig) error {
+	// Validate provider names and required fields
+	seen := make(map[string]string) // "issuerURL|clientID" -> provider name
+	for name, p := range config.Providers {
+		if !validProviderName.MatchString(name) {
+			return fmt.Errorf("provider name %q is invalid: must be alphanumeric with hyphens, no leading hyphen", name)
+		}
+		if p.IssuerURL == "" {
+			return fmt.Errorf("provider %q: issuer_url is required", name)
+		}
+		if p.ClientID == "" {
+			return fmt.Errorf("provider %q: client_id is required", name)
+		}
+		if p.ClientSecret == "" {
+			return fmt.Errorf("provider %q: client_secret is required", name)
+		}
+		key := p.IssuerURL + "|" + p.ClientID
+		if existingName, ok := seen[key]; ok {
+			return fmt.Errorf("providers %q and %q have duplicate issuer_url/client_id combination", existingName, name)
+		}
+		seen[key] = name
+	}
+
+	// Validate default_provider references a defined provider
+	if config.DefaultProvider != "" {
+		if _, ok := config.Providers[config.DefaultProvider]; !ok {
+			return fmt.Errorf("default_provider %q does not reference a defined provider", config.DefaultProvider)
+		}
+	}
+
+	// Validate per-client provider references (skip excluded clients — they don't participate in OAuth)
+	for _, client := range config.Clients {
+		if client.Exclude {
+			continue
+		}
+		if client.Provider != "" {
+			if _, ok := config.Providers[client.Provider]; !ok {
+				return fmt.Errorf("client %q references undefined provider %q", client.ID, client.Provider)
+			}
+		} else if config.DefaultProvider == "" {
+			return fmt.Errorf("client %q has no provider and no default_provider is set", client.ID)
+		}
+	}
+
+	return nil
 }
 
 // overrideFromEnv overrides configuration values from environment variables
@@ -181,12 +281,21 @@ func LoadConfig(path string) (*GatewayConfig, error) {
 	config.OAuth.SessionSecure = true     // Default to true
 	config.OAuth.SessionHTTPOnly = true   // Default to true
 
-	if err := yaml.Unmarshal(data, &config); err != nil {
+	if err := yaml.Unmarshal([]byte(os.ExpandEnv(string(data))), &config); err != nil {
 		return nil, fmt.Errorf("failed to parse config: %w", err)
 	}
 
 	// Override from environment variables
 	overrideFromEnv(&config)
+
+	// Normalize legacy config to providers map
+	if err := normalizeProviders(&config); err != nil {
+		return nil, err
+	}
+	// Validate provider registry
+	if err := validateProviders(&config); err != nil {
+		return nil, err
+	}
 
 	// Set defaults for session configuration
 	if config.Plugin.LibraryPath == "" {
@@ -238,14 +347,8 @@ func LoadConfig(path string) (*GatewayConfig, error) {
 		}
 	}
 
-	// Validate required fields
-	if config.OAuth.IssuerURL == "" {
-		return nil, fmt.Errorf("oauth.issuer_url is required")
-	}
-	if config.OAuth.ClientID == "" {
-		return nil, fmt.Errorf("oauth.client_id is required")
-	}
-
+	// Provider-level validation is handled by validateProviders above.
+	// Validate per-client required fields.
 	for _, client := range config.Clients {
 		if client.ID == "" {
 			return nil, fmt.Errorf("client.id is required")

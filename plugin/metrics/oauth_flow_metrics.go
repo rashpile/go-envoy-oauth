@@ -25,6 +25,11 @@ var (
 	// IDPUp tracks identity provider availability.
 	// Set to 1 when IDP is reachable, 0 when unavailable.
 	IDPUp *prometheus.GaugeVec
+
+	// IDPState tracks per-provider health state (HLTH-02, D-08).
+	// Label set: {idp, state} where state ∈ {"ready", "degraded", "down"}.
+	// Exactly one series per provider is 1.0 at any time; the other two are 0.0.
+	IDPState *prometheus.GaugeVec
 )
 
 // RegisterOAuthFlowMetrics registers the OAuth flow metrics with the provided registry.
@@ -67,10 +72,20 @@ func RegisterOAuthFlowMetrics(registry *prometheus.Registry) {
 		[]string{"idp"},
 	)
 
+	// envoy_oauth_idp_state: one series per (provider, state) tuple.
+	IDPState = prometheus.NewGaugeVec(
+		prometheus.GaugeOpts{
+			Name: "envoy_oauth_idp_state",
+			Help: "Identity provider health state (1=active, 0=inactive). One of {ready, degraded, down} is active at any time.",
+		},
+		[]string{"idp", "state"},
+	)
+
 	registry.MustRegister(CallbackDuration)
 	registry.MustRegister(TokenRefreshTotal)
 	registry.MustRegister(TokenValidationTotal)
 	registry.MustRegister(IDPUp)
+	registry.MustRegister(IDPState)
 }
 
 // RecordCallbackDuration records the OAuth callback processing time for the given IDP.
@@ -114,4 +129,30 @@ func UpdateIDPAvailability(idp string, available bool) {
 		value = 1.0
 	}
 	IDPUp.WithLabelValues(idp).Set(value)
+}
+
+// UpdateIDPState sets the active state series to 1.0 and the other two to 0.0
+// for the given idp label. Also synchronizes envoy_oauth_idp_up for backward
+// compatibility: ready OR degraded => up=1, down => up=0 (D-08).
+//
+// Safe to call even if metrics server is disabled (metrics will be nil).
+//
+// Accepts the stateLabel string directly (not a ProviderState) to keep the
+// metrics package free of the oauth import — the caller in plugin/oauth passes
+// state.String().
+func UpdateIDPState(idp string, stateLabel string) {
+	if IDPState == nil {
+		return
+	}
+	states := []string{"ready", "degraded", "down"}
+	for _, s := range states {
+		v := 0.0
+		if s == stateLabel {
+			v = 1.0
+		}
+		IDPState.WithLabelValues(idp, s).Set(v)
+	}
+	// Backward-compat: envoy_oauth_idp_up is 1 when ready OR degraded, 0 when down (D-08).
+	available := stateLabel != "down"
+	UpdateIDPAvailability(idp, available)
 }

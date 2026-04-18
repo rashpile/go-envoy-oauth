@@ -38,6 +38,22 @@ func DefaultCookieConfig() *CookieConfig {
 	}
 }
 
+// Clone returns a shallow copy of c with all fields duplicated.
+// Callers may safely modify the returned config's Name (or any other field)
+// without affecting the original. Used by ProviderRegistry.InitAll to derive
+// per-provider cookie names (D-10).
+func (c *CookieConfig) Clone() *CookieConfig {
+	return &CookieConfig{
+		Name:     c.Name,
+		Domain:   c.Domain,
+		Path:     c.Path,
+		MaxAge:   c.MaxAge,
+		Secure:   c.Secure,
+		HTTPOnly: c.HTTPOnly,
+		SameSite: c.SameSite,
+	}
+}
+
 // NewCookieManager creates a new cookie manager
 func NewCookieManager(hashKey, blockKey []byte, config *CookieConfig) (*CookieManager, error) {
 	if config == nil {
@@ -102,11 +118,31 @@ func (cm *CookieManager) GetCookie(header api.RequestHeaderMap) (string, error) 
 	return "", fmt.Errorf("session cookie not found")
 }
 
-// DeleteCookie removes the session cookie
+// DeleteCookie removes the session cookie by setting Max-Age=0.
 func (cm *CookieManager) DeleteCookie(header api.RequestHeaderMap) {
 	domain := cm.getDomainFromHeaders(header)
-	cookie := cm.formatCookieWithDomain("", domain)
+	cookie := cm.formatDeleteCookieWithDomain(domain)
 	header.Set("set-cookie", cookie)
+}
+
+// formatDeleteCookieWithDomain returns a Set-Cookie header value that instructs
+// the browser to delete the cookie (Max-Age=0, empty value).
+func (cm *CookieManager) formatDeleteCookieWithDomain(domain string) string {
+	cookie := fmt.Sprintf("%s=", cm.config.Name)
+	if domain != "" {
+		cookie += "; Domain=" + domain
+	}
+	if cm.config.Path != "" {
+		cookie += "; Path=" + cm.config.Path
+	}
+	cookie += "; Max-Age=0"
+	if cm.config.Secure {
+		cookie += "; Secure"
+	}
+	if cm.config.HTTPOnly {
+		cookie += "; HttpOnly"
+	}
+	return cookie
 }
 
 // FormatCookie returns a formatted cookie string for use in Set-Cookie headers

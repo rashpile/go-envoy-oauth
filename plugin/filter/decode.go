@@ -38,6 +38,13 @@ func (f *Filter) DecodeHeaders(header api.RequestHeaderMap, endStream bool) api.
 		zap.String("trace_id", traceID),
 	)
 
+	// Strip client-supplied identity headers (T-04-01) before any early-return
+	// branch so the guarantee holds on excluded paths and skip-auth paths too.
+	// Authenticated paths re-Set these headers from the verified session.
+	// Skip-auth deployments must carry identity in skip_auth_header_name itself;
+	// this filter does not forward client-supplied X-User-* / X-Auth-Provider.
+	f.stripUntrustedHeaders(header)
+
 	// Get the request path and cluster
 	// cluster, _ := header.Get(":authority")
 	cluster := getClusterName(f.callbacks)
@@ -84,9 +91,12 @@ func (f *Filter) DecodeHeaders(header api.RequestHeaderMap, endStream bool) api.
 		return f.handleWebSocketAuth(header, path, traceID)
 	}
 
-	// Initialize OAuth handler if needed (before handling any OAuth endpoints)
-	if f.oauthHandler == nil {
-		return f.handleAsyncOAuthHandler(header, traceID, path, f.handleDecodeHeaders)
+	// Safety check: registry must be non-nil (guaranteed if Parse() succeeded)
+	if f.providerRegistry == nil {
+		f.logger.Error("Provider registry is nil — configuration error, rejecting request",
+			zap.String("trace_id", traceID))
+		return f.recordAndSendLocalReply(503, "Identity provider unavailable",
+			createAuthErrorHeaders(), -1, "provider_unavailable")
 	}
 	if f.config.EnableAPIKey && f.config.EnableBearerToken && f.extractAPIToken(header) != "" {
 		return f.handleAsyncDecodeHeaders(header, path, traceID, f.handleDecodeHeaders)

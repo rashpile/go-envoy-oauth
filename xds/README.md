@@ -39,12 +39,20 @@ listener:
   port: 8080
   tls_port: 8443  # Optional, for HTTPS
 
-oauth:
-  issuer_url: "https://your-idp.example.com"
-  client_id: "your-client-id"
-  client_secret: "your-client-secret"
-  redirect_url: "/oauth/callback"
-  scopes: ["openid", "profile", "email"]
+default_provider: keycloak
+providers:
+  keycloak:
+    issuer_url: "${OIDC_ISSUER_URL}"
+    client_id: "${OIDC_CLIENT_ID}"
+    client_secret: "${OIDC_CLIENT_SECRET}"
+    redirect_url: "/oauth/callback"
+    scopes: ["openid", "profile", "email"]
+
+# Legacy single-provider format (still supported):
+# oauth:
+#   issuer_url: "https://your-idp.example.com"
+#   client_id: "your-client-id"
+#   client_secret: "your-client-secret"
 
   # Session configuration
   session_cookie_name: "session"
@@ -97,15 +105,31 @@ clients:
 | `port` | No | `8080` | HTTP listener port |
 | `tls_port` | No | - | HTTPS listener port (enables TLS when set) |
 
-#### OAuth Configuration
+#### Provider Configuration (Multi-Provider)
 
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
-| `issuer_url` | Yes | - | OAuth/OIDC provider issuer URL |
-| `client_id` | Yes | - | OAuth client ID |
-| `client_secret` | No | - | OAuth client secret |
-| `redirect_url` | No | `/oauth/callback` | OAuth callback path |
-| `scopes` | No | `["openid", "profile", "email"]` | OAuth scopes |
+| `default_provider` | No | - | Fallback provider name for clients without an explicit `provider` field |
+| `providers` | No | - | Map of named provider configs. Each entry: `issuer_url`, `client_id`, `client_secret`, `redirect_url`, `scopes` |
+
+The legacy `oauth:` block (single flat config) is still supported and treated as a provider named `default`.
+
+#### Environment Variable Substitution
+
+`gateway-auth.yaml` supports `${VAR}` substitution from the process environment. Variables are expanded before YAML parsing, making it safe to inject secrets at runtime:
+
+```yaml
+providers:
+  keycloak:
+    client_secret: "${OIDC_CLIENT_SECRET}"
+```
+
+Unset variables expand to an empty string.
+
+#### OAuth Session Configuration
+
+| Field | Required | Default | Description |
+|-------|----------|---------|-------------|
 | `session_cookie_name` | No | `session` | Session cookie name |
 | `session_max_age` | No | `86400` | Session expiration in seconds |
 | `session_path` | No | `/` | Cookie path |
@@ -132,6 +156,8 @@ Each client in the `clients` array represents a backend service cluster.
 | `exclude_paths` | No | `[]` | List of specific paths to exclude from authentication |
 | `host_rewrite` | No | - | Rewrite the Host header for upstream requests |
 | `prefix_rewrite` | No | - | Rewrite path prefix for upstream requests (see [Path Rewriting](#path-rewriting)) |
+| `provider` | No | `default_provider` | Named provider to use for this client |
+| `allowed_users` | No | `[]` | Usernames permitted to access this client (matched against `preferred_username` claim, case-insensitive). Use `["*"]` to allow any authenticated user. If empty and the user is not in `super_users`, access is denied. |
 | `add_token` | No | `false` | Add `Authorization: Bearer <token>` header to upstream |
 | `cluster_idle_timeout` | No | - | Connection idle timeout (e.g., `300s`) |
 | `route_timeout` | No | - | Request timeout for this route (e.g., `15s`) |

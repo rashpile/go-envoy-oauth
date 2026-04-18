@@ -316,3 +316,82 @@ func contains(s, substr string) bool {
 	}
 	return false
 }
+
+func TestCookieConfigClone(t *testing.T) {
+	orig := &CookieConfig{
+		Name:     "session",
+		Domain:   "example.com",
+		Path:     "/api",
+		MaxAge:   7200,
+		Secure:   true,
+		HTTPOnly: true,
+		SameSite: http.SameSiteStrictMode,
+	}
+
+	t.Run("all_fields_copied", func(t *testing.T) {
+		clone := orig.Clone()
+		if clone.Name != orig.Name {
+			t.Errorf("Name: expected %q, got %q", orig.Name, clone.Name)
+		}
+		if clone.Domain != orig.Domain {
+			t.Errorf("Domain: expected %q, got %q", orig.Domain, clone.Domain)
+		}
+		if clone.Path != orig.Path {
+			t.Errorf("Path: expected %q, got %q", orig.Path, clone.Path)
+		}
+		if clone.MaxAge != orig.MaxAge {
+			t.Errorf("MaxAge: expected %d, got %d", orig.MaxAge, clone.MaxAge)
+		}
+		if clone.Secure != orig.Secure {
+			t.Errorf("Secure: expected %v, got %v", orig.Secure, clone.Secure)
+		}
+		if clone.HTTPOnly != orig.HTTPOnly {
+			t.Errorf("HTTPOnly: expected %v, got %v", orig.HTTPOnly, clone.HTTPOnly)
+		}
+		if clone.SameSite != orig.SameSite {
+			t.Errorf("SameSite: expected %v, got %v", orig.SameSite, clone.SameSite)
+		}
+	})
+
+	t.Run("independence", func(t *testing.T) {
+		clone := orig.Clone()
+		// Mutate all clone fields
+		clone.Name = "session_keycloak"
+		clone.Domain = "other.com"
+		clone.Path = "/other"
+		clone.MaxAge = 100
+		clone.Secure = false
+		clone.HTTPOnly = false
+		clone.SameSite = http.SameSiteLaxMode
+
+		// Original must be unchanged
+		if orig.Name != "session" {
+			t.Errorf("orig.Name changed after clone mutation: got %q", orig.Name)
+		}
+		if orig.Domain != "example.com" {
+			t.Errorf("orig.Domain changed after clone mutation: got %q", orig.Domain)
+		}
+		if orig.Path != "/api" {
+			t.Errorf("orig.Path changed after clone mutation: got %q", orig.Path)
+		}
+		if orig.MaxAge != 7200 {
+			t.Errorf("orig.MaxAge changed after clone mutation: got %d", orig.MaxAge)
+		}
+		if !orig.Secure {
+			t.Error("orig.Secure changed after clone mutation")
+		}
+		if !orig.HTTPOnly {
+			t.Error("orig.HTTPOnly changed after clone mutation")
+		}
+		if orig.SameSite != http.SameSiteStrictMode {
+			t.Errorf("orig.SameSite changed after clone mutation: got %v", orig.SameSite)
+		}
+	})
+
+	t.Run("nil_safety", func(t *testing.T) {
+		clone := orig.Clone()
+		if clone == nil {
+			t.Error("Clone() returned nil for a non-nil receiver")
+		}
+	})
+}

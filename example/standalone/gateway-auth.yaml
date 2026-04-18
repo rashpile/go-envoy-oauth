@@ -3,6 +3,41 @@ template: /app/gateway-base.yaml
 # To enable API key generation feature, set:
 # oauth.enable_api_key: true
 # or environment variable: OAUTH_ENABLE_API_KEY=true
+
+# Multi-provider configuration (new format):
+# default_provider: keycloak
+# providers:
+#   keycloak:
+#     issuer_url: https://keycloak.example.com/realms/myrealm
+#     client_id: my-client
+#     client_secret: my-secret
+#     redirect_url: /oauth/callback
+#     scopes: [openid, profile, email]
+#   google:
+#     issuer_url: https://accounts.google.com
+#     client_id: google-client-id
+#     client_secret: google-client-secret
+#     redirect_url: /oauth/callback
+#     scopes: [openid, profile, email]
+#
+# Per-client provider assignment (add to client config):
+#   provider: keycloak    # references a named provider
+#   # clients without 'provider' field use default_provider
+default_provider: keycloak
+providers:
+  keycloak:
+    issuer_url: ${OAUTH_ISSUERURL}
+    client_id: ${OAUTH_CLIENTID}
+    client_secret: ${OAUTH_CLIENTSECRET}
+    redirect_url: /oauth/callback
+    scopes: [openid, profile, email]
+  auth:
+   issuer_url: ${PL_ISSUERURL}
+   client_id: ${PL_CLIENT_ID}
+   client_secret: ${PL_CLIENT_SECRET}
+   redirect_url: /oauth/callback
+   scopes: [openid, profile, email]
+
 listener:
   address: 0.0.0.0
   port: 8081
@@ -76,9 +111,12 @@ clients:
     address: shorts
     port: 8080
     prefix: /sui
+    provider: auth
     sso_injection: true
     sso_appurl: http://localhost:8081/sui
     sso_appname: Shorts
+    allowed_users:
+      - "*"
   - id: shorts_service_cluster
     domain: localhost:8081
     address: shorts

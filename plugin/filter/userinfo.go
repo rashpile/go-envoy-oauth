@@ -111,8 +111,15 @@ func (f *Filter) handleUserInfo(header api.RequestHeaderMap) api.StatusType {
 		zap.String("path", sanitizePathForLogging(path)),
 		zap.String("trace_id", traceID))
 
-	// Check for session cookie
-	sessionID, err := f.cookieManager.GetCookie(header)
+	// Check for session cookie using per-provider cookie name (D-08, D-09).
+	userInfoHandler, err := f.getProviderHandler()
+	if err != nil {
+		f.logger.Error("Failed to resolve provider for user info request",
+			zap.String("trace_id", traceID),
+			zap.Error(err))
+		return f.handleAuthFailure(503, "Service Unavailable: Authentication service temporarily unavailable")
+	}
+	sessionID, err := userInfoHandler.GetSessionCookie(header)
 	if err != nil {
 		f.logger.Debug("No session cookie found for user info request",
 			zap.String("trace_id", traceID),
@@ -128,6 +135,18 @@ func (f *Filter) handleUserInfo(header api.RequestHeaderMap) api.StatusType {
 			zap.String("trace_id", traceID),
 			zap.Error(err))
 		return f.handleAuthFailure(401, "Unauthorized: Invalid session")
+	}
+
+	// SESS-02: verify session-provider binding (D-05).
+	if matched, expectedProvider := f.verifySessionProvider(session); !matched {
+		f.logger.Warn("User info: Session provider mismatch — rejecting session",
+			zap.String("session_provider", session.ProviderName),
+			zap.String("expected_provider", expectedProvider),
+			zap.String("session_id", session.ID))
+		_ = f.sessionStore.Delete(session.ID)
+		userInfoHandler.DeleteSessionCookie(header)
+		deleteCookieStr, _ := header.Get("set-cookie")
+		return f.handleAuthFailureWithCookie(401, "Unauthorized: Session from wrong provider", deleteCookieStr)
 	}
 
 	// Store the session for use in serveUserInfo

@@ -47,17 +47,6 @@ func (f *Filter) isWebSocketPathExcluded(path, cluster string) bool {
 // Unlike regular HTTP requests, WebSocket handshakes cannot follow redirects,
 // so we return 401 Unauthorized instead of redirecting to login
 func (f *Filter) handleWebSocketAuth(header api.RequestHeaderMap, path string, traceID string) api.StatusType {
-	// Initialize OAuth handler if needed
-	if f.oauthHandler == nil {
-		if err := f.ensureHandlersInitialized(); err != nil {
-			f.logger.Warn("OAuth handler unavailable for WebSocket auth",
-				zap.String("path", sanitizePathForLogging(path)),
-				zap.String("trace_id", traceID),
-				zap.Error(err))
-			return f.handleAuthFailure(503, "Service Unavailable: Authentication service temporarily unavailable")
-		}
-	}
-
 	// Check for bearer token authentication first (common for WebSocket)
 	if f.config.EnableBearerToken {
 		token := f.extractBearerToken(header)
@@ -65,7 +54,15 @@ func (f *Filter) handleWebSocketAuth(header api.RequestHeaderMap, path string, t
 			f.logger.Debug("WebSocket: Bearer token found, validating",
 				zap.String("trace_id", traceID))
 
-			session, err := f.oauthHandler.ValidateBearerToken(context.Background(), token)
+			wsHandler, err := f.getProviderHandler()
+			if err != nil {
+				f.logger.Warn("WebSocket: Provider unavailable for bearer token validation",
+					zap.String("trace_id", traceID),
+					zap.Error(err))
+				return f.handleAuthFailure(503, "Service Unavailable: Authentication service temporarily unavailable")
+			}
+
+			session, err := wsHandler.ValidateBearerToken(context.Background(), token)
 			if err != nil {
 				f.logger.Debug("WebSocket: Bearer token validation failed",
 					zap.String("trace_id", traceID),
@@ -80,8 +77,15 @@ func (f *Filter) handleWebSocketAuth(header api.RequestHeaderMap, path string, t
 		}
 	}
 
-	// Check for session cookie
-	sessionID, err := f.cookieManager.GetCookie(header)
+	// Check for session cookie using per-provider cookie name (D-08, D-09).
+	wsSessionHandler, err := f.getProviderHandler()
+	if err != nil {
+		f.logger.Error("WebSocket: Failed to resolve provider for session lookup",
+			zap.String("trace_id", traceID),
+			zap.Error(err))
+		return f.handleAuthFailure(503, "Service Unavailable: Authentication service temporarily unavailable")
+	}
+	sessionID, err := wsSessionHandler.GetSessionCookie(header)
 	if err != nil {
 		f.logger.Debug("WebSocket: No valid session cookie found",
 			zap.String("path", sanitizePathForLogging(path)),
@@ -97,6 +101,18 @@ func (f *Filter) handleWebSocketAuth(header api.RequestHeaderMap, path string, t
 			zap.String("trace_id", traceID),
 			zap.Error(err))
 		return f.handleAuthFailure(401, "Unauthorized: Invalid session")
+	}
+
+	// SESS-02: verify session-provider binding (D-05).
+	if matched, expectedProvider := f.verifySessionProvider(session); !matched {
+		f.logger.Warn("WebSocket: Session provider mismatch — rejecting session",
+			zap.String("session_provider", session.ProviderName),
+			zap.String("expected_provider", expectedProvider),
+			zap.String("session_id", session.ID))
+		_ = f.sessionStore.Delete(session.ID)
+		wsSessionHandler.DeleteSessionCookie(header)
+		deleteCookieStr, _ := header.Get("set-cookie")
+		return f.handleAuthFailureWithCookie(401, "Unauthorized: Session from wrong provider", deleteCookieStr)
 	}
 
 	// Check if session is expired

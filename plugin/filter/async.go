@@ -2,10 +2,10 @@ package filter
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/envoyproxy/envoy/contrib/golang/common/go/api"
+	"github.com/rashpile/go-envoy-oauth/plugin/oauth"
 	"github.com/rashpile/go-envoy-oauth/plugin/session"
 	"go.uber.org/zap"
 )
@@ -54,66 +54,6 @@ func (f *Filter) handleAsyncDecodeHeaders(
 	return api.Running
 }
 
-func (f *Filter) handleAsyncOAuthHandler(
-	header api.RequestHeaderMap,
-	traceID string, path string,
-	callback func(header api.RequestHeaderMap, path string, traceID string) api.StatusType) api.StatusType {
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				f.logger.Error("Panic in async callback", zap.Any("panic", r))
-				f.handleRedirect("/", "")
-			}
-		}()
-
-		f.mu.Lock()
-		// Double check after acquiring lock
-		if f.oauthHandler == nil {
-			// Check if we should retry or if we're still in backoff
-			if !f.config.RetryManager.ShouldRetry() {
-				f.mu.Unlock()
-				retryInfo := f.config.RetryManager.GetRetryInfo()
-				f.logger.Debug("OAuth handler creation in backoff period",
-					zap.String("trace_id", traceID),
-					zap.String("retry_info", retryInfo))
-				f.errorHandler.HandleIDPUnavailable()
-				return
-			}
-
-			f.logger.Debug("Attempting to create OAuth handler",
-				zap.String("trace_id", traceID))
-			_, err := f.createOAuthHandler(f.config, f.cookieManager)
-			if err != nil {
-				f.mu.Unlock()
-				f.logger.Warn("Failed to create OAuth handler on-demand",
-					zap.String("error", err.Error()))
-				// Record the error for retry management
-				f.config.RetryManager.RecordError(fmt.Errorf("OAuth provider unavailable: %v", err))
-				f.errorHandler.HandleIDPUnavailable()
-				return
-			}
-			// Success! Clear any previous errors
-			f.config.RetryManager.ClearError()
-			f.logger.Debug("OAuth handler created successfully after retry",
-				zap.String("trace_id", traceID))
-		}
-		f.mu.Unlock()
-		status := callback(header, path, traceID)
-		switch status {
-		case api.LocalReply:
-			// Local reply was sent successfully
-		case api.Continue:
-			f.callbacks.DecoderFilterCallbacks().Continue(api.Continue)
-		default:
-			f.logger.Warn("Unexpected status in OAuth handler",
-				zap.String("trace_id", traceID),
-				zap.Int("status", int(status)))
-		}
-
-	}()
-	return api.Running
-}
-
 func (f *Filter) handleAsyncValidateSession(
 	header api.RequestHeaderMap, session *session.Session,
 	path string, traceID string,
@@ -127,7 +67,15 @@ func (f *Filter) handleAsyncValidateSession(
 			}
 		}()
 
-		if err := f.oauthHandler.ValidateSession(session); err != nil {
+		sessionHandler, err := f.getProviderHandler()
+		if err != nil {
+			f.logger.Error("Failed to resolve provider for async session validation",
+				zap.String("trace_id", traceID),
+				zap.Error(err))
+			f.errorHandler.HandleIDPUnavailable()
+			return
+		}
+		if err := sessionHandler.ValidateSession(session); err != nil {
 			f.handleUnauthenticatedRequest(header, path, traceID, err, "Session validation failed")
 			return
 		}
@@ -147,7 +95,7 @@ func (f *Filter) handleAsyncValidateSession(
 	return api.Running
 }
 
-func (f *Filter) handleAsyncCallback(header api.RequestHeaderMap, query string, traceID string) api.StatusType {
+func (f *Filter) handleAsyncCallback(header api.RequestHeaderMap, query string, traceID string, handler oauth.OAuthHandler) api.StatusType {
 	go func() {
 		// Add panic recovery
 		defer func() {
@@ -156,7 +104,7 @@ func (f *Filter) handleAsyncCallback(header api.RequestHeaderMap, query string, 
 				f.handleRedirect("/", "")
 			}
 		}()
-		err := f.oauthHandler.HandleCallback(header, query)
+		err := handler.HandleCallback(header, query)
 		if err != nil {
 			f.logger.Error("Failed to handle OAuth callback",
 				zap.String("trace_id", traceID),
