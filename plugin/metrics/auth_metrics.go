@@ -30,7 +30,9 @@ const (
 
 // Authentication metrics for tracking OAuth login/logout events.
 // Labels:
-//   - idp: Identity provider hostname (e.g., "keycloak.example.com")
+//   - idp: Provider registry key from OAuthConfig.providers (e.g., "keycloak", "google").
+//     Phase 04 changed this from the issuer hostname to the stable config key — update
+//     any Grafana dashboards or Prometheus alerts that filter on the old hostname value.
 //   - status: "success" or "failure"
 //   - reason: Failure reason (login/logout) or session end reason (session_ended)
 var (
@@ -162,6 +164,11 @@ func RecordSessionEnded(idp, reason string) {
 // GetIDPName extracts the hostname from an issuer URL.
 // Returns "unknown" if the URL cannot be parsed.
 // Example: "https://keycloak.example.com/realms/foo" -> "keycloak.example.com"
+//
+// Note: as of Phase 04, metrics idp labels use the provider registry key
+// (h.providerName) instead of this hostname. This helper is retained for
+// Session.IDP (which is an audit field keyed on issuer, not on provider config).
+// Do not use for new metric call sites — use the provider registry key instead.
 func GetIDPName(issuerURL string) string {
 	u, err := url.Parse(issuerURL)
 	if err != nil || u.Host == "" {

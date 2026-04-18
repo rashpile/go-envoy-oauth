@@ -39,6 +39,12 @@ run:
 start:
 	cd example/standalone; docker compose up -d
 
+stop:
+	cd example/standalone; docker compose down
+
+logs:
+	cd example/standalone; docker compose logs
+
 clean:
 	rm -rf dist
 	rm -f coverage.out coverage.html

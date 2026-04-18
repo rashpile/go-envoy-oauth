@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/envoyproxy/envoy/contrib/golang/common/go/api"
@@ -25,16 +24,13 @@ type Session struct {
 
 // Filter implements the Envoy HTTP filter
 type Filter struct {
-	config              *OAuthConfig
-	cluster             string
-	oauthHandler        oauth.OAuthHandler
-	offlineTokenHandler *oauth.OfflineTokenHandler
-	sessionStore        session.SessionStore
-	cookieManager       *session.CookieManager
-	callbacks           api.FilterCallbackHandler
-	logger              *zap.Logger
-	errorHandler        *ErrorHandler
-	mu                  sync.Mutex
+	config           *OAuthConfig
+	cluster          string
+	providerRegistry *ProviderRegistry
+	sessionStore     session.SessionStore
+	callbacks        api.FilterCallbackHandler
+	logger           *zap.Logger
+	errorHandler *ErrorHandler
 	// Access log fields
 	requestStart  time.Time
 	requestMethod string
@@ -50,32 +46,6 @@ type Filter struct {
 // NewFilter creates a new filter instance
 func NewFilter(config *OAuthConfig, callbacks api.FilterCallbackHandler) (*Filter, error) {
 	logger := GetLogger()
-	logger.Debug("Setting up cookie configuration",
-		zap.String("cookie_name", config.SessionCookieName),
-		zap.String("cookie_path", config.SessionPath),
-		zap.String("cookie_domain", config.SessionDomain),
-		zap.Int("cookie_max_age", int(config.SessionMaxAge.Seconds())),
-		zap.Bool("cookie_secure", config.SessionSecure),
-		zap.Bool("cookie_http_only", config.SessionHttpOnly),
-		zap.String("cookie_same_site", config.SessionSameSite))
-
-	cookieConfig := &session.CookieConfig{
-		Name:     config.SessionCookieName,
-		Path:     config.SessionPath,
-		Domain:   config.SessionDomain,
-		MaxAge:   int(config.SessionMaxAge.Seconds()),
-		Secure:   config.SessionSecure,
-		HTTPOnly: config.SessionHttpOnly,
-		SameSite: convertSameSite(config.SessionSameSite),
-	}
-
-	cookieManager, err := session.NewCookieManager(nil, nil, cookieConfig)
-	if err != nil {
-		logger.Error("Failed to create cookie manager",
-			zap.Error(err))
-		return nil, fmt.Errorf("failed to create cookie manager: %v", err)
-	}
-
 	logger.Debug("Creating new OAuth filter",
 		zap.String("issuer_url", config.IssuerURL),
 		zap.String("client_id", config.ClientID),
@@ -84,13 +54,11 @@ func NewFilter(config *OAuthConfig, callbacks api.FilterCallbackHandler) (*Filte
 	)
 
 	filter := &Filter{
-		config:              config,
-		oauthHandler:        config.OAuthHandler,
-		offlineTokenHandler: nil, // Will be initialized when OAuth handler is created
-		sessionStore:        config.SessionStore,
-		cookieManager:       cookieManager,
-		callbacks:           callbacks,
-		logger:              logger,
+		config:           config,
+		providerRegistry: config.ProviderRegistry,
+		sessionStore:     config.SessionStore,
+		callbacks:        callbacks,
+		logger:           logger,
 	}
 
 	// Create error handler with metrics recording closure
@@ -107,140 +75,53 @@ func NewFilter(config *OAuthConfig, callbacks api.FilterCallbackHandler) (*Filte
 		}
 	})
 
-	// If OAuth handler already exists and API key feature is enabled, try to create offline handler
-	if config.EnableAPIKey && filter.oauthHandler != nil && filter.offlineTokenHandler == nil {
-		if oauthHandlerImpl, ok := filter.oauthHandler.(*oauth.OAuthHandlerImpl); ok {
-			logger.Debug("Creating offline token handler during filter initialization (API key feature enabled)")
-			offlineHandler, err := oauth.NewOfflineTokenHandler(oauthHandlerImpl, logger)
-			if err != nil {
-				logger.Error("Failed to create offline token handler during initialization", zap.Error(err))
-			} else {
-				filter.offlineTokenHandler = offlineHandler
-				logger.Debug("Offline token handler created successfully during initialization")
-			}
-		} else {
-			logger.Warn("OAuth handler exists but is not OAuthHandlerImpl type",
-				zap.String("actual_type", fmt.Sprintf("%T", filter.oauthHandler)))
-		}
-	} else if config.EnableAPIKey {
-		logger.Debug("API key feature is enabled, handler will be created when OAuth handler is initialized")
-	} else {
-		logger.Debug("API key feature is disabled in configuration")
-	}
-
 	return filter, nil
 }
 
-// ensureHandlersInitialized makes sure OAuth and offline handlers are initialized
-func (f *Filter) ensureHandlersInitialized() error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-
-	// If handler already exists, nothing to do
-	if f.oauthHandler != nil {
-		return nil
+// getProviderHandler resolves the OAuth handler for the current request's cluster.
+// It first looks up the cluster's ProviderName, then falls back to DefaultProvider.
+//
+// HLTH-02 / D-03: if the resolved handler reports StateDown, an error is returned
+// so that all call sites immediately return 503 "Identity provider unavailable"
+// without invoking any provider operation.
+func (f *Filter) getProviderHandler() (oauth.OAuthHandler, error) {
+	providerName := ""
+	if clusterConfig, ok := f.config.Clusters[f.cluster]; ok {
+		providerName = clusterConfig.ProviderName
 	}
-
-	// Check if we should retry based on exponential backoff
-	if !f.config.RetryManager.ShouldRetry() {
-		retryInfo := f.config.RetryManager.GetRetryInfo()
-		f.logger.Debug("OAuth handler initialization in backoff period",
-			zap.String("retry_info", retryInfo))
-		// When in backoff, IDP is considered down
-		idp := metrics.GetIDPName(f.config.IssuerURL)
-		metrics.UpdateIDPAvailability(idp, false)
-		return f.config.RetryManager.GetError()
+	if providerName == "" {
+		providerName = f.config.DefaultProvider
 	}
-
-	// Try to create the handler
-	f.logger.Info("Attempting to initialize OAuth handler")
-	_, err := f.createOAuthHandler(f.config, f.cookieManager)
+	h, err := f.providerRegistry.GetHandler(providerName)
 	if err != nil {
-		f.logger.Warn("Failed to create OAuth handler, will retry later",
-			zap.String("error", err.Error()),
-			zap.String("retry_info", f.config.RetryManager.GetRetryInfo()))
-
-		// Record error with exponential backoff
-		f.config.RetryManager.RecordError(fmt.Errorf("OAuth provider unavailable: %v", err))
-		return f.config.RetryManager.GetError()
+		return nil, err
 	}
-
-	f.logger.Info("OAuth handler created successfully")
-	// Clear error state on success
-	f.config.RetryManager.ClearError()
-
-	// Create offline handler if needed and if API key feature is enabled
-	if f.config.EnableAPIKey && f.offlineTokenHandler == nil && f.oauthHandler != nil {
-		if oauthHandlerImpl, ok := f.oauthHandler.(*oauth.OAuthHandlerImpl); ok {
-			f.logger.Debug("Creating offline token handler separately (API key feature enabled)")
-			offlineHandler, err := oauth.NewOfflineTokenHandler(oauthHandlerImpl, f.logger)
-			if err != nil {
-				f.logger.Error("Failed to create offline token handler", zap.Error(err))
-				// Non-fatal: offline token functionality will be disabled
-			} else {
-				f.offlineTokenHandler = offlineHandler
-				f.logger.Debug("Offline token handler created successfully in ensureHandlersInitialized")
-			}
-		} else {
-			f.logger.Error("Failed to cast OAuth handler to OAuthHandlerImpl in ensureHandlersInitialized",
-				zap.String("actual_type", fmt.Sprintf("%T", f.oauthHandler)))
-		}
+	if h.HealthState() == oauth.StateDown {
+		return nil, fmt.Errorf("provider %q is down", providerName)
 	}
-
-	return nil
+	return h, nil
 }
 
-func (f *Filter) createOAuthHandler(config *OAuthConfig, cookieManager *session.CookieManager) (oauth.OAuthHandler, error) {
-	// Extract IDP name for metrics
-	idp := metrics.GetIDPName(config.IssuerURL)
-
-	// Create OAuth handler
-	oauthConfig := &oauth.OIDCConfig{
-		IssuerURL:    config.IssuerURL,
-		ClientID:     config.ClientID,
-		ClientSecret: config.ClientSecret,
-		RedirectURL:  config.RedirectURL,
-		Scopes:       config.Scopes,
+// resolveProviderName returns the provider registry key for the current cluster,
+// falling back to DefaultProvider. Used for SESS-02 verification and cookie-name
+// derivation. NEVER reads from session data (D-06, D-07).
+func (f *Filter) resolveProviderName() string {
+	if clusterConfig, ok := f.config.Clusters[f.cluster]; ok && clusterConfig.ProviderName != "" {
+		return clusterConfig.ProviderName
 	}
+	return f.config.DefaultProvider
+}
 
-	oauthHandler, err := oauth.NewOAuthHandler(oauthConfig, config.SessionStore, cookieManager, logger)
-	if err != nil {
-		// Use Warn level but without stack trace for expected IDP connectivity issues
-		logger.Warn("Failed to create OAuth handler (IDP may be unavailable)",
-			zap.String("error", err.Error()),
-			zap.String("issuer_url", config.IssuerURL),
-			zap.String("client_id", config.ClientID))
-		// Mark IDP as unavailable
-		metrics.UpdateIDPAvailability(idp, false)
-		return nil, fmt.Errorf("failed to create OAuth handler: %v", err)
+// verifySessionProvider returns whether sess.ProviderName matches the
+// cluster-derived provider (D-05). Empty sess.ProviderName is treated as
+// matched to allow legacy sessions created before the ProviderName field
+// was added to transition gracefully.
+func (f *Filter) verifySessionProvider(sess *session.Session) (bool, string) {
+	expected := f.resolveProviderName()
+	if sess.ProviderName == "" || sess.ProviderName == expected {
+		return true, expected
 	}
-	config.OAuthHandler = oauthHandler
-	f.oauthHandler = config.OAuthHandler
-
-	// Mark IDP as available
-	metrics.UpdateIDPAvailability(idp, true)
-
-	// Create offline token handler if API key feature is enabled
-	if config.EnableAPIKey {
-		if oauthHandlerImpl, ok := oauthHandler.(*oauth.OAuthHandlerImpl); ok {
-			f.logger.Debug("Creating offline token handler (API key feature enabled)")
-			offlineHandler, err := oauth.NewOfflineTokenHandler(oauthHandlerImpl, f.logger)
-			if err != nil {
-				f.logger.Error("Failed to create offline token handler", zap.Error(err))
-				// Non-fatal: offline token functionality will be disabled
-			} else {
-				f.offlineTokenHandler = offlineHandler
-				f.logger.Debug("Offline token handler created successfully")
-			}
-		} else {
-			f.logger.Error("Failed to cast OAuth handler to OAuthHandlerImpl",
-				zap.String("actual_type", fmt.Sprintf("%T", oauthHandler)))
-		}
-	} else {
-		f.logger.Debug("API key feature is disabled, skipping offline token handler creation")
-	}
-
-	return oauthHandler, nil
+	return false, expected
 }
 
 // recordAndSendLocalReply wraps SendLocalReply with metrics recording and access logging.
@@ -290,6 +171,12 @@ func (f *Filter) knownClusterNames() map[string]bool {
 
 // handleAuthFailure creates appropriate response for authentication failures
 func (f *Filter) handleAuthFailure(statusCode int, message string) api.StatusType {
+	return f.handleAuthFailureWithCookie(statusCode, message, "")
+}
+
+// handleAuthFailureWithCookie is like handleAuthFailure but includes a Set-Cookie header.
+// Use this when a cookie must be cleared as part of the failure response (e.g. SESS-02 mismatch).
+func (f *Filter) handleAuthFailureWithCookie(statusCode int, message, deleteCookieStr string) api.StatusType {
 	f.logger.Debug("Authentication failure",
 		zap.Int("status_code", statusCode),
 		zap.String("message", message))
@@ -300,6 +187,9 @@ func (f *Filter) handleAuthFailure(statusCode int, message string) api.StatusTyp
 	metrics.RecordClusterAuth(clusterLabel, realm, "failure")
 
 	headers := createAuthErrorHeaders()
+	if deleteCookieStr != "" {
+		headers["Set-Cookie"] = []string{deleteCookieStr}
+	}
 
 	return f.recordAndSendLocalReply(statusCode, message, headers, -1, "auth_failure")
 }
@@ -377,6 +267,20 @@ func (f *Filter) handleAuthSuccess(header api.RequestHeaderMap, session *session
 		header.Set(userUsernameHeader, username)
 	}
 
+	// Add auth provider header for downstream services (REQ-01).
+	// Source: session.ProviderName (verified at session creation), with cluster-derived
+	// fallback for legacy sessions predating the ProviderName field. D-01 prohibits
+	// reading from route metadata; resolveProviderName reads cluster config only.
+	authProviderHeader := f.config.AuthProviderHeaderName
+	if authProviderHeader == "" {
+		authProviderHeader = "X-Auth-Provider"
+	}
+	if session.ProviderName != "" {
+		header.Set(authProviderHeader, session.ProviderName)
+	} else if fallback := f.resolveProviderName(); fallback != "" {
+		header.Set(authProviderHeader, fallback)
+	}
+
 	f.logger.Debug("Request authenticated successfully",
 		zap.String("session_id", session.ID),
 		zap.String("user_id", session.UserID),
@@ -392,6 +296,21 @@ func createAuthErrorHeaders() map[string][]string {
 	headers["content-type"] = []string{"text/plain"}
 	headers["www-authenticate"] = []string{"Bearer"}
 	return headers
+}
+
+// stripUntrustedHeaders deletes the headers listed in f.config.RemoveHeaders
+// from the incoming request (T-04-01). Called from DecodeHeaders before any
+// early-return so client-supplied identity/provider headers cannot spoof
+// upstream services even on excluded or skip-auth paths.
+func (f *Filter) stripUntrustedHeaders(header api.RequestHeaderMap) {
+	if f.config == nil {
+		return
+	}
+	for _, name := range f.config.RemoveHeaders {
+		if name != "" {
+			header.Del(name)
+		}
+	}
 }
 
 // handleAccessDenied redirects to the access denied page
@@ -440,27 +359,18 @@ func (f *Filter) isBrowserRequest(header api.RequestHeaderMap) bool {
 
 // handleUnauthenticatedRequest handles unauthenticated requests based on request type
 func (f *Filter) handleUnauthenticatedRequest(header api.RequestHeaderMap, path string, traceID string, err error, context string) api.StatusType {
-	// Check if IDP is unavailable and we're still in backoff period
-	f.mu.Lock()
-	if f.config.RetryManager.GetError() != nil && !f.config.RetryManager.ShouldRetry() {
-		// IDP is unavailable and we're still in backoff, return a user-friendly error message
-		f.mu.Unlock()
-		retryInfo := f.config.RetryManager.GetRetryInfo()
-		f.logger.Warn("Identity provider is temporarily unavailable (in backoff period)",
-			zap.String("path", sanitizePathForLogging(path)),
-			zap.String("trace_id", traceID),
-			zap.String("error", f.config.RetryManager.GetError().Error()),
-			zap.String("retry_info", retryInfo))
-		return f.errorHandler.HandleIDPUnavailable()
-	}
-	f.mu.Unlock()
-
 	if f.isBrowserRequest(header) {
 		f.logger.Debug(fmt.Sprintf("Unauthenticated browser request: %s", context),
 			zap.String("path", sanitizePathForLogging(path)),
 			zap.String("trace_id", traceID),
 			zap.Error(err))
-		return f.handleRedirect("/oauth/login?redirect_uri="+url.QueryEscape(path), "")
+		// Include provider name in login redirect so handleLogin uses the correct provider
+		providerName := f.config.DefaultProvider
+		if clusterConfig, ok := f.config.Clusters[f.cluster]; ok && clusterConfig.ProviderName != "" {
+			providerName = clusterConfig.ProviderName
+		}
+		loginURL := "/oauth/login?redirect_uri=" + url.QueryEscape(path) + "&provider=" + url.QueryEscape(providerName)
+		return f.handleRedirect(loginURL, "")
 	} else {
 		f.logger.Debug(fmt.Sprintf("Unauthenticated API request: %s", context),
 			zap.String("path", sanitizePathForLogging(path)),
@@ -487,16 +397,18 @@ func (f *Filter) handleDecodeHeaders(header api.RequestHeaderMap, path string, t
 				zap.Bool("from_query", f.isAPITokenFromQuery(header)),
 				zap.String("trace_id", traceID))
 
-			// Ensure handlers are initialized
-			if err := f.ensureHandlersInitialized(); err != nil {
-				f.logger.Error("Failed to initialize handlers for API token exchange",
+			// Resolve provider handler for this cluster
+			apiHandler, err := f.getProviderHandler()
+			if err != nil {
+				f.logger.Error("Failed to resolve provider handler for API token exchange",
 					zap.String("trace_id", traceID),
 					zap.Error(err))
-				return f.handleAuthFailure(500, fmt.Sprintf("Failed to initialize handlers: %v", err))
+				return f.recordAndSendLocalReply(503, "Identity provider unavailable",
+					createAuthErrorHeaders(), -1, "provider_unavailable")
 			}
 
 			// Exchange refresh token for access token
-			accessToken, err := f.oauthHandler.ExchangeRefreshToken(context.Background(), apiToken)
+			accessToken, err := apiHandler.ExchangeRefreshToken(context.Background(), apiToken)
 			if err != nil {
 				// Record API key authentication failure with classified reason
 				reason := metrics.ClassifyAPIKeyError(err)
@@ -517,7 +429,7 @@ func (f *Filter) handleDecodeHeaders(header api.RequestHeaderMap, path string, t
 				// If API token came from query parameter, create session and redirect
 				if f.isAPITokenFromQuery(header) {
 					// Validate the access token to get user info
-					sess, err := f.oauthHandler.ValidateBearerToken(context.Background(), accessToken)
+					sess, err := apiHandler.ValidateBearerToken(context.Background(), accessToken)
 					if err != nil {
 						f.logger.Error("Failed to validate access token for session creation",
 							zap.String("trace_id", traceID),
@@ -538,7 +450,7 @@ func (f *Filter) handleDecodeHeaders(header api.RequestHeaderMap, path string, t
 							header.Set("authorization", "Bearer "+accessToken)
 						} else {
 							// Set session cookie
-							if err := f.cookieManager.SetCookie(header, sess.ID); err != nil {
+							if err := apiHandler.SetSessionCookie(header, sess.ID); err != nil {
 								f.logger.Error("Failed to set session cookie",
 									zap.String("trace_id", traceID),
 									zap.Error(err))
@@ -548,7 +460,7 @@ func (f *Filter) handleDecodeHeaders(header api.RequestHeaderMap, path string, t
 								// Redirect to clean URL without the API key parameter
 								cleanPath := removeQueryParam(path, "auth-api-key")
 								// Format the cookie properly for the redirect
-								cookieStr := f.cookieManager.FormatCookie(sess.ID)
+								cookieStr := apiHandler.FormatSessionCookie(sess.ID)
 								f.logger.Info("API key authenticated, creating session and redirecting",
 									zap.String("from", sanitizePathForLogging(path)),
 									zap.String("to", cleanPath),
@@ -579,19 +491,22 @@ func (f *Filter) handleDecodeHeaders(header api.RequestHeaderMap, path string, t
 			zap.String("trace_id", traceID))
 
 		if token != "" {
-			// Ensure handlers are initialized before validating bearer token
-			if err := f.ensureHandlersInitialized(); err != nil {
-				f.logger.Error("Failed to initialize handlers for bearer token validation",
+			// Resolve provider handler for bearer token validation
+			bearerHandler, err := f.getProviderHandler()
+			if err != nil {
+				// Per D-10: provider unavailable -> 503
+				f.logger.Error("Failed to resolve provider handler for bearer token validation",
 					zap.String("trace_id", traceID),
 					zap.Error(err))
-				return f.handleAuthFailure(500, fmt.Sprintf("Failed to initialize handlers: %v", err))
+				return f.recordAndSendLocalReply(503, "Identity provider unavailable",
+					createAuthErrorHeaders(), -1, "provider_unavailable")
 			}
 
 			f.logger.Debug("Bearer token found, attempting validation",
 				zap.String("trace_id", traceID))
 
 			// Validate the bearer token
-			session, err := f.oauthHandler.ValidateBearerToken(context.Background(), token)
+			session, err := bearerHandler.ValidateBearerToken(context.Background(), token)
 			if err != nil {
 				f.logger.Debug("Bearer token validation failed",
 					zap.String("trace_id", traceID),
@@ -613,8 +528,17 @@ func (f *Filter) handleDecodeHeaders(header api.RequestHeaderMap, path string, t
 		}
 	}
 
-	// Check for session cookie
-	sessionID, err := f.cookieManager.GetCookie(header)
+	// Check for session cookie using per-provider cookie name (D-08, D-09).
+	// Resolve the handler first so we read the correct namespaced cookie.
+	sessionHandler, err := f.getProviderHandler()
+	if err != nil {
+		f.logger.Error("Failed to resolve provider for session lookup",
+			zap.String("trace_id", traceID),
+			zap.Error(err))
+		return f.recordAndSendLocalReply(503, "Identity provider unavailable",
+			createAuthErrorHeaders(), -1, "provider_unavailable")
+	}
+	sessionID, err := sessionHandler.GetSessionCookie(header)
 	if err != nil {
 		return f.handleUnauthenticatedRequest(header, path, traceID, err, "No valid session or token found")
 	}
@@ -624,8 +548,36 @@ func (f *Filter) handleDecodeHeaders(header api.RequestHeaderMap, path string, t
 		return f.handleUnauthenticatedRequest(header, path, traceID, err, "Invalid session")
 	}
 
-	// Check if session needs validation/refresh
-	if f.oauthHandler.IsNeedValidateSession(session) {
+	// SESS-02: verify session-provider binding (D-05).
+	// The session's ProviderName must match the cluster-derived provider.
+	// Mismatch => best-effort delete stored session, clear cookie via the
+	// per-provider handler, log WARN, return unauthenticated to trigger re-auth.
+	if matched, expectedProvider := f.verifySessionProvider(session); !matched {
+		f.logger.Warn("Session provider mismatch — rejecting session",
+			zap.String("session_provider", session.ProviderName),
+			zap.String("expected_provider", expectedProvider),
+			zap.String("session_id", session.ID),
+			zap.String("cluster", f.cluster),
+			zap.String("trace_id", traceID))
+		if delErr := f.sessionStore.Delete(session.ID); delErr != nil {
+			f.logger.Warn("Failed to delete mismatched session (best-effort)",
+				zap.String("session_id", session.ID),
+				zap.Error(delErr))
+		}
+		// Build the deletion cookie string before overwriting request headers.
+		// DeleteSessionCookie writes to the request header map; SendLocalReply does not
+		// forward request headers to the response, so we must pass the cookie explicitly.
+		sessionHandler.DeleteSessionCookie(header)
+		deleteCookieStr, _ := header.Get("set-cookie")
+		if f.isBrowserRequest(header) {
+			providerName := f.resolveProviderName()
+			loginURL := "/oauth/login?redirect_uri=" + url.QueryEscape(path) + "&provider=" + url.QueryEscape(providerName)
+			return f.handleRedirect(loginURL, deleteCookieStr)
+		}
+		return f.handleAuthFailureWithCookie(401, "Unauthorized: Session from wrong provider", deleteCookieStr)
+	}
+
+	if sessionHandler.IsNeedValidateSession(session) {
 		// Perform async validation to avoid blocking
 		return f.handleAsyncValidateSession(header, session, path, traceID, f.handleAuthSuccess)
 	}
@@ -681,28 +633,64 @@ func (f *Filter) handleLogin(header api.RequestHeaderMap) api.StatusType {
 	f.logger.Debug("Handling login request",
 		zap.String("trace_id", traceID))
 
-	// Ensure handlers are initialized
-	if err := f.ensureHandlersInitialized(); err != nil {
-		f.logger.Warn("OAuth handler unavailable for login",
-			zap.String("trace_id", traceID),
-			zap.String("error", err.Error()))
-		return f.errorHandler.HandleIDPUnavailable()
-	}
-
-	// Get redirect URI from query parameter
+	// Get redirect URI and provider from query parameters
 	path, _ := header.Get(":path")
-	values, err := url.ParseQuery(path[strings.Index(path, "?")+1:])
-	if err != nil {
-		return f.handleAuthFailure(400, "Bad Request: Invalid query parameters")
+	values := url.Values{}
+	if idx := strings.Index(path, "?"); idx != -1 {
+		var parseErr error
+		values, parseErr = url.ParseQuery(path[idx+1:])
+		if parseErr != nil {
+			return f.handleAuthFailure(400, "Bad Request: Invalid query parameters")
+		}
 	}
 
 	redirectURI := values.Get("redirect_uri")
-	if redirectURI == "" {
+	// Reject any redirect_uri that is not a safe relative path. Explicit
+	// second-character check handles browser-normalised bypasses:
+	//   "//evil.com"  → protocol-relative
+	//   "///evil.com" → triple-slash (parsed as path by Go, but browser collapses)
+	//   "/\evil.com"  → backslash-normalised to // by Chromium
+	if parsed, err := url.Parse(redirectURI); err != nil ||
+		parsed.Host != "" || parsed.Scheme != "" ||
+		!strings.HasPrefix(redirectURI, "/") ||
+		(len(redirectURI) > 1 && (redirectURI[1] == '/' || redirectURI[1] == '\\')) {
 		redirectURI = "/"
 	}
 
+	// Resolve provider handler. The provider query param is set by our own
+	// handleUnauthenticatedRequest; validate it against registered providers.
+	// If absent or invalid, fall back to cluster-based resolution.
+	providerName := values.Get("provider")
+	var loginHandler oauth.OAuthHandler
+	var err error
+	if providerName != "" {
+		if h, regErr := f.providerRegistry.GetHandler(providerName); regErr != nil {
+			// Unknown provider in query param — ignore it, use cluster resolution
+			f.logger.Warn("Ignoring unknown provider in login query param",
+				zap.String("provider", providerName))
+			loginHandler, err = f.getProviderHandler()
+		} else if h.HealthState() == oauth.StateDown {
+			// Provider is registered but currently down — gate with 503 (D-03).
+			f.logger.Warn("Provider is down, rejecting login",
+				zap.String("provider", providerName),
+				zap.String("trace_id", traceID))
+			return f.errorHandler.HandleIDPUnavailable()
+		} else {
+			loginHandler = h
+		}
+	} else {
+		loginHandler, err = f.getProviderHandler()
+	}
+	if err != nil {
+		f.logger.Warn("OAuth provider unavailable for login",
+			zap.String("trace_id", traceID),
+			zap.String("provider", providerName),
+			zap.Error(err))
+		return f.errorHandler.HandleIDPUnavailable()
+	}
+
 	// Start OAuth flow
-	err = f.oauthHandler.HandleAuthRedirect(header, redirectURI)
+	err = loginHandler.HandleAuthRedirect(header, redirectURI)
 	if err != nil {
 		f.logger.Error("Failed to handle auth redirect",
 			zap.String("trace_id", traceID),
@@ -726,19 +714,49 @@ func (f *Filter) handleCallback(header api.RequestHeaderMap) api.StatusType {
 	f.logger.Debug("Handling OAuth callback",
 		zap.String("trace_id", traceID))
 
-	// Ensure handlers are initialized
-	if err := f.ensureHandlersInitialized(); err != nil {
-		f.logger.Warn("OAuth handler unavailable for callback",
-			zap.String("trace_id", traceID),
-			zap.String("error", err.Error()))
-		return f.errorHandler.HandleIDPUnavailable()
-	}
-
 	// Get query parameters
 	path, _ := header.Get(":path")
-	query := path[strings.Index(path, "?")+1:]
+	query := ""
+	if idx := strings.Index(path, "?"); idx != -1 {
+		query = path[idx+1:]
+	}
 
-	return f.handleAsyncCallback(header, query, traceID)
+	// Resolve the provider from the nonce stored in the pending-auth entry.
+	// This uses PeekPendingAuthProvider so the entry is NOT consumed here —
+	// HandleCallback will consume it via GetPendingAuth.
+	values, _ := url.ParseQuery(query)
+	nonce := values.Get("state")
+	if nonce == "" {
+		return f.handleAuthFailure(400, "Missing state parameter in OAuth callback")
+	}
+	providerName, err := session.PeekPendingAuthProvider(f.sessionStore, nonce)
+	if err != nil {
+		f.logger.Warn("Failed to peek pending-auth provider from nonce",
+			zap.String("trace_id", traceID),
+			zap.String("nonce", nonce),
+			zap.Error(err))
+		return f.handleAuthFailure(400, "Invalid or expired state parameter")
+	}
+
+	callbackHandler, err := f.providerRegistry.GetHandler(providerName)
+	if err != nil {
+		f.logger.Error("Provider from pending-auth not found in registry",
+			zap.String("trace_id", traceID),
+			zap.String("provider", providerName),
+			zap.Error(err))
+		return f.recordAndSendLocalReply(503, "Identity provider unavailable",
+			createAuthErrorHeaders(), -1, "provider_unavailable")
+	}
+	// HLTH-02 / D-03: gate — provider found but currently down.
+	if callbackHandler.HealthState() == oauth.StateDown {
+		f.logger.Warn("Provider is down, rejecting callback",
+			zap.String("trace_id", traceID),
+			zap.String("provider", providerName))
+		return f.recordAndSendLocalReply(503, "Identity provider unavailable",
+			createAuthErrorHeaders(), -1, "provider_unavailable")
+	}
+
+	return f.handleAsyncCallback(header, query, traceID, callbackHandler)
 }
 
 // handleLogout processes user logout
@@ -747,7 +765,16 @@ func (f *Filter) handleLogout(header api.RequestHeaderMap) api.StatusType {
 
 	f.logger.Debug("Handling logout request",
 		zap.String("trace_id", traceID))
-	logoutURL, err := f.oauthHandler.HandleLogout(header)
+
+	logoutHandler, err := f.getProviderHandler()
+	if err != nil {
+		f.logger.Warn("OAuth provider unavailable for logout",
+			zap.String("trace_id", traceID),
+			zap.Error(err))
+		return f.errorHandler.HandleIDPUnavailable()
+	}
+
+	logoutURL, err := logoutHandler.HandleLogout(header)
 	if err != nil {
 		f.logger.Error("Failed to handle logout",
 			zap.String("trace_id", traceID),
@@ -852,29 +879,6 @@ func (f *Filter) OnLogDownstreamStart(reqHeaders api.RequestHeaderMap) {
 }
 
 func (f *Filter) OnStreamComplete() {
-}
-
-func (f *Filter) getSession(headers api.RequestHeaderMap) (*session.Session, error) {
-	f.logger.Debug("Attempting to get session from request")
-	sessionID, err := f.cookieManager.GetCookie(headers)
-	if err != nil {
-		f.logger.Debug("Failed to get session cookie", zap.Error(err))
-		return nil, err
-	}
-	f.logger.Debug("Retrieved session ID from cookie", zap.String("session_id", sessionID))
-
-	session, err := f.sessionStore.Get(sessionID)
-	if err != nil {
-		f.logger.Debug("Failed to get session from store",
-			zap.String("session_id", sessionID),
-			zap.Error(err))
-		return nil, err
-	}
-	f.logger.Debug("Successfully retrieved session from store",
-		zap.String("session_id", session.ID),
-		zap.String("user_id", session.UserID),
-		zap.Time("expires_at", session.ExpiresAt))
-	return session, nil
 }
 
 func (f *Filter) isValidSession(session *session.Session) bool {

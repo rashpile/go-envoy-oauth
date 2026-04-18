@@ -31,7 +31,7 @@ The filter intercepts incoming HTTP requests at the Envoy gateway and:
 ### Prerequisites
 
 - Docker
-- Go 1.23+
+- Go 1.25+
 - Envoy Proxy (v1.33+)
 - OAuth provider (e.g., Keycloak, Auth0, etc.)
 
@@ -56,9 +56,59 @@ curl http://localhost:8080/your-endpoint
 
 ## Configuration
 
-### Envoy Configuration
+### Provider Configuration
 
-Add the filter to your Envoy configuration:
+Providers are declared in a top-level `providers` map and referenced by name in each cluster. A `default_provider` is used for any cluster without an explicit `provider` field, and for legacy single-provider configs that omit the `providers` map entirely.
+
+```yaml
+plugin_config:
+  "@type": type.googleapis.com/xds.type.v3.TypedStruct
+  value:
+    # --- Multi-provider setup ---
+    default_provider: keycloak   # fallback when cluster has no 'provider' field
+
+    providers:
+      keycloak:
+        issuer_url: "https://keycloak.example.com/realms/myrealm"
+        client_id: "my-client"
+        client_secret: "my-secret"
+        redirect_url: "/oauth/callback"
+        scopes: ["openid", "profile", "email"]
+
+      google:
+        issuer_url: "https://accounts.google.com"
+        client_id: "google-client-id"
+        client_secret: "google-client-secret"
+        redirect_url: "/oauth/callback"
+        scopes: ["openid", "profile", "email"]
+```
+
+Each provider value supports these fields:
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `issuer_url` | yes | OIDC issuer URL; discovery doc fetched from `<issuer_url>/.well-known/openid-configuration` |
+| `client_id` | yes | OAuth client ID |
+| `client_secret` | yes | OAuth client secret |
+| `redirect_url` | yes | Callback path registered with the provider (e.g. `/oauth/callback`) |
+| `scopes` | no | Additional scopes (default `openid profile email`) |
+
+#### Legacy single-provider format (backward compatible)
+
+Configs without a `providers` map continue to work. The top-level `issuer_url`, `client_id`, `client_secret`, `redirect_url`, and `scopes` fields are automatically treated as a provider named `default`:
+
+```yaml
+value:
+  issuer_url: "https://your-provider.com"
+  client_id: "your-client-id"
+  client_secret: "your-client-secret"
+  redirect_url: "/oauth/callback"
+  scopes: ["openid", "profile", "email"]
+```
+
+### Envoy Filter Configuration
+
+Full plugin config with all options:
 
 ```yaml
 http_filters:
@@ -71,12 +121,15 @@ http_filters:
     plugin_config:
       "@type": type.googleapis.com/xds.type.v3.TypedStruct
       value:
-        # OpenID Connect configuration
-        issuer_url: "https://your-oauth-provider.com"
-        client_id: "your-client-id"
-        client_secret: "your-client-secret"
-        redirect_url: "/oauth/callback"
-        scopes: ["openid", "profile", "email"]
+        # Provider registry
+        default_provider: keycloak
+        providers:
+          keycloak:
+            issuer_url: "https://keycloak.example.com/realms/myrealm"
+            client_id: "my-client"
+            client_secret: "my-secret"
+            redirect_url: "/oauth/callback"
+            scopes: ["openid", "profile", "email"]
 
         # Session configuration
         session_cookie_name: "session"
@@ -91,7 +144,16 @@ http_filters:
         user_id_header_name: "X-User-ID"
         user_email_header_name: "X-User-Email"
         user_username_header_name: "X-User-Username"
+        auth_provider_header_name: "X-Auth-Provider"  # verified provider key on downstream requests
         skip_auth_header_name: "X-Skip-Auth"
+
+        # Identity headers stripped from inbound requests to prevent spoofing.
+        # auth_provider_header_name is always enforced here regardless of this list.
+        remove_headers:
+          - "X-User-ID"
+          - "X-User-Email"
+          - "X-User-Username"
+          - "X-Auth-Provider"
 
         # Optional features
         enable_api_key: false       # Enable API key generation
@@ -102,52 +164,58 @@ http_filters:
 
         # Cluster-specific configurations
         clusters:
-          backend_service_cluster:
-            exclude_paths: ["/status", "/metrics"]
+          keycloak_service_cluster:
+            provider: keycloak       # routes this cluster through the keycloak provider
+          google_service_cluster:
+            provider: google
+            add_token: true
           public_api_cluster:
-            exclude: true  # Bypass auth for entire cluster
-          protected_api_cluster:
-            add_token: true  # Add Authorization header with token
+            exclude: true
 ```
 
 #### Cluster Configuration Options
 
-The `clusters` section allows per-cluster authentication settings. Each cluster name must match the cluster name defined in your Envoy route configuration.
-
-**Available cluster options:**
+The `clusters` section maps Envoy cluster names to per-cluster auth settings.
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
+| `provider` | string | `default_provider` | Named provider to use for this cluster |
 | `exclude` | boolean | false | Bypass authentication for all requests to this cluster |
-| `exclude_paths` | string[] | [] | Specific paths to exclude from authentication |
+| `exclude_paths` | string[] | [] | Paths to exclude from authentication within this cluster |
 | `add_token` | boolean | false | Add `Authorization: Bearer <token>` header to upstream requests |
+| `allowed_users` | string[] | [] | Usernames permitted to access this cluster (matched against `preferred_username` claim, case-insensitive). Use `["*"]` to allow any authenticated user. If empty and the user is not in `super_users`, access is denied. |
 
-**Example with multiple clusters:**
+### Provider Health
 
-```yaml
-clusters:
-  # Public endpoints - no authentication required
-  health_cluster:
-    exclude: true
+Each provider tracks independent health state. A provider whose OIDC discovery fails at startup is registered as `down` and immediately returns 503 for all requests — other providers continue serving normally.
 
-  # API with selective path exclusion
-  api_cluster:
-    exclude_paths:
-      - /health
-      - /metrics
-      - /version
+Down providers **self-heal without a config reload**. A background goroutine retries OIDC discovery with exponential backoff (5 s → 5 min, ±20% jitter). On success the provider is atomically promoted to `ready` and the JWKS refresh loop starts. This resolves the common startup race where the IdP itself sits behind Envoy and is not yet reachable when the filter initializes.
 
-  # Protected service that needs the token
-  backend_cluster:
-    add_token: true
+After startup, a background goroutine per provider refreshes JWKS with exponential backoff:
+
+| State | Meaning | Requests |
+|-------|---------|---------|
+| `ready` | Last JWKS refresh succeeded | Served normally |
+| `degraded` | One or more consecutive failures, last-known-good JWKS still valid | Served normally |
+| `down` | Startup discovery failed, OR stale threshold exceeded; recovery retried in background | 503 returned |
+
+**Prometheus metrics:**
+
+```
+envoy_oauth_idp_state{idp="keycloak", state="ready"}    1
+envoy_oauth_idp_state{idp="keycloak", state="degraded"} 0
+envoy_oauth_idp_state{idp="keycloak", state="down"}     0
+envoy_oauth_idp_up{idp="keycloak"}                      1
 ```
 
-### OAuth Provider Configuration
+The `idp` label matches the provider name from the `providers` map.
 
-You'll need to configure your OAuth provider with:
-- Client ID and Secret
-- Redirect URL (matching the `redirect_url` in the Envoy config)
-- Required scopes (typically "openid", "profile", "email")
+### OIDC Provider Setup
+
+You'll need to register the callback URL with your OIDC provider:
+- **Redirect URI**: `https://your-domain.com/oauth/callback`
+- **Scopes**: `openid profile email` (plus any custom scopes)
+- **Grant type**: Authorization Code (PKCE is always enabled)
 
 ## Environment Variables
 
@@ -169,6 +237,14 @@ Example:
 ```bash
 curl http://localhost:9102/metrics
 ```
+
+**Breaking change (Phase 04):** The `idp` Prometheus label on OAuth metrics
+(`envoy_oauth_login_total`, `envoy_oauth_logout_total`, `envoy_oauth_session_*`,
+`envoy_oauth_token_validation_*`, `envoy_oauth_callback_duration_seconds_*`)
+now carries the provider registry key from the `providers` config map
+(e.g., `keycloak`, `google`) instead of the issuer hostname (e.g.,
+`keycloak.example.com`). Update any Grafana dashboards or Prometheus alert
+rules that filter on the old hostname values.
 
 ## Authentication Flow
 

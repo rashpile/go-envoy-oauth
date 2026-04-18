@@ -210,12 +210,39 @@ func createHTTPConnectionManager(config *GatewayConfig) (*anypb.Any, error) {
 			}
 			clientConfig["allowed_users"] = allowedUsersInterface
 		}
-		if len(clientConfig) > 0 {
-			clusters[client.ID] = clientConfig
+		// Resolve provider name (apply default if not set) per D-10
+		providerName := client.Provider
+		if providerName == "" {
+			providerName = config.DefaultProvider
 		}
+		clientConfig["provider"] = providerName
+		clusters[client.ID] = clientConfig
 	}
-	if len(clusters) > 0 {
-		pluginConfig["clusters"] = clusters
+	pluginConfig["clusters"] = clusters
+
+	// Serialize providers map for filter
+	if len(config.Providers) > 0 {
+		providers := make(map[string]interface{})
+		for name, p := range config.Providers {
+			providerMap := map[string]interface{}{
+				"issuer_url":    p.IssuerURL,
+				"client_id":     p.ClientID,
+				"client_secret": p.ClientSecret,
+			}
+			if p.RedirectURL != "" {
+				providerMap["redirect_url"] = p.RedirectURL
+			}
+			if len(p.Scopes) > 0 {
+				scopesInterface := make([]interface{}, len(p.Scopes))
+				for i, s := range p.Scopes {
+					scopesInterface[i] = s
+				}
+				providerMap["scopes"] = scopesInterface
+			}
+			providers[name] = providerMap
+		}
+		pluginConfig["providers"] = providers
+		pluginConfig["default_provider"] = config.DefaultProvider
 	}
 
 	pluginConfigStruct, err := structpb.NewStruct(pluginConfig)

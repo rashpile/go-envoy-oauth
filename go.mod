@@ -1,8 +1,6 @@
 module github.com/rashpile/go-envoy-oauth
 
-go 1.23.0
-
-toolchain go1.24.2
+go 1.25.0
 
 require (
 	github.com/cncf/xds/go v0.0.0-20250121191232-2f005788dc42
@@ -11,6 +9,7 @@ require (
 	github.com/prometheus/client_golang v1.20.0
 	go.uber.org/zap v1.27.0
 	golang.org/x/oauth2 v0.29.0
+	golang.org/x/sync v0.20.0
 	google.golang.org/protobuf v1.36.6
 )
 

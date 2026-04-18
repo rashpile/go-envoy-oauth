@@ -6,7 +6,27 @@ import (
 	"strings"
 
 	"github.com/envoyproxy/envoy/contrib/golang/common/go/api"
+	"github.com/rashpile/go-envoy-oauth/plugin/oauth"
+	"go.uber.org/zap"
 )
+
+// getOfflineTokenHandler resolves an OfflineTokenHandler from the provider registry.
+// The offline token handler is created on-demand from the resolved OAuthHandler.
+func (f *Filter) getOfflineTokenHandler() (*oauth.OfflineTokenHandler, error) {
+	handler, err := f.getProviderHandler()
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve provider handler: %w", err)
+	}
+	oauthHandlerImpl, ok := handler.(*oauth.OAuthHandlerImpl)
+	if !ok {
+		return nil, fmt.Errorf("provider handler unavailable (type: %T)", handler)
+	}
+	offlineHandler, err := oauth.NewOfflineTokenHandler(oauthHandlerImpl, f.logger)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create offline token handler: %w", err)
+	}
+	return offlineHandler, nil
+}
 
 // handleOfflineConsent displays the consent page for API key generation
 func (f *Filter) handleOfflineConsent(header api.RequestHeaderMap) api.StatusType {
@@ -15,16 +35,13 @@ func (f *Filter) handleOfflineConsent(header api.RequestHeaderMap) api.StatusTyp
 		return f.handleAuthFailure(404, "API key generation feature is disabled")
 	}
 
-	// Ensure handlers are initialized
-	if err := f.ensureHandlersInitialized(); err != nil {
-		return f.handleAuthFailure(500, fmt.Sprintf("Failed to initialize handlers: %v", err))
+	offlineHandler, err := f.getOfflineTokenHandler()
+	if err != nil {
+		f.logger.Error("Failed to get offline token handler for consent", zap.Error(err))
+		return f.errorHandler.HandleIDPUnavailable()
 	}
 
-	if f.offlineTokenHandler == nil {
-		return f.handleAuthFailure(500, "API key generation feature not available")
-	}
-
-	statusCode, body, headers := f.offlineTokenHandler.HandleConsentPage(header)
+	statusCode, body, headers := offlineHandler.HandleConsentPage(header)
 	return f.recordAndSendLocalReply(statusCode, body, headers, 0, "")
 }
 
@@ -35,16 +52,13 @@ func (f *Filter) handleOfflineRedirect(header api.RequestHeaderMap) api.StatusTy
 		return f.handleAuthFailure(404, "API key generation feature is disabled")
 	}
 
-	// Ensure handlers are initialized
-	if err := f.ensureHandlersInitialized(); err != nil {
-		return f.handleAuthFailure(500, fmt.Sprintf("Failed to initialize handlers: %v", err))
+	offlineHandler, err := f.getOfflineTokenHandler()
+	if err != nil {
+		f.logger.Error("Failed to get offline token handler for redirect", zap.Error(err))
+		return f.errorHandler.HandleIDPUnavailable()
 	}
 
-	if f.offlineTokenHandler == nil {
-		return f.handleAuthFailure(500, "API key generation feature not available")
-	}
-
-	statusCode, body, headers := f.offlineTokenHandler.HandleOfflineAuthRedirect(header)
+	statusCode, body, headers := offlineHandler.HandleOfflineAuthRedirect(header)
 	return f.recordAndSendLocalReply(statusCode, body, headers, 0, "")
 }
 
@@ -55,13 +69,10 @@ func (f *Filter) handleOfflineCallback(header api.RequestHeaderMap, path string)
 		return f.handleAuthFailure(404, "API key generation feature is disabled")
 	}
 
-	// Ensure handlers are initialized
-	if err := f.ensureHandlersInitialized(); err != nil {
-		return f.handleAuthFailure(500, fmt.Sprintf("Failed to initialize handlers: %v", err))
-	}
-
-	if f.offlineTokenHandler == nil {
-		return f.handleAuthFailure(500, "API key generation feature not available")
+	offlineHandler, err := f.getOfflineTokenHandler()
+	if err != nil {
+		f.logger.Error("Failed to get offline token handler for callback", zap.Error(err))
+		return f.errorHandler.HandleIDPUnavailable()
 	}
 
 	// Extract query parameters
@@ -70,7 +81,7 @@ func (f *Filter) handleOfflineCallback(header api.RequestHeaderMap, path string)
 		query = path[idx+1:]
 	}
 
-	statusCode, body, headers := f.offlineTokenHandler.HandleOfflineCallback(header, query)
+	statusCode, body, headers := offlineHandler.HandleOfflineCallback(header, query)
 	return f.recordAndSendLocalReply(statusCode, body, headers, 0, "")
 }
 
