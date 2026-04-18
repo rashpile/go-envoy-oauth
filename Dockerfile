@@ -1,5 +1,5 @@
 # Build stage
-FROM golang:1.23.6-bookworm AS builder
+FROM golang:1.25-bookworm AS builder
 
 # Set the working directory inside the container
 WORKDIR /app
