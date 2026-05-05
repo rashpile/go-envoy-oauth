@@ -619,6 +619,8 @@ func (f *Filter) handleOAuthEndpoints(header api.RequestHeaderMap, path string) 
 		return f.handleOfflineCallback(header, path)
 	case basePath == "/oauth/access-denied":
 		return f.handleAccessDeniedPage(header)
+	case basePath == "/oauth/llms.txt" && f.config.EnableLLMsTxt:
+		return f.handleLLMsTxt(header)
 	case strings.HasPrefix(basePath, "/oauth/assets/"):
 		return f.handleAssets(header)
 	default:
