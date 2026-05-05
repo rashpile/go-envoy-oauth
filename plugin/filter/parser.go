@@ -84,6 +84,11 @@ type OAuthConfig struct {
 	// Bearer token authentication
 	EnableBearerToken bool `json:"enable_bearer_token"`
 
+	// Whether the /oauth/llms.txt agent-integration documentation endpoint
+	// is enabled (default: true). When false, the endpoint returns 404
+	// indistinguishably from any other unknown /oauth/* path.
+	EnableLLMsTxt bool `json:"enable_llms_txt"`
+
 	// Authorization: global super users (bypass all client restrictions)
 	SuperUsers []string `json:"super_users"`
 
@@ -132,6 +137,7 @@ func (p *Parser) parseRawConfig(any *anypb.Any) (*OAuthConfig, error) {
 		RemoveHeaders:      []string{"X-User-ID", "X-User-Email", "X-User-Username", "X-Auth-Provider"},
 		EnableAPIKey:       false, // API key generation disabled by default
 		EnableBearerToken:  true,  // Bearer token authentication enabled by default
+		EnableLLMsTxt:      true,  // /oauth/llms.txt agent docs enabled by default
 	}
 
 	if err := p.populateConfig(conf, m); err != nil {
@@ -285,6 +291,11 @@ func (p *Parser) populateConfig(conf *OAuthConfig, m map[string]interface{}) err
 		log.Printf("Parsed enable_bearer_token from config: %v", enableBearerToken)
 	} else {
 		log.Printf("enable_bearer_token not found in config, using default: %v", conf.EnableBearerToken)
+	}
+
+	// Parse /oauth/llms.txt endpoint setting
+	if enableLLMsTxt, ok := m["enable_llms_txt"].(bool); ok {
+		conf.EnableLLMsTxt = enableLLMsTxt
 	}
 
 	// Parse global super_users
@@ -541,6 +552,7 @@ func (p *Parser) Merge(parent interface{}, child interface{}) interface{} {
 		SessionStore:      parentConfig.SessionStore,
 		EnableAPIKey:           parentConfig.EnableAPIKey,
 		EnableBearerToken:      parentConfig.EnableBearerToken,
+		EnableLLMsTxt:          parentConfig.EnableLLMsTxt,
 		SuperUsers:             slices.Clone(parentConfig.SuperUsers),
 		DefaultProvider:        parentConfig.DefaultProvider,
 		Providers:              make(map[string]ProviderConfig),
@@ -619,6 +631,11 @@ func (p *Parser) Merge(parent interface{}, child interface{}) interface{} {
 	// Override EnableBearerToken if child config explicitly sets it
 	if childConfig.EnableBearerToken != parentConfig.EnableBearerToken {
 		newConfig.EnableBearerToken = childConfig.EnableBearerToken
+	}
+
+	// Override EnableLLMsTxt if child config explicitly sets it
+	if childConfig.EnableLLMsTxt != parentConfig.EnableLLMsTxt {
+		newConfig.EnableLLMsTxt = childConfig.EnableLLMsTxt
 	}
 
 	// Override SuperUsers if child config has any
