@@ -503,7 +503,7 @@ set.
 | `scopes` | string[] | `["openid","profile","email"]` | OAuth scopes |
 | `providers` | map<string,ProviderConfig> | empty | Multi-provider configuration |
 | `default_provider` | string | (none) | Provider name used when caller does not specify one |
-| `session_cookie_name` | string | `oauth_session` | Cookie name carrying the session id |
+| `session_cookie_name` | string | `session` | Cookie name carrying the session id |
 | `session_path` | string | `/` | Cookie path |
 | `session_domain` | string | (host-only) | Cookie domain |
 | `session_secure` | bool | `true` | Cookie `Secure` flag |
