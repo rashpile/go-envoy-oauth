@@ -552,6 +552,7 @@ func (p *Parser) Merge(parent interface{}, child interface{}) interface{} {
 		SessionStore:      parentConfig.SessionStore,
 		EnableAPIKey:           parentConfig.EnableAPIKey,
 		EnableBearerToken:      parentConfig.EnableBearerToken,
+		EnableLLMsTxt:          parentConfig.EnableLLMsTxt,
 		SuperUsers:             slices.Clone(parentConfig.SuperUsers),
 		DefaultProvider:        parentConfig.DefaultProvider,
 		Providers:              make(map[string]ProviderConfig),
@@ -630,6 +631,11 @@ func (p *Parser) Merge(parent interface{}, child interface{}) interface{} {
 	// Override EnableBearerToken if child config explicitly sets it
 	if childConfig.EnableBearerToken != parentConfig.EnableBearerToken {
 		newConfig.EnableBearerToken = childConfig.EnableBearerToken
+	}
+
+	// Override EnableLLMsTxt if child config explicitly sets it
+	if childConfig.EnableLLMsTxt != parentConfig.EnableLLMsTxt {
+		newConfig.EnableLLMsTxt = childConfig.EnableLLMsTxt
 	}
 
 	// Override SuperUsers if child config has any
