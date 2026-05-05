@@ -504,6 +504,7 @@ set.
 | `providers` | map<string,ProviderConfig> | empty | Multi-provider configuration |
 | `default_provider` | string | (none) | Provider name used when caller does not specify one |
 | `session_cookie_name` | string | `session` | Cookie name carrying the session id |
+| `session_max_age` | int (seconds) | `86400` (24h) | Session lifetime |
 | `session_path` | string | `/` | Cookie path |
 | `session_domain` | string | (host-only) | Cookie domain |
 | `session_secure` | bool | `true` | Cookie `Secure` flag |
@@ -528,10 +529,10 @@ set.
 |---|---|---|---|
 | `exclude` | bool | `false` | Mark this cluster as fully exempt from auth |
 | `sso_injection` | bool | `false` | Inject `<script src="/oauth/assets/sso.js">` into HTML responses |
-| `sso_app_url` | string | (empty) | Branding URL used by the welcome page for this cluster |
-| `sso_app_name` | string | (empty) | Branding name used by the welcome page for this cluster |
-| `token_include` | bool | `false` | Forward the access token to the upstream as `X-Auth-Token` |
-| `provider_name` | string | (`default_provider`) | Provider this cluster authenticates against |
+| `sso_appurl` | string | (empty) | Branding URL used by the welcome page for this cluster |
+| `sso_appname` | string | (empty) | Branding name used by the welcome page for this cluster |
+| `add_token` | bool | `false` | Forward the access token to the upstream as `X-Auth-Token` |
+| `provider` | string | (`default_provider`) | Provider this cluster authenticates against |
 | `allowed_users` | string[] | empty | Lowercased usernames or emails allowed on this cluster (empty = any authenticated user) |
 
 ### 10.3 `ProviderConfig` (per-provider)
