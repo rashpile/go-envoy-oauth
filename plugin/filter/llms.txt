@@ -1,0 +1,545 @@
+# go-envoy-oauth — Integration Guide for Agents
+
+> OAuth 2.0 / OIDC reverse-auth gateway implemented as an Envoy HTTP filter.
+> This document describes how to integrate with the gateway as an upstream
+> service, as a JS/UI client, or as a programmatic API consumer.
+>
+> Version: {{VERSION}}
+> Source: https://github.com/rashpile/go-envoy-oauth
+
+This file is a static, source-only protocol reference. It describes the
+open-source contract of the gateway — never the configuration of any
+specific deployment. Configured provider names, deployed cookie names,
+cluster routing rules, and header overrides are not exposed here. To learn
+what *this specific* gateway deployment is configured to do, ask the
+operator.
+
+## 1. Overview
+
+This gateway sits in front of one or more upstream services and answers two
+questions before any request reaches them:
+
+- Is the caller authenticated? (Have they completed an OAuth flow, do they
+  hold a valid bearer token, or do they have an offline-token API key?)
+- Are they authorized for the cluster they are calling? (Cluster-level
+  rules.)
+
+If yes, the gateway forwards the request to the upstream and injects
+identity headers (section 6). If no, the gateway either redirects the
+caller to log in (browser flows) or returns a 401/403 (programmatic flows).
+
+Three integration roles read this document:
+
+- **Upstream service implementer** — section 6.
+- **JS / browser client** — section 5.
+- **Programmatic / API-key client** — section 7.
+
+All roles benefit from sections 2 (endpoint reference), 8 (workflows), and
+9 (error responses).
+
+## 2. Endpoint reference
+
+All endpoints are mounted under `/oauth/`. Paths under this prefix bypass
+cluster authentication checks — they are the gateway's own endpoints, not
+your upstream's.
+
+### `GET /oauth/login`
+
+Initiates the OAuth authorization-code flow. Redirects the browser to the
+configured identity provider's authorization endpoint.
+
+Query parameters:
+
+- `redirect_uri` (string, optional) — relative path to redirect back to
+  after successful login. Must be a relative path (`/foo/bar`); absolute
+  URLs and protocol-relative URLs are rejected with `400 Bad Request`.
+  Defaults to `/`.
+- `provider` (string, optional) — provider name to log in against.
+  Required when the deployment has multiple providers configured. Ignored
+  when only one is configured.
+
+Response: `302 Found` with `Location` set to the provider's authorization
+URL and an OAuth state cookie set on the response.
+
+### `GET /oauth/callback`
+
+OAuth provider callback. Receives the authorization code, exchanges it
+for tokens, fetches user info, and creates a session. The browser is
+redirected to the original `redirect_uri` (encoded into the OAuth state).
+
+This endpoint is not called by clients directly — the provider redirects
+to it.
+
+Response on success: `302 Found` to the original redirect URI, with a
+session cookie set.
+Response on failure: `302 Found` to `/`. The user is not stranded on the
+callback URL.
+
+### `GET /oauth/logout`
+
+Clears the session cookie and removes the session from the gateway store.
+
+Query parameters:
+
+- `redirect_uri` (string, optional) — relative path to land on after
+  logout. Defaults to `/`.
+
+Response: `302 Found` to the redirect URI, with the session cookie
+cleared.
+
+### `GET /oauth/welcome`
+
+Optional landing page after login. Useful when the gateway is configured
+to land logged-in users on a brand page before bouncing them into the
+app.
+
+Query parameters:
+
+- `home-url` (string, optional) — URL for the "Continue to App" button.
+
+Response: `200 text/html`.
+
+### `GET /oauth/user`
+
+Returns the current authenticated user as JSON. Use this from JS/UI
+clients to detect login state before rendering authenticated UI.
+
+Response on authenticated request: `200 application/json` with body
+shape:
+
+```
+{
+  "id":       "<user id>",
+  "email":    "<user email>",
+  "username": "<preferred username, falls back to email>",
+  "name":     "<display name>",
+  "provider": "<provider name>",
+  "claims":   { ... }
+}
+```
+
+Response on unauthenticated request: `401 Unauthorized` with a short
+text body indicating the reason.
+
+JS clients: see section 5 for the recommended fetch pattern.
+
+### `GET /oauth/consent`
+
+Displays the consent page that begins the offline-token (API-key) flow.
+Available only when the operator has set `enable_api_key: true`. When
+the flag is false, returns `404`.
+
+### `GET /oauth/offline`
+
+Initiates the OAuth offline-access flow that mints a long-lived refresh
+token, which the gateway uses to issue API keys for programmatic
+clients. Available only when `enable_api_key: true`.
+
+### `GET /oauth/offline-callback`
+
+Provider callback for the offline flow. Issues an API key and shows it
+to the user once. Available only when `enable_api_key: true`.
+
+### `GET /oauth/access-denied`
+
+Terminal error page shown when an authenticated user fails authorization
+for a cluster.
+
+### `GET /oauth/assets/sso.js`
+
+Optional drop-in JS helper that browser apps can include via
+`<script src>`. Provides session-state detection, automatic re-login on
+401, and event hooks. Loaded automatically only on clusters where the
+operator has set `sso_injection: true`.
+
+Response: `200 application/javascript`.
+
+### `GET /oauth/llms.txt`
+
+This document. Returned as `text/plain; charset=utf-8` with
+`Cache-Control: public, max-age=3600`. Methods other than `GET` return
+`405 Method Not Allowed` with `Allow: GET`.
+
+May be disabled by the operator (`enable_llms_txt: false`). When
+disabled, returns `404 Not Found: Unknown OAuth endpoint` —
+indistinguishable from any other unknown OAuth path.
+
+## 3. Auth modes
+
+A request gets authorized in one of three ways. The gateway tries them
+in order and accepts the first that succeeds.
+
+### 3.1 Session cookie
+
+The default for browsers. Set by `/oauth/callback` after successful
+interactive login. The cookie is `HttpOnly` and `SameSite=Lax` by
+default; the gateway reads it from `Cookie:` and looks up the session
+in its session store.
+
+When a session is missing or expired and the request is for a path that
+requires auth:
+
+- If the request `Accept`s `text/html` (browser navigation):
+  `302 Found` to `/oauth/login`.
+- Otherwise (XHR / fetch / API call): `401 Unauthorized`. Clients must
+  NOT retry on 401; they must trigger a full-page reload or call
+  `/oauth/login` directly.
+
+### 3.2 Bearer JWT
+
+For API consumers that already hold a JWT issued by the same identity
+provider the gateway is configured for. The token is supplied as
+`Authorization: Bearer <jwt>`. The gateway verifies the signature
+against the provider's JWKS and the standard JWT claims (`iss`, `aud`,
+`exp`).
+
+Bearer auth is enabled by the operator config flag
+`enable_bearer_token` (defaults to enabled).
+
+### 3.3 Offline-token / API key
+
+For headless clients (CLIs, automation, daemons) that cannot complete
+an interactive login per request. The user obtains a long-lived API
+key once via `/oauth/consent` → `/oauth/offline` →
+`/oauth/offline-callback`, then supplies it on each request as one of:
+
+- HTTP header `api-key: <key>` (preferred), or
+- HTTP header `x-api-key: <key>` (common variant), or
+- Query parameter `?auth-api-key=<key>` (least preferred — the value
+  ends up in proxy logs).
+
+API-key auth is enabled by the operator config flag `enable_api_key`
+(defaults to disabled for security).
+
+## 4. Session lifecycle
+
+Interactive flow:
+
+1. User navigates to a protected URL with no session cookie.
+2. Gateway detects missing cookie. Returns `302` to `/oauth/login`
+   (browser) or `401` (XHR — see section 3.1).
+3. Login flow runs (sections 2, 8.1).
+4. `/oauth/callback` creates the session, sets the cookie, and
+   redirects to the original URL.
+5. Subsequent requests carry the cookie.
+6. The session has an absolute expiry. When the session is past expiry,
+   the gateway returns `401` / `302`-to-login as in step 2.
+7. `/oauth/logout` clears the cookie and removes the session from the
+   store.
+
+The `401`-vs-`403` contract:
+
+- `401 Unauthorized` — caller is not authenticated. Re-login fixes it.
+- `403 Forbidden` — caller is authenticated but not authorized for this
+  resource/cluster. Re-login does NOT fix it. Clients should show an
+  access-denied state and offer "switch account" or contact-admin.
+
+## 5. JS / browser client integration
+
+### 5.1 Detecting login state
+
+Call `GET /oauth/user`:
+
+```
+async function whoAmI() {
+  const r = await fetch('/oauth/user', { credentials: 'same-origin' });
+  if (r.status === 200) return await r.json();
+  if (r.status === 401) return null;       // not logged in
+  if (r.status === 403) throw new Error('access denied');
+  throw new Error('unexpected status ' + r.status);
+}
+```
+
+### 5.2 Handling 401 from any endpoint
+
+Do NOT retry. Do NOT silently log the user out. Trigger a full-page
+reload — the gateway will redirect the navigation to `/oauth/login`
+and bring the user back here after they sign in.
+
+```
+async function apiCall(path, opts) {
+  const r = await fetch(path, { credentials: 'same-origin', ...opts });
+  if (r.status === 401) {
+    // Session expired or never existed. Reload to trigger re-login.
+    window.location.reload();
+    return new Promise(() => {}); // never resolves; reload is in progress
+  }
+  return r;
+}
+```
+
+### 5.3 Handling 403
+
+Show a terminal error UI. Do NOT reload the page (it will not help —
+the user *is* logged in, just not allowed). Typical UX:
+
+- Display "You don't have access to this resource."
+- Offer a "Switch account" button that navigates to
+  `/oauth/logout?redirect_uri=/oauth/login`.
+- Optionally link to `/oauth/access-denied` for the gateway's standard
+  access-denied page.
+
+### 5.4 Optional `sso.js` helper
+
+The gateway can be configured to inject
+`<script src="/oauth/assets/sso.js" defer>` into HTML responses on
+clusters where `sso_injection: true`. The script provides a default
+401-handler matching the pattern in 5.2 and a small `window.__sso`
+object exposing the current user. This is a convenience; you can
+implement the same yourself.
+
+## 6. Upstream service integration
+
+When a request is authenticated and authorized, the gateway forwards
+it to the upstream cluster with identity headers added.
+
+### 6.1 Default header names
+
+| Header | Type | Source |
+|---|---|---|
+| `X-User-ID` | string | session subject (`sub` claim) |
+| `X-User-Email` | string | session email claim |
+| `X-User-Username` | string | session preferred-username claim, falls back to email |
+| `X-Auth-Provider` | string | the configured provider name that authenticated this session |
+
+Deployments may rename any of these via the corresponding
+`*_header_name` config keys (see section 10). Upstreams that want to be
+portable across deployments should treat the header names as
+configuration of their own, not as fixed constants. New upstreams
+should *prefer the defaults* listed above unless the operator has
+instructed otherwise.
+
+### 6.2 Trust model
+
+Upstream services MUST treat the identity headers as authoritative ONLY
+when received from the gateway. Two rules:
+
+1. The gateway strips client-supplied versions of these headers on every
+   request, but defense-in-depth requires upstreams to do the same if
+   reachable from any path that bypasses the gateway.
+2. Do NOT rely on the absence of these headers to mean "anonymous". A
+   misconfigured exclusion path could allow an unauthenticated request
+   through. If your upstream needs hard authentication, validate the
+   bearer token or cookie yourself, or refuse requests that lack the
+   identity headers.
+
+### 6.3 Receiving the headers
+
+```
+# Pseudocode — read identity headers, refuse if missing
+def handler(request):
+    user_id = request.headers.get('X-User-ID')
+    if not user_id:
+        return 401, "missing identity"
+    email     = request.headers.get('X-User-Email')
+    username  = request.headers.get('X-User-Username')
+    provider  = request.headers.get('X-Auth-Provider')
+    # ... your business logic ...
+```
+
+## 7. API-key / programmatic-client integration
+
+For non-interactive callers (CLIs, automation, server-to-server).
+
+### 7.1 Obtaining an API key (one-time, interactive)
+
+1. Open `/oauth/consent` in a browser.
+2. Confirm the consent screen.
+3. The gateway redirects through `/oauth/offline` to the provider's
+   offline-access flow.
+4. The provider redirects back to `/oauth/offline-callback`.
+5. The gateway issues an API key and displays it to the user once.
+   Save it immediately; it is not retrievable later.
+
+Available only when the operator has set `enable_api_key: true`.
+
+### 7.2 Using the API key
+
+Send the key on every request. In order of preference:
+
+```
+api-key: <api-key>
+```
+
+```
+x-api-key: <api-key>
+```
+
+```
+GET /api/whatever?auth-api-key=<api-key>
+```
+
+Headers are strongly preferred over the query parameter — query
+parameters end up in proxy logs and `Referer` headers. Use the query
+form only when the client cannot set custom headers.
+
+The gateway exchanges the API key for a fresh access token internally
+on each request (cached for the access token's lifetime). No session
+cookie is set.
+
+### 7.3 Revoking an API key
+
+API keys are revoked when the underlying offline OAuth session at the
+identity provider is revoked, which clients can do by visiting the
+provider's account-management UI.
+
+## 8. Workflows
+
+### 8.1 Interactive login
+
+```
+Browser              Gateway                  IdP
+  | GET /app          |                        |
+  |------------------>|                        |
+  | 302 /oauth/login  |                        |
+  |<------------------|                        |
+  | GET /oauth/login  |                        |
+  |------------------>|                        |
+  | 302 IdP/auth      |                        |
+  |<------------------|                        |
+  | GET IdP/auth      |                        |
+  |--------------------------------------------|
+  | (user signs in)                            |
+  | 302 /oauth/callback?code=...               |
+  |<-------------------------------------------|
+  | GET /oauth/callback?code=...               |
+  |------------------>|                        |
+  |                   | POST IdP/token         |
+  |                   |----------------------->|
+  |                   | access+id+refresh      |
+  |                   |<-----------------------|
+  | 302 /app, Set-Cookie: session=...          |
+  |<------------------|                        |
+  | GET /app, Cookie: session=...              |
+  |------------------>|                        |
+  |                   | (forward upstream      |
+  |                   |  with X-User-* headers)|
+```
+
+### 8.2 Logout
+
+```
+Browser              Gateway
+  | GET /oauth/logout |
+  |------------------>|
+  | (delete session)  |
+  | 302 /, Set-Cookie: session=; max-age=0
+  |<------------------|
+```
+
+### 8.3 Expired session recovery (XHR)
+
+```
+JS                   Gateway
+  | fetch /api/x      |
+  |------------------>|
+  | 401               |
+  |<------------------|
+  | window.location.reload()
+  |
+  | GET /current-page (full nav)
+  |------------------>|
+  | 302 /oauth/login (sees no session)
+  |<------------------|
+  | (login flow per 8.1)
+```
+
+### 8.4 API-key call
+
+```
+Client               Gateway              Upstream
+  | GET /api/x        |                    |
+  | api-key: K        |                    |
+  |------------------>|                    |
+  |                   | (exchange K for    |
+  |                   |  access token,     |
+  |                   |  cached)           |
+  |                   | (forward with      |
+  |                   |  X-User-* headers) |
+  |                   |------------------->|
+  |                   | 200                |
+  |                   |<-------------------|
+  | 200               |
+  |<------------------|
+```
+
+### 8.5 Token refresh (transparent)
+
+The gateway transparently refreshes upstream access tokens using the
+stored refresh token. Clients see no extra round trips.
+
+## 9. Error responses
+
+The gateway emits these status codes itself (separate from
+upstream-emitted codes):
+
+| Code | Meaning |
+|---|---|
+| `302` | Redirect — to login, callback, welcome, etc. |
+| `400` | Bad Request — malformed `redirect_uri` or query parameter. |
+| `401` | Unauthorized — no/invalid/expired session, no/invalid bearer, no/invalid API key. |
+| `403` | Forbidden — authenticated but not authorized for this cluster. |
+| `404` | Not Found — unknown `/oauth/*` endpoint or feature disabled. |
+| `405` | Method Not Allowed — wrong HTTP method on a gateway endpoint. |
+| `503` | Service Unavailable — identity provider unreachable, JWKS fetch failed. |
+
+Any status code returned from your upstream passes through unchanged.
+
+## 10. Configuration reference (schema)
+
+This section describes the public schema of the gateway's
+configuration. It does NOT describe what *this* deployment is
+configured with — only the keys, types, and defaults that are valid to
+set.
+
+### 10.1 `OAuthConfig` (top-level)
+
+| Key | Type | Default | Purpose |
+|---|---|---|---|
+| `issuer_url` | string | (required, legacy single-provider) | OIDC issuer URL |
+| `client_id` | string | (required, legacy) | OAuth client ID |
+| `client_secret` | string | (required, legacy) | OAuth client secret |
+| `redirect_url` | string | (required, legacy) | OAuth redirect URL |
+| `scopes` | string[] | `["openid","profile","email"]` | OAuth scopes |
+| `providers` | map<string,ProviderConfig> | empty | Multi-provider configuration |
+| `default_provider` | string | (none) | Provider name used when caller does not specify one |
+| `session_cookie_name` | string | `oauth_session` | Cookie name carrying the session id |
+| `session_path` | string | `/` | Cookie path |
+| `session_domain` | string | (host-only) | Cookie domain |
+| `session_secure` | bool | `true` | Cookie `Secure` flag |
+| `session_http_only` | bool | `true` | Cookie `HttpOnly` flag |
+| `session_same_site` | string | `Lax` | Cookie `SameSite` (`Strict` / `Lax` / `None`) |
+| `user_id_header_name` | string | `X-User-ID` | Header name for user-id injection |
+| `user_email_header_name` | string | `X-User-Email` | Header name for email injection |
+| `user_username_header_name` | string | `X-User-Username` | Header name for username injection |
+| `auth_provider_header_name` | string | `X-Auth-Provider` | Header name for provider-name injection |
+| `skip_auth_header_name` | string | (empty) | When non-empty, requests carrying this header bypass auth (operator-controlled trusted-source bypass) |
+| `enable_api_key` | bool | `false` | Enable the API-key (offline-token) flow |
+| `enable_bearer_token` | bool | `true` | Enable bearer-JWT authentication |
+| `enable_llms_txt` | bool | `true` | Enable the `/oauth/llms.txt` endpoint (this document) |
+| `clusters` | map<string,ClusterConfig> | empty | Per-cluster authorization rules |
+| `exclude_paths` | string[] | `["/health"]` | Paths exempt from auth |
+| `super_users` | string[] | empty | Lowercased usernames or emails granted access to all clusters |
+| `remove_headers` | string[] | identity headers above | Headers stripped from inbound requests (defense-in-depth) |
+
+### 10.2 `ClusterConfig` (per-cluster)
+
+| Key | Type | Default | Purpose |
+|---|---|---|---|
+| `exclude` | bool | `false` | Mark this cluster as fully exempt from auth |
+| `sso_injection` | bool | `false` | Inject `<script src="/oauth/assets/sso.js">` into HTML responses |
+| `sso_app_url` | string | (empty) | Branding URL used by the welcome page for this cluster |
+| `sso_app_name` | string | (empty) | Branding name used by the welcome page for this cluster |
+| `token_include` | bool | `false` | Forward the access token to the upstream as `X-Auth-Token` |
+| `provider_name` | string | (`default_provider`) | Provider this cluster authenticates against |
+| `allowed_users` | string[] | empty | Lowercased usernames or emails allowed on this cluster (empty = any authenticated user) |
+
+### 10.3 `ProviderConfig` (per-provider)
+
+| Key | Type | Default | Purpose |
+|---|---|---|---|
+| `issuer_url` | string | (required) | OIDC issuer URL |
+| `client_id` | string | (required) | OAuth client ID |
+| `client_secret` | string | (required) | OAuth client secret |
+| `redirect_url` | string | (required) | OAuth redirect URL |
+| `scopes` | string[] | `["openid","profile","email"]` | OAuth scopes |
