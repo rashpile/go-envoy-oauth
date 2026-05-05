@@ -514,3 +514,52 @@ func TestParseLegacyCookieName(t *testing.T) {
 		t.Logf("GetSessionCookie old name error (acceptable): %v", err2)
 	}
 }
+
+// TestParseEnableLLMsTxtAbsent verifies that when "enable_llms_txt" is absent
+// from the config, the resolved value defaults to true.
+func TestParseEnableLLMsTxtAbsent(t *testing.T) {
+	cfg := baseConfig()
+	// note: no "enable_llms_txt" key
+
+	p := &Parser{}
+	conf, err := p.parseRawConfig(buildAny(t, cfg))
+	if err != nil {
+		t.Fatalf("parseRawConfig() error: %v", err)
+	}
+
+	if !conf.EnableLLMsTxt {
+		t.Errorf("EnableLLMsTxt: got %v, want true (default when key absent)", conf.EnableLLMsTxt)
+	}
+}
+
+// TestParseEnableLLMsTxtFalse verifies that an explicit false value disables the flag.
+func TestParseEnableLLMsTxtFalse(t *testing.T) {
+	cfg := baseConfig()
+	cfg["enable_llms_txt"] = false
+
+	p := &Parser{}
+	conf, err := p.parseRawConfig(buildAny(t, cfg))
+	if err != nil {
+		t.Fatalf("parseRawConfig() error: %v", err)
+	}
+
+	if conf.EnableLLMsTxt {
+		t.Errorf("EnableLLMsTxt: got %v, want false (explicit false in config)", conf.EnableLLMsTxt)
+	}
+}
+
+// TestParseEnableLLMsTxtTrue verifies that an explicit true value keeps the flag on.
+func TestParseEnableLLMsTxtTrue(t *testing.T) {
+	cfg := baseConfig()
+	cfg["enable_llms_txt"] = true
+
+	p := &Parser{}
+	conf, err := p.parseRawConfig(buildAny(t, cfg))
+	if err != nil {
+		t.Fatalf("parseRawConfig() error: %v", err)
+	}
+
+	if !conf.EnableLLMsTxt {
+		t.Errorf("EnableLLMsTxt: got %v, want true (explicit true in config)", conf.EnableLLMsTxt)
+	}
+}
