@@ -106,8 +106,6 @@ func TestMakeRoutesWithDomains(t *testing.T) {
 }
 
 func TestMakeRoutesSkipsDisabledClients(t *testing.T) {
-	disabled := false
-	enabled := true
 	config := &GatewayConfig{
 		Clients: []ClientConfig{
 			{
@@ -124,7 +122,7 @@ func TestMakeRoutesSkipsDisabledClients(t *testing.T) {
 				Address: "disabled-backend",
 				Port:    8080,
 				Prefix:  "/",
-				Enabled: &disabled,
+				Enabled: boolPtr(false),
 			},
 			{
 				ID:      "explicitly_enabled_service",
@@ -132,7 +130,7 @@ func TestMakeRoutesSkipsDisabledClients(t *testing.T) {
 				Address: "explicit-backend",
 				Port:    8080,
 				Prefix:  "/",
-				Enabled: &enabled,
+				Enabled: boolPtr(true),
 			},
 		},
 	}
@@ -256,8 +254,6 @@ func TestMakeRoutesWithMultipleWildcards(t *testing.T) {
 }
 
 func TestMakeClustersSkipsDisabledClients(t *testing.T) {
-	disabled := false
-	enabled := true
 	config := &GatewayConfig{
 		Clients: []ClientConfig{
 			{
@@ -274,7 +270,7 @@ func TestMakeClustersSkipsDisabledClients(t *testing.T) {
 				Address: "disabled-backend",
 				Port:    8080,
 				Prefix:  "/",
-				Enabled: &disabled,
+				Enabled: boolPtr(false),
 			},
 			{
 				ID:      "explicitly_enabled_service",
@@ -282,7 +278,7 @@ func TestMakeClustersSkipsDisabledClients(t *testing.T) {
 				Address: "explicit-backend",
 				Port:    8080,
 				Prefix:  "/",
-				Enabled: &enabled,
+				Enabled: boolPtr(true),
 			},
 		},
 	}
@@ -378,8 +374,6 @@ func extractClustersStruct(t *testing.T, lst *listener.Listener) map[string]stru
 // clients do not appear in the per-cluster filter config map sent to the Go
 // plugin.
 func TestMakeListenerSkipsDisabledClientsFromPluginConfig(t *testing.T) {
-	disabled := false
-	enabled := true
 	cfg := &GatewayConfig{
 		Plugin: PluginConfig{LibraryPath: "/app/filter.so"},
 		Providers: map[string]ProviderConfig{
@@ -404,14 +398,14 @@ func TestMakeListenerSkipsDisabledClientsFromPluginConfig(t *testing.T) {
 				Address: "disabled-backend",
 				Port:    8080,
 				Prefix:  "/",
-				Enabled: &disabled,
+				Enabled: boolPtr(false),
 			},
 			{
 				ID:      "explicitly_enabled_service",
 				Address: "explicit-backend",
 				Port:    8080,
 				Prefix:  "/",
-				Enabled: &enabled,
+				Enabled: boolPtr(true),
 			},
 		},
 	}
@@ -446,7 +440,6 @@ func TestMakeListenerSkipsDisabledClientsFromPluginConfig(t *testing.T) {
 // TestMakeListenerSkipsDisabledClientsFromTLSDomains asserts that a disabled
 // client with tls: true does not contribute to SDS certificate provisioning.
 func TestMakeListenerSkipsDisabledClientsFromTLSDomains(t *testing.T) {
-	disabled := false
 	cfg := &GatewayConfig{
 		Plugin: PluginConfig{LibraryPath: "/app/filter.so"},
 		Providers: map[string]ProviderConfig{
@@ -475,7 +468,7 @@ func TestMakeListenerSkipsDisabledClientsFromTLSDomains(t *testing.T) {
 				Prefix:  "/",
 				TLS:     true,
 				Domain:  "disabled.example.com",
-				Enabled: &disabled,
+				Enabled: boolPtr(false),
 			},
 		},
 	}

@@ -10,9 +10,6 @@ import (
 // certificate acquisition. Without this skip, a disabled client with
 // `tls: true` would still trigger Let's Encrypt challenges on YAML reload.
 func TestCollectDomainsFromSkipsDisabledClients(t *testing.T) {
-	disabled := false
-	enabled := true
-
 	cfg := &GatewayConfig{
 		Clients: []ClientConfig{
 			{
@@ -25,13 +22,13 @@ func TestCollectDomainsFromSkipsDisabledClients(t *testing.T) {
 				ID:      "enabled_explicit",
 				TLS:     true,
 				Domain:  "explicit-enabled.example.com",
-				Enabled: &enabled,
+				Enabled: boolPtr(true),
 			},
 			{
 				ID:      "disabled_tls",
 				TLS:     true,
 				Domain:  "disabled.example.com",
-				Enabled: &disabled,
+				Enabled: boolPtr(false),
 			},
 			{
 				ID:     "enabled_no_tls",
@@ -67,14 +64,13 @@ func TestCollectDomainsFromSkipsDisabledClients(t *testing.T) {
 	}
 }
 
-// TestCollectDomainsSkipsDisabledClients is a one-line dispatch smoke check —
-// the XDSServer method just wraps collectDomainsFrom over s.config, which is
-// already exhaustively covered by TestCollectDomainsFromSkipsDisabledClients.
+// TestCollectDomainsSkipsDisabledClients provides method-level coverage of the
+// same skip behavior. The XDSServer method wraps collectDomainsFrom over
+// s.config, which is exhaustively covered by TestCollectDomainsFromSkipsDisabledClients.
 func TestCollectDomainsSkipsDisabledClients(t *testing.T) {
-	disabled := false
 	s := &XDSServer{config: &GatewayConfig{Clients: []ClientConfig{
 		{ID: "enabled_tls", TLS: true, Domain: "enabled.example.com"},
-		{ID: "disabled_tls", TLS: true, Domain: "disabled.example.com", Enabled: &disabled},
+		{ID: "disabled_tls", TLS: true, Domain: "disabled.example.com", Enabled: boolPtr(false)},
 	}}}
 	if got := s.collectDomains(); len(got) != 1 || got[0] != "enabled.example.com" {
 		t.Errorf("collectDomains() = %v, want [enabled.example.com]", got)

@@ -9,8 +9,8 @@ import (
 
 	xdstype "github.com/cncf/xds/go/xds/type/v3"
 	golang "github.com/envoyproxy/go-control-plane/contrib/envoy/extensions/filters/http/golang/v3alpha"
-	hcm "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
 	listener "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3"
+	hcm "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
 	"gopkg.in/yaml.v3"
 )
 
@@ -448,12 +448,12 @@ func TestOverrideFromEnv(t *testing.T) {
 		{
 			name: "override multiple values",
 			envVars: map[string]string{
-				"PLUGIN_LIBRARYPATH":  "/env/path.so",
-				"OAUTH_ISSUERURL":     "https://env.issuer.com",
-				"OAUTH_CLIENTID":      "env_client",
-				"OAUTH_CLIENTSECRET":  "env_secret",
-				"OAUTH_REDIRECTURL":   "/env/callback",
-				"OAUTH_SCOPES":        "openid,profile",
+				"PLUGIN_LIBRARYPATH": "/env/path.so",
+				"OAUTH_ISSUERURL":    "https://env.issuer.com",
+				"OAUTH_CLIENTID":     "env_client",
+				"OAUTH_CLIENTSECRET": "env_secret",
+				"OAUTH_REDIRECTURL":  "/env/callback",
+				"OAUTH_SCOPES":       "openid,profile",
 			},
 			initial: &GatewayConfig{
 				Plugin: PluginConfig{
@@ -582,12 +582,12 @@ clients:
 			name:       "env overrides are applied",
 			configFile: configPath,
 			envVars: map[string]string{
-				"PLUGIN_LIBRARYPATH":  "/env/override.so",
-				"OAUTH_ISSUERURL":     "https://env.issuer.com",
-				"OAUTH_CLIENTID":      "env_client",
-				"OAUTH_CLIENTSECRET":  "env_secret",
-				"OAUTH_REDIRECTURL":   "/env/callback",
-				"OAUTH_SCOPES":        "openid,profile,email",
+				"PLUGIN_LIBRARYPATH": "/env/override.so",
+				"OAUTH_ISSUERURL":    "https://env.issuer.com",
+				"OAUTH_CLIENTID":     "env_client",
+				"OAUTH_CLIENTSECRET": "env_secret",
+				"OAUTH_REDIRECTURL":  "/env/callback",
+				"OAUTH_SCOPES":       "openid,profile,email",
 			},
 			check: func(t *testing.T, config *GatewayConfig) {
 				if config.Plugin.LibraryPath != "/env/override.so" {

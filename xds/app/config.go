@@ -32,7 +32,7 @@ type GatewayConfig struct {
 	Clients         []ClientConfig            `yaml:"clients"`
 	Template        string                    `yaml:"template,omitempty"` // Path to template config file
 	Listener        ListenerConfig            `yaml:"listener,omitempty"`
-	SSL             SSLConfig                 `yaml:"ssl,omitempty"`        // SSL/TLS configuration for listener
+	SSL             SSLConfig                 `yaml:"ssl,omitempty"`         // SSL/TLS configuration for listener
 	SuperUsers      []string                  `yaml:"super_users,omitempty"` // Global super users (bypass all client restrictions)
 }
 
@@ -73,8 +73,9 @@ type SSLConfig struct {
 }
 
 type ClientConfig struct {
-	ID                    string   `yaml:"id"`
-	Description           string   `yaml:"description,omitempty"` // Free-form operator note. Not propagated to Envoy or filter.
+	ID string `yaml:"id"`
+	// Description is operator-only metadata (not propagated to Envoy or filter).
+	Description           string   `yaml:"description,omitempty"`
 	Domain                string   `yaml:"domain,omitempty"`
 	HostRewrite           string   `yaml:"host_rewrite,omitempty"`
 	Address               string   `yaml:"address"`
@@ -174,10 +175,8 @@ func validateProviders(config *GatewayConfig) error {
 	// Validate per-client provider references (skip excluded clients — they don't participate in OAuth;
 	// also skip disabled clients — they are filtered out at xDS generation time and never reach the filter).
 	for _, client := range config.Clients {
-		if client.Exclude {
-			continue
-		}
-		if !client.IsEnabled() {
+		// Excluded clients bypass auth; disabled clients never reach the filter.
+		if client.Exclude || !client.IsEnabled() {
 			continue
 		}
 		if client.Provider != "" {
@@ -353,7 +352,7 @@ func LoadConfig(path string) (*GatewayConfig, error) {
 		config.OAuth.SessionSameSite = "Lax"
 	}
 
-	// Defaults run for ALL clients (including disabled) so flipping `enabled: true` needs no further edits.
+	// Defaults run for all clients (including disabled) so flipping `enabled: true` needs no further edits.
 	for i := range config.Clients {
 		if config.Clients[i].Port == 0 {
 			config.Clients[i].Port = 8080
