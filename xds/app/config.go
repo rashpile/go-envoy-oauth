@@ -32,7 +32,7 @@ type GatewayConfig struct {
 	Clients         []ClientConfig            `yaml:"clients"`
 	Template        string                    `yaml:"template,omitempty"` // Path to template config file
 	Listener        ListenerConfig            `yaml:"listener,omitempty"`
-	SSL             SSLConfig                 `yaml:"ssl,omitempty"`        // SSL/TLS configuration for listener
+	SSL             SSLConfig                 `yaml:"ssl,omitempty"`         // SSL/TLS configuration for listener
 	SuperUsers      []string                  `yaml:"super_users,omitempty"` // Global super users (bypass all client restrictions)
 }
 
@@ -73,7 +73,9 @@ type SSLConfig struct {
 }
 
 type ClientConfig struct {
-	ID                    string   `yaml:"id"`
+	ID string `yaml:"id"`
+	// Description is operator-only metadata (not propagated to Envoy or filter).
+	Description           string   `yaml:"description,omitempty"`
 	Domain                string   `yaml:"domain,omitempty"`
 	HostRewrite           string   `yaml:"host_rewrite,omitempty"`
 	Address               string   `yaml:"address"`
@@ -81,6 +83,7 @@ type ClientConfig struct {
 	SSL                   bool     `yaml:"ssl"`           // Upstream uses SSL/TLS
 	TLS                   bool     `yaml:"tls,omitempty"` // Request certificate for this domain
 	Exclude               bool     `yaml:"exclude"`
+	Enabled               *bool    `yaml:"enabled,omitempty"` // Default: true. Set to false to skip this client at xDS generation.
 	Prefix                string   `yaml:"prefix"`
 	PrefixRewrite         string   `yaml:"prefix_rewrite,omitempty"`
 	ExcludePaths          []string `yaml:"exclude_paths,omitempty"`
@@ -93,6 +96,15 @@ type ClientConfig struct {
 	RouteTimeout          string   `yaml:"route_timeout,omitempty"`
 	AllowedUsers          []string `yaml:"allowed_users,omitempty"` // Per-client allowed users
 	Provider              string   `yaml:"provider,omitempty"`      // Named provider reference; empty means use default_provider
+}
+
+// IsEnabled reports whether this client should be served by Envoy.
+// A nil Enabled pointer (field absent in YAML) is treated as enabled.
+// IsEnabled is independent of Exclude: Exclude bypasses authentication for a
+// still-routed cluster, while !IsEnabled() skips the client entirely at xDS
+// generation (no cluster, no route, no per-cluster filter config).
+func (c ClientConfig) IsEnabled() bool {
+	return c.Enabled == nil || *c.Enabled
 }
 
 // normalizeProviders ensures the providers map is populated.
@@ -160,9 +172,11 @@ func validateProviders(config *GatewayConfig) error {
 		}
 	}
 
-	// Validate per-client provider references (skip excluded clients — they don't participate in OAuth)
+	// Validate per-client provider references (skip excluded clients — they don't participate in OAuth;
+	// also skip disabled clients — they are filtered out at xDS generation time and never reach the filter).
 	for _, client := range config.Clients {
-		if client.Exclude {
+		// Excluded clients bypass auth; disabled clients never reach the filter.
+		if client.Exclude || !client.IsEnabled() {
 			continue
 		}
 		if client.Provider != "" {
@@ -338,6 +352,7 @@ func LoadConfig(path string) (*GatewayConfig, error) {
 		config.OAuth.SessionSameSite = "Lax"
 	}
 
+	// Defaults run for all clients (including disabled) so flipping `enabled: true` needs no further edits.
 	for i := range config.Clients {
 		if config.Clients[i].Port == 0 {
 			config.Clients[i].Port = 8080
@@ -348,8 +363,12 @@ func LoadConfig(path string) (*GatewayConfig, error) {
 	}
 
 	// Provider-level validation is handled by validateProviders above.
-	// Validate per-client required fields.
+	// Validate per-client required fields. Disabled clients are skipped so operators
+	// may keep partially-populated historical entries in YAML for rollback.
 	for _, client := range config.Clients {
+		if !client.IsEnabled() {
+			continue
+		}
 		if client.ID == "" {
 			return nil, fmt.Errorf("client.id is required")
 		}

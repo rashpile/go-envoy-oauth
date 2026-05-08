@@ -6,7 +6,354 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	xdstype "github.com/cncf/xds/go/xds/type/v3"
+	golang "github.com/envoyproxy/go-control-plane/contrib/envoy/extensions/filters/http/golang/v3alpha"
+	listener "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3"
+	hcm "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
+	"gopkg.in/yaml.v3"
 )
+
+func boolPtr(b bool) *bool { return &b }
+
+func TestClientConfigIsEnabled(t *testing.T) {
+	tests := []struct {
+		name    string
+		enabled *bool
+		want    bool
+	}{
+		{name: "nil pointer treated as enabled", enabled: nil, want: true},
+		{name: "explicit true is enabled", enabled: boolPtr(true), want: true},
+		{name: "explicit false is disabled", enabled: boolPtr(false), want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := ClientConfig{Enabled: tt.enabled}
+			if got := c.IsEnabled(); got != tt.want {
+				t.Errorf("IsEnabled() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestClientConfigEnabledYAMLUnmarshal(t *testing.T) {
+	tests := []struct {
+		name        string
+		yamlContent string
+		wantNil     bool
+		wantValue   bool
+	}{
+		{
+			name: "field absent gives nil pointer",
+			yamlContent: `id: app1
+address: app1.internal
+`,
+			wantNil: true,
+		},
+		{
+			name: "enabled: true gives non-nil true",
+			yamlContent: `id: app1
+address: app1.internal
+enabled: true
+`,
+			wantNil:   false,
+			wantValue: true,
+		},
+		{
+			name: "enabled: false gives non-nil false",
+			yamlContent: `id: app1
+address: app1.internal
+enabled: false
+`,
+			wantNil:   false,
+			wantValue: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var c ClientConfig
+			if err := yaml.Unmarshal([]byte(tt.yamlContent), &c); err != nil {
+				t.Fatalf("yaml.Unmarshal() error = %v", err)
+			}
+			if tt.wantNil {
+				if c.Enabled != nil {
+					t.Errorf("Enabled = %v (non-nil), want nil", *c.Enabled)
+				}
+			} else {
+				if c.Enabled == nil {
+					t.Fatalf("Enabled = nil, want non-nil pointer to %v", tt.wantValue)
+				}
+				if *c.Enabled != tt.wantValue {
+					t.Errorf("*Enabled = %v, want %v", *c.Enabled, tt.wantValue)
+				}
+			}
+		})
+	}
+}
+
+// TestClientConfigEnabledYAMLMarshal verifies that explicit *bool pointer values
+// (both true and false) survive yaml.Marshal — i.e. `omitempty` strips only nil
+// pointers, not pointer-to-false. This guarantees round-trip preservation when
+// operators explicitly declare `enabled: false` in YAML.
+func TestClientConfigEnabledYAMLMarshal(t *testing.T) {
+	t.Run("nil Enabled is omitted by omitempty", func(t *testing.T) {
+		c := ClientConfig{ID: "app1", Address: "app1.internal"}
+		out, err := yaml.Marshal(&c)
+		if err != nil {
+			t.Fatalf("yaml.Marshal() error = %v", err)
+		}
+		if strings.Contains(string(out), "enabled:") {
+			t.Errorf("nil Enabled must be omitted by omitempty; got:\n%s", string(out))
+		}
+	})
+
+	t.Run("explicit Enabled=true survives marshal", func(t *testing.T) {
+		c := ClientConfig{ID: "app1", Address: "app1.internal", Enabled: boolPtr(true)}
+		out, err := yaml.Marshal(&c)
+		if err != nil {
+			t.Fatalf("yaml.Marshal() error = %v", err)
+		}
+		if !strings.Contains(string(out), "enabled: true") {
+			t.Errorf("explicit Enabled=true must survive marshal; got:\n%s", string(out))
+		}
+	})
+
+	t.Run("explicit Enabled=false survives marshal", func(t *testing.T) {
+		c := ClientConfig{ID: "app1", Address: "app1.internal", Enabled: boolPtr(false)}
+		out, err := yaml.Marshal(&c)
+		if err != nil {
+			t.Fatalf("yaml.Marshal() error = %v", err)
+		}
+		if !strings.Contains(string(out), "enabled: false") {
+			t.Errorf("explicit Enabled=false must survive marshal (omitempty must not strip pointer-to-false); got:\n%s", string(out))
+		}
+	})
+}
+
+func TestClientConfigDescription(t *testing.T) {
+	t.Run("YAML round-trip preserves description value", func(t *testing.T) {
+		yamlContent := `id: app1
+address: app1.internal
+description: "legacy auth, kept for rollback"
+`
+		var c ClientConfig
+		if err := yaml.Unmarshal([]byte(yamlContent), &c); err != nil {
+			t.Fatalf("yaml.Unmarshal() error = %v", err)
+		}
+		if c.Description != "legacy auth, kept for rollback" {
+			t.Errorf("Description = %q, want %q", c.Description, "legacy auth, kept for rollback")
+		}
+
+		// Re-marshal and assert description is preserved
+		out, err := yaml.Marshal(&c)
+		if err != nil {
+			t.Fatalf("yaml.Marshal() error = %v", err)
+		}
+		if !strings.Contains(string(out), "description: legacy auth, kept for rollback") {
+			t.Errorf("marshalled YAML missing description line; got:\n%s", string(out))
+		}
+	})
+
+	t.Run("absent description gives empty string", func(t *testing.T) {
+		yamlContent := `id: app1
+address: app1.internal
+`
+		var c ClientConfig
+		if err := yaml.Unmarshal([]byte(yamlContent), &c); err != nil {
+			t.Fatalf("yaml.Unmarshal() error = %v", err)
+		}
+		if c.Description != "" {
+			t.Errorf("Description = %q, want empty string", c.Description)
+		}
+
+		// omitempty should keep the marshalled YAML free of a description line
+		out, err := yaml.Marshal(&c)
+		if err != nil {
+			t.Fatalf("yaml.Marshal() error = %v", err)
+		}
+		if strings.Contains(string(out), "description:") {
+			t.Errorf("marshalled YAML should omit description when empty; got:\n%s", string(out))
+		}
+	})
+
+	t.Run("LoadConfig accepts description without error", func(t *testing.T) {
+		os.Clearenv()
+		tmpDir := t.TempDir()
+		configPath := filepath.Join(tmpDir, "with-description.yaml")
+		content := `plugin:
+  library_path: /app/filter.so
+oauth:
+  issuer_url: https://issuer.example.com
+  client_id: cid
+  client_secret: secret
+clients:
+  - id: app1
+    description: "v1 of the auth API; kept for rollback during the v2 migration"
+    address: app1.internal
+    port: 8080
+    prefix: /
+`
+		if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
+			t.Fatalf("write config: %v", err)
+		}
+		cfg, err := LoadConfig(configPath)
+		if err != nil {
+			t.Fatalf("LoadConfig() error = %v", err)
+		}
+		if len(cfg.Clients) != 1 {
+			t.Fatalf("expected 1 client, got %d", len(cfg.Clients))
+		}
+		if cfg.Clients[0].Description != "v1 of the auth API; kept for rollback during the v2 migration" {
+			t.Errorf("Description = %q, unexpected", cfg.Clients[0].Description)
+		}
+	})
+
+	// Canonical operator pattern from the README "Disabling Clients" example:
+	// a disabled client annotated with a description for rollback context.
+	t.Run("LoadConfig accepts description and enabled:false on same client", func(t *testing.T) {
+		os.Clearenv()
+		tmpDir := t.TempDir()
+		configPath := filepath.Join(tmpDir, "description-and-disabled.yaml")
+		content := `plugin:
+  library_path: /app/filter.so
+oauth:
+  issuer_url: https://issuer.example.com
+  client_id: cid
+  client_secret: secret
+clients:
+  - id: legacy_api
+    description: "v1 of the auth API; kept for rollback during the v2 migration"
+    address: legacy-backend
+    port: 8080
+    prefix: /
+    enabled: false
+  - id: app1
+    address: app1.internal
+`
+		if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
+			t.Fatalf("write config: %v", err)
+		}
+		cfg, err := LoadConfig(configPath)
+		if err != nil {
+			t.Fatalf("LoadConfig() error = %v", err)
+		}
+		var legacy *ClientConfig
+		for i := range cfg.Clients {
+			if cfg.Clients[i].ID == "legacy_api" {
+				legacy = &cfg.Clients[i]
+				break
+			}
+		}
+		if legacy == nil {
+			t.Fatal("legacy_api client missing from loaded config")
+		}
+		if legacy.Description != "v1 of the auth API; kept for rollback during the v2 migration" {
+			t.Errorf("Description = %q, unexpected", legacy.Description)
+		}
+		if legacy.IsEnabled() {
+			t.Errorf("legacy_api IsEnabled() = true, want false")
+		}
+	})
+}
+
+// TestClientConfigDescriptionDoesNotLeakIntoFilterConfig builds a listener
+// from a config containing a `description` value and walks the produced
+// plugin config struct to assert the field is not propagated into the per-
+// client filter config map.
+func TestClientConfigDescriptionDoesNotLeakIntoFilterConfig(t *testing.T) {
+	cfg := &GatewayConfig{
+		Plugin: PluginConfig{LibraryPath: "/app/filter.so"},
+		Providers: map[string]ProviderConfig{
+			"default": {
+				IssuerURL:    "https://issuer.example.com",
+				ClientID:     "cid",
+				ClientSecret: "secret",
+			},
+		},
+		DefaultProvider: "default",
+		Listener:        ListenerConfig{Address: "0.0.0.0", Port: 8080},
+		Clients: []ClientConfig{
+			{
+				ID:          "app1",
+				Description: "operator-only metadata; should not appear in filter config",
+				Address:     "app1.internal",
+				Port:        8080,
+				Prefix:      "/",
+			},
+		},
+	}
+
+	listeners, err := MakeListener(cfg)
+	if err != nil {
+		t.Fatalf("MakeListener() error = %v", err)
+	}
+	if len(listeners) == 0 {
+		t.Fatal("expected at least one listener")
+	}
+
+	lst, ok := listeners[0].(*listener.Listener)
+	if !ok {
+		t.Fatalf("listeners[0] is %T, want *listener.Listener", listeners[0])
+	}
+
+	// Walk the listener -> filter chain -> HCM -> golang filter -> typed struct.
+	if len(lst.FilterChains) == 0 || len(lst.FilterChains[0].Filters) == 0 {
+		t.Fatal("listener has no HTTP connection manager filter")
+	}
+	hcmAny := lst.FilterChains[0].Filters[0].GetTypedConfig()
+	if hcmAny == nil {
+		t.Fatal("HCM filter has no typed config")
+	}
+	var manager hcm.HttpConnectionManager
+	if err := hcmAny.UnmarshalTo(&manager); err != nil {
+		t.Fatalf("unmarshal HCM: %v", err)
+	}
+
+	// Locate the golang filter.
+	var golangFilterCfg golang.Config
+	found := false
+	for _, hf := range manager.HttpFilters {
+		if hf.Name != "envoy.filters.http.golang" {
+			continue
+		}
+		if err := hf.GetTypedConfig().UnmarshalTo(&golangFilterCfg); err != nil {
+			t.Fatalf("unmarshal golang filter: %v", err)
+		}
+		found = true
+		break
+	}
+	if !found {
+		t.Fatal("envoy.filters.http.golang filter not found in HCM filters")
+	}
+
+	// PluginConfig is the inner Any holding our TypedStruct.
+	var typed xdstype.TypedStruct
+	if err := golangFilterCfg.PluginConfig.UnmarshalTo(&typed); err != nil {
+		t.Fatalf("unmarshal TypedStruct: %v", err)
+	}
+
+	clustersField, ok := typed.Value.Fields["clusters"]
+	if !ok {
+		t.Fatal("plugin config missing 'clusters' field")
+	}
+	clustersStruct := clustersField.GetStructValue()
+	if clustersStruct == nil {
+		t.Fatal("'clusters' field is not a struct")
+	}
+	app1Field, ok := clustersStruct.Fields["app1"]
+	if !ok {
+		t.Fatalf("clusters map missing entry for client 'app1'; have keys: %v", clustersStruct.Fields)
+	}
+	app1Struct := app1Field.GetStructValue()
+	if app1Struct == nil {
+		t.Fatal("clusters['app1'] is not a struct")
+	}
+	if _, leaked := app1Struct.Fields["description"]; leaked {
+		t.Errorf("description leaked into filter config; clusters['app1'] = %v", app1Struct.Fields)
+	}
+}
 
 func TestOverrideFromEnv(t *testing.T) {
 	tests := []struct {
@@ -101,12 +448,12 @@ func TestOverrideFromEnv(t *testing.T) {
 		{
 			name: "override multiple values",
 			envVars: map[string]string{
-				"PLUGIN_LIBRARYPATH":  "/env/path.so",
-				"OAUTH_ISSUERURL":     "https://env.issuer.com",
-				"OAUTH_CLIENTID":      "env_client",
-				"OAUTH_CLIENTSECRET":  "env_secret",
-				"OAUTH_REDIRECTURL":   "/env/callback",
-				"OAUTH_SCOPES":        "openid,profile",
+				"PLUGIN_LIBRARYPATH": "/env/path.so",
+				"OAUTH_ISSUERURL":    "https://env.issuer.com",
+				"OAUTH_CLIENTID":     "env_client",
+				"OAUTH_CLIENTSECRET": "env_secret",
+				"OAUTH_REDIRECTURL":  "/env/callback",
+				"OAUTH_SCOPES":       "openid,profile",
 			},
 			initial: &GatewayConfig{
 				Plugin: PluginConfig{
@@ -235,12 +582,12 @@ clients:
 			name:       "env overrides are applied",
 			configFile: configPath,
 			envVars: map[string]string{
-				"PLUGIN_LIBRARYPATH":  "/env/override.so",
-				"OAUTH_ISSUERURL":     "https://env.issuer.com",
-				"OAUTH_CLIENTID":      "env_client",
-				"OAUTH_CLIENTSECRET":  "env_secret",
-				"OAUTH_REDIRECTURL":   "/env/callback",
-				"OAUTH_SCOPES":        "openid,profile,email",
+				"PLUGIN_LIBRARYPATH": "/env/override.so",
+				"OAUTH_ISSUERURL":    "https://env.issuer.com",
+				"OAUTH_CLIENTID":     "env_client",
+				"OAUTH_CLIENTSECRET": "env_secret",
+				"OAUTH_REDIRECTURL":  "/env/callback",
+				"OAUTH_SCOPES":       "openid,profile,email",
 			},
 			check: func(t *testing.T, config *GatewayConfig) {
 				if config.Plugin.LibraryPath != "/env/override.so" {
@@ -1069,6 +1416,213 @@ func TestValidateProviders(t *testing.T) {
 		}
 		if err := validateProviders(config); err != nil {
 			t.Fatalf("expected no error, got: %v", err)
+		}
+	})
+
+	t.Run("disabled client referencing undefined provider is skipped", func(t *testing.T) {
+		config := &GatewayConfig{
+			Providers:       map[string]ProviderConfig{"keycloak": validProvider},
+			DefaultProvider: "keycloak",
+			Clients: []ClientConfig{
+				{ID: "legacy", Address: "legacy.internal", Provider: "nonexistent", Enabled: boolPtr(false)},
+			},
+		}
+		if err := validateProviders(config); err != nil {
+			t.Fatalf("expected no error for disabled client with undefined provider, got: %v", err)
+		}
+	})
+
+	t.Run("disabled client without default_provider passes", func(t *testing.T) {
+		config := &GatewayConfig{
+			Providers: map[string]ProviderConfig{"keycloak": validProvider},
+			Clients: []ClientConfig{
+				{ID: "legacy", Address: "legacy.internal", Enabled: boolPtr(false)},
+			},
+		}
+		if err := validateProviders(config); err != nil {
+			t.Fatalf("expected no error for disabled client without default_provider, got: %v", err)
+		}
+	})
+}
+
+// TestLoadConfigSkipsDisabledClientValidation exercises the per-client required-field
+// validation in LoadConfig: disabled clients may omit `address` (and even `id`), but
+// enabled clients must still pass validation. The mixed-case test ensures that the
+// disabled-client skip does not short-circuit iteration before validating the enabled
+// client.
+func TestLoadConfigSkipsDisabledClientValidation(t *testing.T) {
+	tmpDir := t.TempDir()
+	writeConfig := func(name, content string) string {
+		path := filepath.Join(tmpDir, name)
+		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+			t.Fatalf("failed to write config %s: %v", name, err)
+		}
+		return path
+	}
+
+	t.Run("disabled client missing address loads without error", func(t *testing.T) {
+		os.Clearenv()
+		path := writeConfig("disabled-no-address.yaml", `
+plugin:
+  library_path: /app/filter.so
+oauth:
+  issuer_url: https://issuer.example.com
+  client_id: cid
+  client_secret: secret
+clients:
+  - id: legacy
+    enabled: false
+  - id: app1
+    address: app1.internal
+`)
+		cfg, err := LoadConfig(path)
+		if err != nil {
+			t.Fatalf("LoadConfig() error = %v", err)
+		}
+		if len(cfg.Clients) != 2 {
+			t.Fatalf("expected 2 clients, got %d", len(cfg.Clients))
+		}
+	})
+
+	t.Run("disabled client missing both id AND address loads without error", func(t *testing.T) {
+		os.Clearenv()
+		// Both `id` and `address` are absent on the disabled entry. The validation
+		// loop must skip the disabled client entirely so neither required-field
+		// check fires.
+		path := writeConfig("disabled-no-id-no-address.yaml", `
+plugin:
+  library_path: /app/filter.so
+oauth:
+  issuer_url: https://issuer.example.com
+  client_id: cid
+  client_secret: secret
+clients:
+  - enabled: false
+  - id: app1
+    address: app1.internal
+`)
+		cfg, err := LoadConfig(path)
+		if err != nil {
+			t.Fatalf("LoadConfig() error = %v", err)
+		}
+		if len(cfg.Clients) != 2 {
+			t.Fatalf("expected 2 clients, got %d", len(cfg.Clients))
+		}
+	})
+
+	t.Run("disabled client referencing undefined provider loads without error", func(t *testing.T) {
+		os.Clearenv()
+		path := writeConfig("disabled-bad-provider.yaml", `
+plugin:
+  library_path: /app/filter.so
+providers:
+  keycloak:
+    issuer_url: https://keycloak.example.com/realms/myrealm
+    client_id: my-client
+    client_secret: my-secret
+default_provider: keycloak
+clients:
+  - id: legacy
+    address: legacy.internal
+    provider: nonexistent
+    enabled: false
+  - id: app1
+    address: app1.internal
+`)
+		if _, err := LoadConfig(path); err != nil {
+			t.Fatalf("expected no error for disabled client with undefined provider, got: %v", err)
+		}
+	})
+
+	t.Run("enabled client missing address still errors", func(t *testing.T) {
+		os.Clearenv()
+		path := writeConfig("enabled-no-address.yaml", `
+plugin:
+  library_path: /app/filter.so
+oauth:
+  issuer_url: https://issuer.example.com
+  client_id: cid
+  client_secret: secret
+clients:
+  - id: app1
+`)
+		_, err := LoadConfig(path)
+		if err == nil {
+			t.Fatal("expected error for enabled client missing address, got nil")
+		}
+		if !strings.Contains(err.Error(), "app1") {
+			t.Errorf("error %q does not contain 'app1'", err.Error())
+		}
+		if !strings.Contains(err.Error(), "address is required") {
+			t.Errorf("error %q does not contain 'address is required'", err.Error())
+		}
+	})
+
+	t.Run("mixed disabled+enabled both missing address surfaces enabled client error", func(t *testing.T) {
+		os.Clearenv()
+		// The disabled client is listed first to prove the validation loop continues
+		// past it and still catches the enabled client's missing address.
+		path := writeConfig("mixed-missing-address.yaml", `
+plugin:
+  library_path: /app/filter.so
+oauth:
+  issuer_url: https://issuer.example.com
+  client_id: cid
+  client_secret: secret
+clients:
+  - id: legacy
+    enabled: false
+  - id: required-app
+`)
+		_, err := LoadConfig(path)
+		if err == nil {
+			t.Fatal("expected error for mixed config with enabled client missing address, got nil")
+		}
+		if !strings.Contains(err.Error(), "required-app") {
+			t.Errorf("error %q must mention the enabled client ID 'required-app'", err.Error())
+		}
+		if strings.Contains(err.Error(), "legacy") {
+			t.Errorf("error %q should not mention the disabled client 'legacy'", err.Error())
+		}
+	})
+
+	t.Run("disabled client preserves Port and Prefix defaults", func(t *testing.T) {
+		os.Clearenv()
+		// Defaults loop deliberately runs for disabled clients so flipping
+		// `enabled: true` produces a sane runtime config without further edits.
+		path := writeConfig("disabled-defaults.yaml", `
+plugin:
+  library_path: /app/filter.so
+oauth:
+  issuer_url: https://issuer.example.com
+  client_id: cid
+  client_secret: secret
+clients:
+  - id: legacy
+    address: legacy.internal
+    enabled: false
+  - id: app1
+    address: app1.internal
+`)
+		cfg, err := LoadConfig(path)
+		if err != nil {
+			t.Fatalf("LoadConfig() error = %v", err)
+		}
+		var legacy *ClientConfig
+		for i := range cfg.Clients {
+			if cfg.Clients[i].ID == "legacy" {
+				legacy = &cfg.Clients[i]
+				break
+			}
+		}
+		if legacy == nil {
+			t.Fatal("legacy client missing from loaded config")
+		}
+		if legacy.Port != 8080 {
+			t.Errorf("disabled client Port = %d, want 8080 (default)", legacy.Port)
+		}
+		if legacy.Prefix != "/" {
+			t.Errorf("disabled client Prefix = %q, want %q (default)", legacy.Prefix, "/")
 		}
 	})
 }

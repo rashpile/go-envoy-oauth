@@ -70,6 +70,10 @@ func (s *XDSServer) collectDomains() []string {
 
 	// Collect domains from clients where tls: true
 	for _, client := range s.config.Clients {
+		// Skip disabled clients so they do not trigger ACME challenges.
+		if !client.IsEnabled() {
+			continue
+		}
 		if client.TLS && client.Domain != "" {
 			domainMap[client.Domain] = true
 		}
@@ -207,6 +211,11 @@ func (s *XDSServer) getCertificatePath(domain string) (certPath, keyPath string,
 func collectDomainsFrom(cfg *GatewayConfig) []string {
 	m := map[string]struct{}{}
 	for _, c := range cfg.Clients {
+		// Skip disabled clients so a YAML reload that flips a client to
+		// enabled: false does not request a fresh certificate for it.
+		if !c.IsEnabled() {
+			continue
+		}
 		if c.TLS && c.Domain != "" {
 			m[c.Domain] = struct{}{}
 		}
