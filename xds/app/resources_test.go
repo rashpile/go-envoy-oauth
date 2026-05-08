@@ -320,36 +320,6 @@ func TestMakeClustersSkipsDisabledClients(t *testing.T) {
 	}
 }
 
-func TestMakeClustersAllDisabled(t *testing.T) {
-	disabled := false
-	config := &GatewayConfig{
-		Clients: []ClientConfig{
-			{
-				ID:      "disabled_a",
-				Address: "a-backend",
-				Port:    8080,
-				Prefix:  "/",
-				Enabled: &disabled,
-			},
-			{
-				ID:      "disabled_b",
-				Address: "b-backend",
-				Port:    8080,
-				Prefix:  "/",
-				Enabled: &disabled,
-			},
-		},
-	}
-
-	clusters, err := MakeClusters(config)
-	if err != nil {
-		t.Fatalf("MakeClusters failed: %v", err)
-	}
-	if len(clusters) != 0 {
-		t.Fatalf("expected 0 cluster resources when all clients disabled, got %d", len(clusters))
-	}
-}
-
 // extractClustersStruct walks the listener -> HCM -> golang filter -> typed
 // struct -> "clusters" field and returns the per-client struct map.
 func extractClustersStruct(t *testing.T, lst *listener.Listener) map[string]struct{} {

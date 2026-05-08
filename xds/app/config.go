@@ -353,9 +353,7 @@ func LoadConfig(path string) (*GatewayConfig, error) {
 		config.OAuth.SessionSameSite = "Lax"
 	}
 
-	// Per-client defaults intentionally run for ALL clients (including disabled ones),
-	// so flipping `enabled: true` on a previously-disabled entry yields a sane runtime
-	// configuration without further edits.
+	// Defaults run for ALL clients (including disabled) so flipping `enabled: true` needs no further edits.
 	for i := range config.Clients {
 		if config.Clients[i].Port == 0 {
 			config.Clients[i].Port = 8080

@@ -67,33 +67,16 @@ func TestCollectDomainsFromSkipsDisabledClients(t *testing.T) {
 	}
 }
 
-// TestCollectDomainsSkipsDisabledClients mirrors the test above for the
-// XDSServer method variant, which feeds startHTTPChallenge.
+// TestCollectDomainsSkipsDisabledClients is a one-line dispatch smoke check —
+// the XDSServer method just wraps collectDomainsFrom over s.config, which is
+// already exhaustively covered by TestCollectDomainsFromSkipsDisabledClients.
 func TestCollectDomainsSkipsDisabledClients(t *testing.T) {
 	disabled := false
-	s := &XDSServer{
-		config: &GatewayConfig{
-			Clients: []ClientConfig{
-				{
-					ID:     "enabled_tls",
-					TLS:    true,
-					Domain: "enabled.example.com",
-				},
-				{
-					ID:      "disabled_tls",
-					TLS:     true,
-					Domain:  "disabled.example.com",
-					Enabled: &disabled,
-				},
-			},
-		},
-	}
-
-	got := s.collectDomains()
-	if len(got) != 1 {
-		t.Fatalf("collectDomains returned %d domains, want 1: got=%v", len(got), got)
-	}
-	if got[0] != "enabled.example.com" {
-		t.Errorf("collectDomains returned %q, want %q", got[0], "enabled.example.com")
+	s := &XDSServer{config: &GatewayConfig{Clients: []ClientConfig{
+		{ID: "enabled_tls", TLS: true, Domain: "enabled.example.com"},
+		{ID: "disabled_tls", TLS: true, Domain: "disabled.example.com", Enabled: &disabled},
+	}}}
+	if got := s.collectDomains(); len(got) != 1 || got[0] != "enabled.example.com" {
+		t.Errorf("collectDomains() = %v, want [enabled.example.com]", got)
 	}
 }

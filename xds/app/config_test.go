@@ -37,41 +37,37 @@ func TestClientConfigIsEnabled(t *testing.T) {
 	}
 }
 
-func TestClientConfigEnabledYAMLRoundTrip(t *testing.T) {
+func TestClientConfigEnabledYAMLUnmarshal(t *testing.T) {
 	tests := []struct {
-		name          string
-		yamlContent   string
-		wantNil       bool
-		wantValue     bool
-		wantIsEnabled bool
+		name        string
+		yamlContent string
+		wantNil     bool
+		wantValue   bool
 	}{
 		{
-			name: "field absent gives nil pointer and IsEnabled true",
+			name: "field absent gives nil pointer",
 			yamlContent: `id: app1
 address: app1.internal
 `,
-			wantNil:       true,
-			wantIsEnabled: true,
+			wantNil: true,
 		},
 		{
-			name: "enabled: true gives non-nil true and IsEnabled true",
+			name: "enabled: true gives non-nil true",
 			yamlContent: `id: app1
 address: app1.internal
 enabled: true
 `,
-			wantNil:       false,
-			wantValue:     true,
-			wantIsEnabled: true,
+			wantNil:   false,
+			wantValue: true,
 		},
 		{
-			name: "enabled: false gives non-nil false and IsEnabled false",
+			name: "enabled: false gives non-nil false",
 			yamlContent: `id: app1
 address: app1.internal
 enabled: false
 `,
-			wantNil:       false,
-			wantValue:     false,
-			wantIsEnabled: false,
+			wantNil:   false,
+			wantValue: false,
 		},
 	}
 
@@ -93,11 +89,47 @@ enabled: false
 					t.Errorf("*Enabled = %v, want %v", *c.Enabled, tt.wantValue)
 				}
 			}
-			if got := c.IsEnabled(); got != tt.wantIsEnabled {
-				t.Errorf("IsEnabled() = %v, want %v", got, tt.wantIsEnabled)
-			}
 		})
 	}
+}
+
+// TestClientConfigEnabledYAMLMarshal verifies that explicit *bool pointer values
+// (both true and false) survive yaml.Marshal — i.e. `omitempty` strips only nil
+// pointers, not pointer-to-false. This guarantees round-trip preservation when
+// operators explicitly declare `enabled: false` in YAML.
+func TestClientConfigEnabledYAMLMarshal(t *testing.T) {
+	t.Run("nil Enabled is omitted by omitempty", func(t *testing.T) {
+		c := ClientConfig{ID: "app1", Address: "app1.internal"}
+		out, err := yaml.Marshal(&c)
+		if err != nil {
+			t.Fatalf("yaml.Marshal() error = %v", err)
+		}
+		if strings.Contains(string(out), "enabled:") {
+			t.Errorf("nil Enabled must be omitted by omitempty; got:\n%s", string(out))
+		}
+	})
+
+	t.Run("explicit Enabled=true survives marshal", func(t *testing.T) {
+		c := ClientConfig{ID: "app1", Address: "app1.internal", Enabled: boolPtr(true)}
+		out, err := yaml.Marshal(&c)
+		if err != nil {
+			t.Fatalf("yaml.Marshal() error = %v", err)
+		}
+		if !strings.Contains(string(out), "enabled: true") {
+			t.Errorf("explicit Enabled=true must survive marshal; got:\n%s", string(out))
+		}
+	})
+
+	t.Run("explicit Enabled=false survives marshal", func(t *testing.T) {
+		c := ClientConfig{ID: "app1", Address: "app1.internal", Enabled: boolPtr(false)}
+		out, err := yaml.Marshal(&c)
+		if err != nil {
+			t.Fatalf("yaml.Marshal() error = %v", err)
+		}
+		if !strings.Contains(string(out), "enabled: false") {
+			t.Errorf("explicit Enabled=false must survive marshal (omitempty must not strip pointer-to-false); got:\n%s", string(out))
+		}
+	})
 }
 
 func TestClientConfigDescription(t *testing.T) {
@@ -175,6 +207,53 @@ clients:
 		}
 		if cfg.Clients[0].Description != "v1 of the auth API; kept for rollback during the v2 migration" {
 			t.Errorf("Description = %q, unexpected", cfg.Clients[0].Description)
+		}
+	})
+
+	// Canonical operator pattern from the README "Disabling Clients" example:
+	// a disabled client annotated with a description for rollback context.
+	t.Run("LoadConfig accepts description and enabled:false on same client", func(t *testing.T) {
+		os.Clearenv()
+		tmpDir := t.TempDir()
+		configPath := filepath.Join(tmpDir, "description-and-disabled.yaml")
+		content := `plugin:
+  library_path: /app/filter.so
+oauth:
+  issuer_url: https://issuer.example.com
+  client_id: cid
+  client_secret: secret
+clients:
+  - id: legacy_api
+    description: "v1 of the auth API; kept for rollback during the v2 migration"
+    address: legacy-backend
+    port: 8080
+    prefix: /
+    enabled: false
+  - id: app1
+    address: app1.internal
+`
+		if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
+			t.Fatalf("write config: %v", err)
+		}
+		cfg, err := LoadConfig(configPath)
+		if err != nil {
+			t.Fatalf("LoadConfig() error = %v", err)
+		}
+		var legacy *ClientConfig
+		for i := range cfg.Clients {
+			if cfg.Clients[i].ID == "legacy_api" {
+				legacy = &cfg.Clients[i]
+				break
+			}
+		}
+		if legacy == nil {
+			t.Fatal("legacy_api client missing from loaded config")
+		}
+		if legacy.Description != "v1 of the auth API; kept for rollback during the v2 migration" {
+			t.Errorf("Description = %q, unexpected", legacy.Description)
+		}
+		if legacy.IsEnabled() {
+			t.Errorf("legacy_api IsEnabled() = true, want false")
 		}
 	})
 }
@@ -1393,6 +1472,32 @@ oauth:
 clients:
   - id: legacy
     enabled: false
+  - id: app1
+    address: app1.internal
+`)
+		cfg, err := LoadConfig(path)
+		if err != nil {
+			t.Fatalf("LoadConfig() error = %v", err)
+		}
+		if len(cfg.Clients) != 2 {
+			t.Fatalf("expected 2 clients, got %d", len(cfg.Clients))
+		}
+	})
+
+	t.Run("disabled client missing both id AND address loads without error", func(t *testing.T) {
+		os.Clearenv()
+		// Both `id` and `address` are absent on the disabled entry. The validation
+		// loop must skip the disabled client entirely so neither required-field
+		// check fires.
+		path := writeConfig("disabled-no-id-no-address.yaml", `
+plugin:
+  library_path: /app/filter.so
+oauth:
+  issuer_url: https://issuer.example.com
+  client_id: cid
+  client_secret: secret
+clients:
+  - enabled: false
   - id: app1
     address: app1.internal
 `)
