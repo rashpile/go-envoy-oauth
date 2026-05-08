@@ -3,6 +3,7 @@ tmp
 .env
 .plan
 xds-server
+.zed
 
 # Binaries for programs and plugins
 *.exe
@@ -42,3 +43,4 @@ Thumbs.db
 **/.codex
 **/.claude
 .planning/
+.workspaces/
