@@ -146,6 +146,8 @@ Each client in the `clients` array represents a backend service cluster.
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
 | `id` | Yes | - | Unique identifier for the Envoy cluster |
+| `description` | No | - | Free-form text describing this client. Operator-facing only — not sent to Envoy or the filter |
+| `enabled` | No | `true` | Set to `false` to keep the client entry in YAML history but skip it during xDS generation (no cluster, no route, no filter config) |
 | `address` | Yes | - | Backend service hostname or IP |
 | `port` | No | `8080` | Backend service port |
 | `ssl` | No | `false` | Use SSL/TLS for upstream connections |
@@ -195,6 +197,33 @@ clients:
     domain: "public.example.com"
     exclude: true
 ```
+
+### Disabling Clients
+
+Set `enabled: false` on a client to keep its YAML block in the file (preserving
+configuration history) while having the xDS server skip it entirely. A disabled
+client produces no cluster, no route, no per-cluster filter config, and no TLS
+certificate request — Envoy never sees it. Flip the flag back to `true` (or
+remove it) to re-enable the client; the xDS server applies the change on the
+next config reload, with no restart required.
+
+The `description` field is free-form operator-facing metadata. It is read by
+the YAML parser but never propagated to Envoy or the filter, so it is safe to
+use for context such as ownership, migration status, or rollback notes.
+
+```yaml
+clients:
+  - id: legacy_api
+    description: "v1 of the auth API; kept for rollback during the v2 migration"
+    address: legacy-backend
+    port: 8080
+    domain: "legacy.example.com"
+    enabled: false   # kept for history; Envoy ignores this client
+```
+
+`enabled` and `exclude` are independent: `exclude: true` bypasses
+authentication while still routing the client; `enabled: false` removes the
+client from the gateway entirely.
 
 ### Path Rewriting
 

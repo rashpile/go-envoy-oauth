@@ -166,6 +166,11 @@ func createHTTPConnectionManager(config *GatewayConfig) (*anypb.Any, error) {
 	// Add cluster-specific configurations
 	clusters := make(map[string]interface{})
 	for _, client := range config.Clients {
+		// Skip disabled clients — they must not appear in the per-cluster
+		// filter config map sent to the Go plugin.
+		if !client.IsEnabled() {
+			continue
+		}
 		clientConfig := make(map[string]interface{})
 		if client.Exclude {
 			clientConfig["exclude"] = true
@@ -336,6 +341,11 @@ func createTLSFilterChain(config *GatewayConfig, managerAny *anypb.Any) (*listen
 		// Collect domains that have TLS enabled
 		var tlsDomains []string
 		for _, client := range config.Clients {
+			// Skip disabled clients so a disabled client with tls: true does
+			// not trigger SDS certificate provisioning.
+			if !client.IsEnabled() {
+				continue
+			}
 			if client.TLS && client.Domain != "" {
 				tlsDomains = append(tlsDomains, client.Domain)
 			}
@@ -420,6 +430,9 @@ func MakeRoutes(config *GatewayConfig) ([]types.Resource, error) {
 	var wildcardRoutes []*route.Route
 
 	for _, client := range config.Clients {
+		if !client.IsEnabled() {
+			continue
+		}
 		timeout, err := time.ParseDuration(client.RouteTimeout)
 		if err != nil {
 			timeout = 30 * time.Second
@@ -553,6 +566,9 @@ func MakeClusters(config *GatewayConfig) ([]types.Resource, error) {
 	var clusters []types.Resource
 
 	for _, client := range config.Clients {
+		if !client.IsEnabled() {
+			continue
+		}
 		c := &cluster.Cluster{
 			Name:                 client.ID,
 			ClusterDiscoveryType: &cluster.Cluster_Type{Type: cluster.Cluster_STRICT_DNS},

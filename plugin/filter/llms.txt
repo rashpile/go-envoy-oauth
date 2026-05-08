@@ -535,6 +535,10 @@ set.
 | `provider` | string | (`default_provider`) | Provider this cluster authenticates against |
 | `allowed_users` | string[] | empty | Lowercased usernames or emails allowed on this cluster (empty = any authenticated user) |
 
+Operators may set `enabled: false` on a client in the gateway YAML; such clients are filtered out at the xDS layer and never appear in the `clusters` map below.
+
+The gateway YAML also accepts a free-form `description` string per client. It is operator-facing metadata only and is not propagated into the filter config.
+
 ### 10.3 `ProviderConfig` (per-provider)
 
 | Key | Type | Default | Purpose |

@@ -3,7 +3,13 @@ package main
 import (
 	"testing"
 
+	xdstype "github.com/cncf/xds/go/xds/type/v3"
+	golang "github.com/envoyproxy/go-control-plane/contrib/envoy/extensions/filters/http/golang/v3alpha"
+	cluster "github.com/envoyproxy/go-control-plane/envoy/config/cluster/v3"
+	listener "github.com/envoyproxy/go-control-plane/envoy/config/listener/v3"
 	route "github.com/envoyproxy/go-control-plane/envoy/config/route/v3"
+	hcm "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
+	tls "github.com/envoyproxy/go-control-plane/envoy/extensions/transport_sockets/tls/v3"
 )
 
 func TestMakeRoutesWithDomains(t *testing.T) {
@@ -99,6 +105,89 @@ func TestMakeRoutesWithDomains(t *testing.T) {
 	}
 }
 
+func TestMakeRoutesSkipsDisabledClients(t *testing.T) {
+	disabled := false
+	enabled := true
+	config := &GatewayConfig{
+		Clients: []ClientConfig{
+			{
+				// Default: Enabled is nil → treated as enabled.
+				ID:      "enabled_default_service",
+				Domain:  "enabled.example.com",
+				Address: "enabled-backend",
+				Port:    8080,
+				Prefix:  "/",
+			},
+			{
+				ID:      "disabled_service",
+				Domain:  "disabled.example.com",
+				Address: "disabled-backend",
+				Port:    8080,
+				Prefix:  "/",
+				Enabled: &disabled,
+			},
+			{
+				ID:      "explicitly_enabled_service",
+				Domain:  "explicit.example.com",
+				Address: "explicit-backend",
+				Port:    8080,
+				Prefix:  "/",
+				Enabled: &enabled,
+			},
+		},
+	}
+
+	routes, err := MakeRoutes(config)
+	if err != nil {
+		t.Fatalf("MakeRoutes failed: %v", err)
+	}
+
+	if len(routes) != 1 {
+		t.Fatalf("expected 1 route configuration, got %d", len(routes))
+	}
+
+	routeConfig := routes[0].(*route.RouteConfiguration)
+
+	// Should have exactly 2 virtual hosts (the disabled client should be omitted).
+	if len(routeConfig.VirtualHosts) != 2 {
+		t.Fatalf("expected 2 virtual hosts, got %d", len(routeConfig.VirtualHosts))
+	}
+
+	for _, vh := range routeConfig.VirtualHosts {
+		// No virtual host should be for the disabled domain.
+		for _, d := range vh.Domains {
+			if d == "disabled.example.com" {
+				t.Errorf("disabled client domain %q must not appear in virtual hosts", d)
+			}
+		}
+		// No route should target the disabled cluster.
+		for _, r := range vh.Routes {
+			if r.GetRoute().GetCluster() == "disabled_service" {
+				t.Errorf("disabled cluster 'disabled_service' must not appear in routes")
+			}
+		}
+	}
+
+	// Sanity: ensure the enabled clusters do appear.
+	wantClusters := map[string]bool{
+		"enabled_default_service":    false,
+		"explicitly_enabled_service": false,
+	}
+	for _, vh := range routeConfig.VirtualHosts {
+		for _, r := range vh.Routes {
+			cluster := r.GetRoute().GetCluster()
+			if _, ok := wantClusters[cluster]; ok {
+				wantClusters[cluster] = true
+			}
+		}
+	}
+	for cluster, found := range wantClusters {
+		if !found {
+			t.Errorf("expected cluster %q to be present in routes", cluster)
+		}
+	}
+}
+
 func TestMakeRoutesWithMultipleWildcards(t *testing.T) {
 	// Test that multiple clients without domains are combined into one wildcard host
 	config := &GatewayConfig{
@@ -163,5 +252,317 @@ func TestMakeRoutesWithMultipleWildcards(t *testing.T) {
 	}
 	if wildcardHost.Routes[1].GetMatch().GetPrefix() != "/" {
 		t.Errorf("expected second route prefix '/', got %s", wildcardHost.Routes[1].GetMatch().GetPrefix())
+	}
+}
+
+func TestMakeClustersSkipsDisabledClients(t *testing.T) {
+	disabled := false
+	enabled := true
+	config := &GatewayConfig{
+		Clients: []ClientConfig{
+			{
+				// Default: Enabled is nil → treated as enabled.
+				ID:      "enabled_default_service",
+				Domain:  "enabled.example.com",
+				Address: "enabled-backend",
+				Port:    8080,
+				Prefix:  "/",
+			},
+			{
+				ID:      "disabled_service",
+				Domain:  "disabled.example.com",
+				Address: "disabled-backend",
+				Port:    8080,
+				Prefix:  "/",
+				Enabled: &disabled,
+			},
+			{
+				ID:      "explicitly_enabled_service",
+				Domain:  "explicit.example.com",
+				Address: "explicit-backend",
+				Port:    8080,
+				Prefix:  "/",
+				Enabled: &enabled,
+			},
+		},
+	}
+
+	clusters, err := MakeClusters(config)
+	if err != nil {
+		t.Fatalf("MakeClusters failed: %v", err)
+	}
+
+	// Should have exactly 2 cluster resources (the disabled client should be omitted).
+	if len(clusters) != 2 {
+		t.Fatalf("expected 2 cluster resources, got %d", len(clusters))
+	}
+
+	wantClusters := map[string]bool{
+		"enabled_default_service":    false,
+		"explicitly_enabled_service": false,
+	}
+	for _, res := range clusters {
+		c, ok := res.(*cluster.Cluster)
+		if !ok {
+			t.Fatalf("expected *cluster.Cluster resource, got %T", res)
+		}
+		if c.Name == "disabled_service" {
+			t.Errorf("disabled cluster 'disabled_service' must not appear in clusters")
+		}
+		if _, exists := wantClusters[c.Name]; exists {
+			wantClusters[c.Name] = true
+		}
+	}
+	for name, found := range wantClusters {
+		if !found {
+			t.Errorf("expected cluster %q to be present", name)
+		}
+	}
+}
+
+func TestMakeClustersAllDisabled(t *testing.T) {
+	disabled := false
+	config := &GatewayConfig{
+		Clients: []ClientConfig{
+			{
+				ID:      "disabled_a",
+				Address: "a-backend",
+				Port:    8080,
+				Prefix:  "/",
+				Enabled: &disabled,
+			},
+			{
+				ID:      "disabled_b",
+				Address: "b-backend",
+				Port:    8080,
+				Prefix:  "/",
+				Enabled: &disabled,
+			},
+		},
+	}
+
+	clusters, err := MakeClusters(config)
+	if err != nil {
+		t.Fatalf("MakeClusters failed: %v", err)
+	}
+	if len(clusters) != 0 {
+		t.Fatalf("expected 0 cluster resources when all clients disabled, got %d", len(clusters))
+	}
+}
+
+// extractClustersStruct walks the listener -> HCM -> golang filter -> typed
+// struct -> "clusters" field and returns the per-client struct map.
+func extractClustersStruct(t *testing.T, lst *listener.Listener) map[string]struct{} {
+	t.Helper()
+
+	if len(lst.FilterChains) == 0 || len(lst.FilterChains[0].Filters) == 0 {
+		t.Fatal("listener has no HTTP connection manager filter")
+	}
+	hcmAny := lst.FilterChains[0].Filters[0].GetTypedConfig()
+	if hcmAny == nil {
+		t.Fatal("HCM filter has no typed config")
+	}
+	var manager hcm.HttpConnectionManager
+	if err := hcmAny.UnmarshalTo(&manager); err != nil {
+		t.Fatalf("unmarshal HCM: %v", err)
+	}
+
+	var golangFilterCfg golang.Config
+	found := false
+	for _, hf := range manager.HttpFilters {
+		if hf.Name != "envoy.filters.http.golang" {
+			continue
+		}
+		if err := hf.GetTypedConfig().UnmarshalTo(&golangFilterCfg); err != nil {
+			t.Fatalf("unmarshal golang filter: %v", err)
+		}
+		found = true
+		break
+	}
+	if !found {
+		t.Fatal("envoy.filters.http.golang filter not found in HCM filters")
+	}
+
+	var typed xdstype.TypedStruct
+	if err := golangFilterCfg.PluginConfig.UnmarshalTo(&typed); err != nil {
+		t.Fatalf("unmarshal TypedStruct: %v", err)
+	}
+
+	clustersField, ok := typed.Value.Fields["clusters"]
+	if !ok {
+		t.Fatal("plugin config missing 'clusters' field")
+	}
+	clustersStruct := clustersField.GetStructValue()
+	if clustersStruct == nil {
+		t.Fatal("'clusters' field is not a struct")
+	}
+
+	keys := make(map[string]struct{}, len(clustersStruct.Fields))
+	for k := range clustersStruct.Fields {
+		keys[k] = struct{}{}
+	}
+	return keys
+}
+
+// TestMakeListenerSkipsDisabledClientsFromPluginConfig asserts that disabled
+// clients do not appear in the per-cluster filter config map sent to the Go
+// plugin.
+func TestMakeListenerSkipsDisabledClientsFromPluginConfig(t *testing.T) {
+	disabled := false
+	enabled := true
+	cfg := &GatewayConfig{
+		Plugin: PluginConfig{LibraryPath: "/app/filter.so"},
+		Providers: map[string]ProviderConfig{
+			"default": {
+				IssuerURL:    "https://issuer.example.com",
+				ClientID:     "cid",
+				ClientSecret: "secret",
+			},
+		},
+		DefaultProvider: "default",
+		Listener:        ListenerConfig{Address: "0.0.0.0", Port: 8080},
+		Clients: []ClientConfig{
+			{
+				// Default Enabled is nil → enabled.
+				ID:      "enabled_default_service",
+				Address: "enabled-backend",
+				Port:    8080,
+				Prefix:  "/",
+			},
+			{
+				ID:      "disabled_service",
+				Address: "disabled-backend",
+				Port:    8080,
+				Prefix:  "/",
+				Enabled: &disabled,
+			},
+			{
+				ID:      "explicitly_enabled_service",
+				Address: "explicit-backend",
+				Port:    8080,
+				Prefix:  "/",
+				Enabled: &enabled,
+			},
+		},
+	}
+
+	listeners, err := MakeListener(cfg)
+	if err != nil {
+		t.Fatalf("MakeListener failed: %v", err)
+	}
+	if len(listeners) == 0 {
+		t.Fatal("expected at least one listener")
+	}
+	lst, ok := listeners[0].(*listener.Listener)
+	if !ok {
+		t.Fatalf("listeners[0] is %T, want *listener.Listener", listeners[0])
+	}
+
+	keys := extractClustersStruct(t, lst)
+	if _, leaked := keys["disabled_service"]; leaked {
+		t.Errorf("disabled client must not appear in plugin clusters map; have keys %v", keys)
+	}
+	if _, ok := keys["enabled_default_service"]; !ok {
+		t.Errorf("enabled_default_service missing from plugin clusters map; have keys %v", keys)
+	}
+	if _, ok := keys["explicitly_enabled_service"]; !ok {
+		t.Errorf("explicitly_enabled_service missing from plugin clusters map; have keys %v", keys)
+	}
+	if len(keys) != 2 {
+		t.Errorf("expected 2 entries in plugin clusters map, got %d (%v)", len(keys), keys)
+	}
+}
+
+// TestMakeListenerSkipsDisabledClientsFromTLSDomains asserts that a disabled
+// client with tls: true does not contribute to SDS certificate provisioning.
+func TestMakeListenerSkipsDisabledClientsFromTLSDomains(t *testing.T) {
+	disabled := false
+	cfg := &GatewayConfig{
+		Plugin: PluginConfig{LibraryPath: "/app/filter.so"},
+		Providers: map[string]ProviderConfig{
+			"default": {
+				IssuerURL:    "https://issuer.example.com",
+				ClientID:     "cid",
+				ClientSecret: "secret",
+			},
+		},
+		DefaultProvider: "default",
+		Listener:        ListenerConfig{Address: "0.0.0.0", Port: 8080, TLSPort: 8443},
+		SSL:             SSLConfig{Enabled: true},
+		Clients: []ClientConfig{
+			{
+				ID:      "enabled_tls_service",
+				Address: "enabled-backend",
+				Port:    8080,
+				Prefix:  "/",
+				TLS:     true,
+				Domain:  "enabled.example.com",
+			},
+			{
+				ID:      "disabled_tls_service",
+				Address: "disabled-backend",
+				Port:    8080,
+				Prefix:  "/",
+				TLS:     true,
+				Domain:  "disabled.example.com",
+				Enabled: &disabled,
+			},
+		},
+	}
+
+	listeners, err := MakeListener(cfg)
+	if err != nil {
+		t.Fatalf("MakeListener failed: %v", err)
+	}
+
+	// Locate the HTTPS listener (the one with TransportSocket configured).
+	var httpsListener *listener.Listener
+	for _, res := range listeners {
+		l, ok := res.(*listener.Listener)
+		if !ok {
+			continue
+		}
+		if l.Name == HTTPSListenerName {
+			httpsListener = l
+			break
+		}
+	}
+	if httpsListener == nil {
+		t.Fatalf("HTTPS listener not found; got %d listener resources", len(listeners))
+	}
+
+	if len(httpsListener.FilterChains) == 0 {
+		t.Fatal("HTTPS listener has no filter chains")
+	}
+	ts := httpsListener.FilterChains[0].GetTransportSocket()
+	if ts == nil {
+		t.Fatal("HTTPS filter chain has no TransportSocket configured")
+	}
+
+	var dtlsCtx tls.DownstreamTlsContext
+	if err := ts.GetTypedConfig().UnmarshalTo(&dtlsCtx); err != nil {
+		t.Fatalf("unmarshal DownstreamTlsContext: %v", err)
+	}
+
+	common := dtlsCtx.GetCommonTlsContext()
+	if common == nil {
+		t.Fatal("DownstreamTlsContext.CommonTlsContext is nil")
+	}
+
+	// Verify only the enabled client's secret is present.
+	wantSecret := GetSecretName("enabled.example.com")
+	disabledSecret := GetSecretName("disabled.example.com")
+
+	sdsConfigs := common.GetTlsCertificateSdsSecretConfigs()
+	if len(sdsConfigs) != 1 {
+		t.Fatalf("expected 1 SDS secret config, got %d (%+v)", len(sdsConfigs), sdsConfigs)
+	}
+	if sdsConfigs[0].GetName() != wantSecret {
+		t.Errorf("expected SDS secret name %q, got %q", wantSecret, sdsConfigs[0].GetName())
+	}
+	for _, sc := range sdsConfigs {
+		if sc.GetName() == disabledSecret {
+			t.Errorf("disabled client domain produced SDS secret %q (must be skipped)", disabledSecret)
+		}
 	}
 }

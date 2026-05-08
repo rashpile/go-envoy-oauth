@@ -50,12 +50,14 @@ super_users:
   - demo
 clients:
   - id: keycloak #required
+    description: "Keycloak IdP — auth UI exposed under /auth/, no gateway auth"
     address: keycloak # required
     domain: 192.168.88.100:8081
     port: 8080 # default 8080
     ssl: false # default false
     exclude: true # default false
     prefix: /auth/ #default /
+    # enabled: false   # uncomment to keep this entry but skip it at xDS generation
     sso_injection: true
     sso_appurl: http://localhost:8081/auth
     sso_appname: Keycloak
