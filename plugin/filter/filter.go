@@ -921,13 +921,6 @@ func (f *Filter) isUserPermitted(session *session.Session) bool {
 		return false
 	}
 
-	// Check super users first (always permitted)
-	for _, superUser := range f.config.SuperUsers {
-		if username == superUser {
-			return true
-		}
-	}
-
 	// Get cluster config
 	clusterConfig, exists := f.config.Clusters[f.cluster]
 	if !exists {

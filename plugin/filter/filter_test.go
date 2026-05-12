@@ -318,10 +318,9 @@ func TestHandleAuthSuccessSetsProviderHeader(t *testing.T) {
 	f := &Filter{
 		config: &OAuthConfig{
 			Clusters: map[string]ClusterConfig{
-				"cluster1": {ProviderName: "keycloak"},
+				"cluster1": {ProviderName: "keycloak", AllowedUsers: []string{"*"}},
 			},
 			DefaultProvider: "keycloak",
-			SuperUsers:      []string{"alice"},
 		},
 		cluster:          "cluster1",
 		providerRegistry: NewProviderRegistry(zap.NewNop()),
@@ -356,10 +355,9 @@ func TestHandleAuthSuccessCustomProviderHeaderName(t *testing.T) {
 	f := &Filter{
 		config: &OAuthConfig{
 			Clusters: map[string]ClusterConfig{
-				"cluster1": {ProviderName: "google"},
+				"cluster1": {ProviderName: "google", AllowedUsers: []string{"*"}},
 			},
 			DefaultProvider:        "google",
-			SuperUsers:             []string{"charlie"},
 			AuthProviderHeaderName: "X-Custom-Provider",
 		},
 		cluster:          "cluster1",
@@ -399,10 +397,9 @@ func TestHandleAuthSuccessLegacySessionFallback(t *testing.T) {
 	f := &Filter{
 		config: &OAuthConfig{
 			Clusters: map[string]ClusterConfig{
-				"cluster-legacy": {ProviderName: "keycloak"},
+				"cluster-legacy": {ProviderName: "keycloak", AllowedUsers: []string{"*"}},
 			},
 			DefaultProvider: "keycloak",
-			SuperUsers:      []string{"diana"},
 		},
 		cluster:          "cluster-legacy",
 		providerRegistry: NewProviderRegistry(zap.NewNop()),
@@ -451,10 +448,9 @@ func TestHandleAuthSuccessMultiProviderHeaders(t *testing.T) {
 			f := &Filter{
 				config: &OAuthConfig{
 					Clusters: map[string]ClusterConfig{
-						"cluster1": {ProviderName: tc.providerName},
+						"cluster1": {ProviderName: tc.providerName, AllowedUsers: []string{"*"}},
 					},
 					DefaultProvider: tc.providerName,
-					SuperUsers:      []string{tc.username},
 				},
 				cluster:          "cluster1",
 				providerRegistry: NewProviderRegistry(zap.NewNop()),

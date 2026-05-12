@@ -28,6 +28,7 @@ type ProviderConfig struct {
 	ClientSecret string
 	RedirectURL  string
 	Scopes       []string
+	AllowedUsers []string // Provider-scoped OR-grant (normalized to lowercase)
 }
 
 // ClusterConfig represents the configuration for a specific cluster
@@ -88,9 +89,6 @@ type OAuthConfig struct {
 	// is enabled (default: true). When false, the endpoint returns 404
 	// indistinguishably from any other unknown /oauth/* path.
 	EnableLLMsTxt bool `json:"enable_llms_txt"`
-
-	// Authorization: global super users (bypass all client restrictions)
-	SuperUsers []string `json:"super_users"`
 
 	// Provider registry
 	Providers       map[string]ProviderConfig `json:"providers"`
@@ -298,17 +296,6 @@ func (p *Parser) populateConfig(conf *OAuthConfig, m map[string]interface{}) err
 		conf.EnableLLMsTxt = enableLLMsTxt
 	}
 
-	// Parse global super_users
-	if superUsers, ok := m["super_users"].([]interface{}); ok {
-		conf.SuperUsers = make([]string, 0, len(superUsers))
-		for _, user := range superUsers {
-			if u, ok := user.(string); ok {
-				conf.SuperUsers = append(conf.SuperUsers, strings.ToLower(u))
-			}
-		}
-		log.Printf("Parsed super_users from config: %v", conf.SuperUsers)
-	}
-
 	// Parse providers map
 	if providers, ok := m["providers"].(map[string]interface{}); ok {
 		conf.Providers = make(map[string]ProviderConfig)
@@ -332,6 +319,16 @@ func (p *Parser) populateConfig(conf *OAuthConfig, m map[string]interface{}) err
 					for _, s := range scopes {
 						if str, ok := s.(string); ok {
 							pc.Scopes = append(pc.Scopes, str)
+						}
+					}
+				}
+				if allowedUsers, ok := p["allowed_users"].([]interface{}); ok {
+					for _, user := range allowedUsers {
+						if u, ok := user.(string); ok {
+							normalized := strings.TrimSpace(strings.ToLower(u))
+							if normalized != "" {
+								pc.AllowedUsers = append(pc.AllowedUsers, normalized)
+							}
 						}
 					}
 				}
@@ -553,7 +550,6 @@ func (p *Parser) Merge(parent interface{}, child interface{}) interface{} {
 		EnableAPIKey:           parentConfig.EnableAPIKey,
 		EnableBearerToken:      parentConfig.EnableBearerToken,
 		EnableLLMsTxt:          parentConfig.EnableLLMsTxt,
-		SuperUsers:             slices.Clone(parentConfig.SuperUsers),
 		DefaultProvider:        parentConfig.DefaultProvider,
 		Providers:              make(map[string]ProviderConfig),
 		WebSocketExcludePaths:  slices.Clone(parentConfig.WebSocketExcludePaths),
@@ -574,6 +570,7 @@ func (p *Parser) Merge(parent interface{}, child interface{}) interface{} {
 			ClientSecret: pc.ClientSecret,
 			RedirectURL:  pc.RedirectURL,
 			Scopes:       slices.Clone(pc.Scopes),
+			AllowedUsers: slices.Clone(pc.AllowedUsers),
 		}
 		newConfig.Providers[name] = copied
 	}
@@ -636,11 +633,6 @@ func (p *Parser) Merge(parent interface{}, child interface{}) interface{} {
 	// Override EnableLLMsTxt if child config explicitly sets it
 	if childConfig.EnableLLMsTxt != parentConfig.EnableLLMsTxt {
 		newConfig.EnableLLMsTxt = childConfig.EnableLLMsTxt
-	}
-
-	// Override SuperUsers if child config has any
-	if len(childConfig.SuperUsers) > 0 {
-		newConfig.SuperUsers = slices.Clone(childConfig.SuperUsers)
 	}
 
 	// Carry parent providers (read-only — providers must be declared at root level).
