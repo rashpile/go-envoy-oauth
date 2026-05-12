@@ -466,6 +466,51 @@ func TestMergePreservesAuthProviderHeaderName(t *testing.T) {
 	}
 }
 
+// TestMergePreservesProviderAllowedUsers verifies that Merge() copies AllowedUsers
+// from parent providers and that the copy is independent (deep clone).
+func TestMergePreservesProviderAllowedUsers(t *testing.T) {
+	p := &Parser{}
+
+	parentCfg := baseConfig()
+	parentCfg["providers"] = map[string]interface{}{
+		"keycloak": map[string]interface{}{
+			"issuer_url":    "https://keycloak.example.com",
+			"client_id":     "kc-client",
+			"client_secret": "kc-secret",
+			"allowed_users": []interface{}{"alice", "bob"},
+		},
+	}
+	parentCfg["default_provider"] = "keycloak"
+	parent, err := p.parseRawConfig(buildAny(t, parentCfg))
+	if err != nil {
+		t.Fatalf("parent parseRawConfig: %v", err)
+	}
+
+	childCfg := baseConfig()
+	child, err := p.parseRawConfig(buildAny(t, childCfg))
+	if err != nil {
+		t.Fatalf("child parseRawConfig: %v", err)
+	}
+
+	merged := p.Merge(parent, child).(*OAuthConfig)
+
+	kc, ok := merged.Providers["keycloak"]
+	if !ok {
+		t.Fatal("keycloak provider lost after Merge")
+	}
+	if !slices.Equal(kc.AllowedUsers, []string{"alice", "bob"}) {
+		t.Errorf("AllowedUsers after Merge: got %v, want [alice bob]", kc.AllowedUsers)
+	}
+
+	// Mutate the merged slice to verify it is a clone, not the original.
+	kc.AllowedUsers[0] = "mutated"
+	merged.Providers["keycloak"] = kc
+	orig := parent.Providers["keycloak"]
+	if orig.AllowedUsers[0] != "alice" {
+		t.Errorf("Merge AllowedUsers is not a deep clone: parent mutated to %v", orig.AllowedUsers)
+	}
+}
+
 // TestParseLegacyCookieName verifies that Parse() with a legacy single-provider config
 // (no providers map) creates a "default" handler whose CookieManager uses the namespaced
 // cookie name "<base>_default" (D-02, Pitfall 1 in RESEARCH).
