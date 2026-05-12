@@ -200,11 +200,16 @@ func createHTTPConnectionManager(config *GatewayConfig) (*anypb.Any, error) {
 		}
 		// Add allowed_users to cluster config
 		if len(client.AllowedUsers) > 0 {
-			allowedUsersInterface := make([]interface{}, len(client.AllowedUsers))
-			for i, user := range client.AllowedUsers {
-				allowedUsersInterface[i] = strings.ToLower(user)
+			var allowedUsersInterface []interface{}
+			for _, user := range client.AllowedUsers {
+				normalized := strings.TrimSpace(strings.ToLower(user))
+				if normalized != "" {
+					allowedUsersInterface = append(allowedUsersInterface, normalized)
+				}
 			}
-			clientConfig["allowed_users"] = allowedUsersInterface
+			if len(allowedUsersInterface) > 0 {
+				clientConfig["allowed_users"] = allowedUsersInterface
+			}
 		}
 		// Resolve provider name (apply default if not set) per D-10
 		providerName := client.Provider
@@ -236,11 +241,16 @@ func createHTTPConnectionManager(config *GatewayConfig) (*anypb.Any, error) {
 				providerMap["scopes"] = scopesInterface
 			}
 			if len(p.AllowedUsers) > 0 {
-				allowedUsersInterface := make([]interface{}, len(p.AllowedUsers))
-				for i, user := range p.AllowedUsers {
-					allowedUsersInterface[i] = strings.ToLower(user)
+				var allowedUsersInterface []interface{}
+				for _, user := range p.AllowedUsers {
+					normalized := strings.TrimSpace(strings.ToLower(user))
+					if normalized != "" {
+						allowedUsersInterface = append(allowedUsersInterface, normalized)
+					}
 				}
-				providerMap["allowed_users"] = allowedUsersInterface
+				if len(allowedUsersInterface) > 0 {
+					providerMap["allowed_users"] = allowedUsersInterface
+				}
 			}
 			providers[name] = providerMap
 		}
