@@ -218,21 +218,21 @@ Atomic for the same reason as Task 1: deleting `GatewayConfig.SuperUsers` breaks
 
 ### Task 6: Verify acceptance criteria
 
-- [ ] Verify all decisions from Overview are implemented:
-  - [ ] `super_users` field removed from both modules.
-  - [ ] `ProviderConfig.AllowedUsers` exists in both modules.
-  - [ ] Provider check runs before cluster check in `isUserPermitted`.
-  - [ ] Wildcard `*` works at both levels.
-  - [ ] Empty/missing provider list falls through to cluster check.
-  - [ ] xds serializes `provider.allowed_users` into the plugin config.
-  - [ ] Audit log fires on provider-only allow.
-  - [ ] Deny log never includes list contents.
-- [ ] Run full plugin tests: `make test` from repo root.
-- [ ] Run full xds tests: `cd xds && go test ./...`.
-- [ ] Run plugin build: `make build` (Docker shared-object build).
-- [ ] Run xds build: `cd xds && go build ./...`.
-- [ ] **Release gate**: do NOT cut a release tag until both module artifacts are built from the same commit (avoid mixed-version deployments — see Risks).
-- [ ] Final grep sanity check: `grep -rn "super_users\|SuperUsers" plugin/ xds/app/` returns zero hits.
+- [x] Verify all decisions from Overview are implemented:
+  - [x] `super_users` field removed from both modules.
+  - [x] `ProviderConfig.AllowedUsers` exists in both modules.
+  - [x] Provider check runs before cluster check in `isUserPermitted`.
+  - [x] Wildcard `*` works at both levels.
+  - [x] Empty/missing provider list falls through to cluster check.
+  - [x] xds serializes `provider.allowed_users` into the plugin config.
+  - [x] Audit log fires on provider-only allow.
+  - [x] Deny log never includes list contents.
+- [x] Run full plugin tests: `make test` from repo root.
+- [x] Run full xds tests: `cd xds && go test ./...`.
+- [x] Run plugin build: `make build` (Docker shared-object build) — skipped (Docker unavailable in this environment; `go build ./plugin/...` and `go vet ./plugin/...` pass).
+- [x] Run xds build: `cd xds && go build ./...`.
+- [x] **Release gate**: do NOT cut a release tag until both module artifacts are built from the same commit (avoid mixed-version deployments — see Risks).
+- [x] Final grep sanity check: `grep -rn "super_users\|SuperUsers" plugin/ xds/app/` returns zero hits.
 
 ### Task 7: Final — update CLAUDE.md and archive the plan
 
