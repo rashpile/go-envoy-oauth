@@ -192,14 +192,14 @@ Atomic for the same reason as Task 1: deleting `GatewayConfig.SuperUsers` breaks
 - Modify: `xds/app/resources.go`
 - Modify: `xds/app/resources_test.go`
 
-- [ ] At `config.go:19-25`, add `AllowedUsers []string \`yaml:"allowed_users,omitempty"\` // Provider-scoped OR-grant (matched against preferred_username, case-insensitive)` to `ProviderConfig`.
-- [ ] At `config.go:36`, delete the entire `SuperUsers []string` field line from `GatewayConfig`.
-- [ ] At `resources.go:157-164`, delete the entire `super_users` serialization block (the `if len(config.SuperUsers) > 0 { ... pluginConfig["super_users"] = ... }` stanza, including the `// Add global super_users to plugin config` comment).
-- [ ] Inside the providers serialization loop at `resources.go:231-247`, after the `scopes` block, add an `if len(p.AllowedUsers) > 0` block that lowercases each entry and writes `providerMap["allowed_users"]`. Mirror the pattern at `resources.go:211-217`.
-- [ ] Run `cd xds && go build ./...` — must compile cleanly.
-- [ ] In `resources_test.go`, add `TestProviderAllowedUsersSerialization`: build a `GatewayConfig` with `Providers["kc"] = ProviderConfig{IssuerURL: "...", ClientID: "x", ClientSecret: "y", AllowedUsers: ["Alice", "BOB"]}`, invoke `createHTTPConnectionManager`, decode the resulting `TypedStruct` payload, assert `providers.kc.allowed_users` equals `["alice", "bob"]`.
-- [ ] In `resources_test.go`, add `TestProviderAllowedUsersOmittedWhenEmpty`: build a `GatewayConfig` whose providers have no `AllowedUsers` set; assert the decoded `providers.<name>` map has NO `allowed_users` key (omitted, not empty).
-- [ ] Run `cd xds && go test ./...` — all xds tests must pass before next task.
+- [x] At `config.go:19-25`, add `AllowedUsers []string \`yaml:"allowed_users,omitempty"\` // Provider-scoped OR-grant (matched against preferred_username, case-insensitive)` to `ProviderConfig`.
+- [x] At `config.go:36`, delete the entire `SuperUsers []string` field line from `GatewayConfig`.
+- [x] At `resources.go:157-164`, delete the entire `super_users` serialization block (the `if len(config.SuperUsers) > 0 { ... pluginConfig["super_users"] = ... }` stanza, including the `// Add global super_users to plugin config` comment).
+- [x] Inside the providers serialization loop at `resources.go:231-247`, after the `scopes` block, add an `if len(p.AllowedUsers) > 0` block that lowercases each entry and writes `providerMap["allowed_users"]`. Mirror the pattern at `resources.go:211-217`.
+- [x] Run `cd xds && go build ./...` — must compile cleanly.
+- [x] In `resources_test.go`, add `TestProviderAllowedUsersSerialization`: build a `GatewayConfig` with `Providers["kc"] = ProviderConfig{IssuerURL: "...", ClientID: "x", ClientSecret: "y", AllowedUsers: ["Alice", "BOB"]}`, invoke `createHTTPConnectionManager`, decode the resulting `TypedStruct` payload, assert `providers.kc.allowed_users` equals `["alice", "bob"]`.
+- [x] In `resources_test.go`, add `TestProviderAllowedUsersOmittedWhenEmpty`: build a `GatewayConfig` whose providers have no `AllowedUsers` set; assert the decoded `providers.<name>` map has NO `allowed_users` key (omitted, not empty).
+- [x] Run `cd xds && go test ./...` — all xds tests must pass before next task.
 
 ### Task 5: Update operator-facing documentation
 

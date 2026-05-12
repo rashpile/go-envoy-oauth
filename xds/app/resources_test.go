@@ -10,6 +10,8 @@ import (
 	route "github.com/envoyproxy/go-control-plane/envoy/config/route/v3"
 	hcm "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
 	tls "github.com/envoyproxy/go-control-plane/envoy/extensions/transport_sockets/tls/v3"
+	"google.golang.org/protobuf/types/known/anypb"
+	"google.golang.org/protobuf/types/known/structpb"
 )
 
 func TestMakeRoutesWithDomains(t *testing.T) {
@@ -527,5 +529,118 @@ func TestMakeListenerSkipsDisabledClientsFromTLSDomains(t *testing.T) {
 		if sc.GetName() == disabledSecret {
 			t.Errorf("disabled client domain produced SDS secret %q (must be skipped)", disabledSecret)
 		}
+	}
+}
+
+// extractPluginTypedStruct decodes the HCM Any returned by createHTTPConnectionManager
+// and returns the TypedStruct value embedded in the golang filter's plugin config.
+func extractPluginTypedStruct(t *testing.T, managerAny *anypb.Any) *structpb.Struct {
+	t.Helper()
+	var manager hcm.HttpConnectionManager
+	if err := managerAny.UnmarshalTo(&manager); err != nil {
+		t.Fatalf("unmarshal HCM: %v", err)
+	}
+	var golangFilterCfg golang.Config
+	found := false
+	for _, hf := range manager.HttpFilters {
+		if hf.Name != "envoy.filters.http.golang" {
+			continue
+		}
+		if err := hf.GetTypedConfig().UnmarshalTo(&golangFilterCfg); err != nil {
+			t.Fatalf("unmarshal golang filter: %v", err)
+		}
+		found = true
+		break
+	}
+	if !found {
+		t.Fatal("envoy.filters.http.golang filter not found")
+	}
+	var typed xdstype.TypedStruct
+	if err := golangFilterCfg.PluginConfig.UnmarshalTo(&typed); err != nil {
+		t.Fatalf("unmarshal TypedStruct: %v", err)
+	}
+	return typed.Value
+}
+
+// TestProviderAllowedUsersSerialization verifies that ProviderConfig.AllowedUsers is
+// lowercased and written into the plugin config under providers.<name>.allowed_users.
+func TestProviderAllowedUsersSerialization(t *testing.T) {
+	cfg := &GatewayConfig{
+		Plugin:          PluginConfig{LibraryPath: "/app/filter.so"},
+		DefaultProvider: "kc",
+		Providers: map[string]ProviderConfig{
+			"kc": {
+				IssuerURL:    "https://issuer.example.com",
+				ClientID:     "cid",
+				ClientSecret: "secret",
+				AllowedUsers: []string{"Alice", "BOB"},
+			},
+		},
+		Listener: ListenerConfig{Address: "0.0.0.0", Port: 8080},
+	}
+
+	managerAny, err := createHTTPConnectionManager(cfg)
+	if err != nil {
+		t.Fatalf("createHTTPConnectionManager: %v", err)
+	}
+	pluginStruct := extractPluginTypedStruct(t, managerAny)
+
+	providersField, ok := pluginStruct.Fields["providers"]
+	if !ok {
+		t.Fatal("plugin config missing 'providers' field")
+	}
+	kcField, ok := providersField.GetStructValue().Fields["kc"]
+	if !ok {
+		t.Fatal("providers map missing 'kc' entry")
+	}
+	allowedField, ok := kcField.GetStructValue().Fields["allowed_users"]
+	if !ok {
+		t.Fatal("providers.kc missing 'allowed_users' field")
+	}
+	vals := allowedField.GetListValue().GetValues()
+	if len(vals) != 2 {
+		t.Fatalf("expected 2 allowed_users entries, got %d", len(vals))
+	}
+	want := []string{"alice", "bob"}
+	for i, v := range vals {
+		if v.GetStringValue() != want[i] {
+			t.Errorf("allowed_users[%d]: got %q, want %q", i, v.GetStringValue(), want[i])
+		}
+	}
+}
+
+// TestProviderAllowedUsersOmittedWhenEmpty verifies that providers with no AllowedUsers
+// do not emit an allowed_users key in the serialized plugin config.
+func TestProviderAllowedUsersOmittedWhenEmpty(t *testing.T) {
+	cfg := &GatewayConfig{
+		Plugin:          PluginConfig{LibraryPath: "/app/filter.so"},
+		DefaultProvider: "kc",
+		Providers: map[string]ProviderConfig{
+			"kc": {
+				IssuerURL:    "https://issuer.example.com",
+				ClientID:     "cid",
+				ClientSecret: "secret",
+				// AllowedUsers intentionally absent
+			},
+		},
+		Listener: ListenerConfig{Address: "0.0.0.0", Port: 8080},
+	}
+
+	managerAny, err := createHTTPConnectionManager(cfg)
+	if err != nil {
+		t.Fatalf("createHTTPConnectionManager: %v", err)
+	}
+	pluginStruct := extractPluginTypedStruct(t, managerAny)
+
+	providersField, ok := pluginStruct.Fields["providers"]
+	if !ok {
+		t.Fatal("plugin config missing 'providers' field")
+	}
+	kcField, ok := providersField.GetStructValue().Fields["kc"]
+	if !ok {
+		t.Fatal("providers map missing 'kc' entry")
+	}
+	if _, present := kcField.GetStructValue().Fields["allowed_users"]; present {
+		t.Error("providers.kc must not have 'allowed_users' key when AllowedUsers is empty")
 	}
 }

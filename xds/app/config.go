@@ -22,6 +22,7 @@ type ProviderConfig struct {
 	ClientSecret string   `yaml:"client_secret"`
 	RedirectURL  string   `yaml:"redirect_url,omitempty"`
 	Scopes       []string `yaml:"scopes,omitempty"`
+	AllowedUsers []string `yaml:"allowed_users,omitempty"` // Provider-scoped OR-grant (matched against preferred_username, case-insensitive)
 }
 
 type GatewayConfig struct {
@@ -33,7 +34,6 @@ type GatewayConfig struct {
 	Template        string                    `yaml:"template,omitempty"` // Path to template config file
 	Listener        ListenerConfig            `yaml:"listener,omitempty"`
 	SSL             SSLConfig                 `yaml:"ssl,omitempty"`         // SSL/TLS configuration for listener
-	SuperUsers      []string                  `yaml:"super_users,omitempty"` // Global super users (bypass all client restrictions)
 }
 
 type PluginConfig struct {
