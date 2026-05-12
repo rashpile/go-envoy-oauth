@@ -1170,6 +1170,42 @@ clients:
 			t.Fatalf("legacy config without providers map should load fine, got: %v", err)
 		}
 	})
+
+	t.Run("provider allowed_users YAML round-trip", func(t *testing.T) {
+		os.Clearenv()
+		path := writeConfig("provider-allowed-users.yaml", `
+plugin:
+  library_path: /app/filter.so
+providers:
+  keycloak:
+    issuer_url: https://keycloak.example.com/realms/myrealm
+    client_id: my-client
+    client_secret: my-secret
+    allowed_users:
+      - alice
+      - BOB
+default_provider: keycloak
+clients:
+  - id: app1
+    address: app1.internal
+    port: 8080
+    prefix: /
+`)
+		config, err := LoadConfig(path)
+		if err != nil {
+			t.Fatalf("LoadConfig() error = %v", err)
+		}
+		got := config.Providers["keycloak"].AllowedUsers
+		want := []string{"alice", "BOB"}
+		if len(got) != len(want) {
+			t.Fatalf("AllowedUsers len = %d, want %d; got %v", len(got), len(want), got)
+		}
+		for i, v := range want {
+			if got[i] != v {
+				t.Errorf("AllowedUsers[%d] = %q, want %q", i, got[i], v)
+			}
+		}
+	})
 }
 
 func TestNormalizeProviders(t *testing.T) {

@@ -818,3 +818,92 @@ func TestDenyLogOmitsListContents(t *testing.T) {
 		}
 	}
 }
+
+// TestIsUserPermittedNilClaims verifies that isUserPermitted returns false when
+// session.Claims is nil (no preferred_username available).
+func TestIsUserPermittedNilClaims(t *testing.T) {
+	f := &Filter{
+		config: &OAuthConfig{
+			Providers: map[string]ProviderConfig{
+				testProviderName: {AllowedUsers: []string{"*"}},
+			},
+			Clusters: map[string]ClusterConfig{
+				"test-cluster": {ProviderName: testProviderName, AllowedUsers: []string{"*"}},
+			},
+		},
+		cluster: "test-cluster",
+		logger:  zap.NewNop(),
+	}
+	sess := &session.Session{Claims: nil}
+	if f.isUserPermitted(sess) {
+		t.Error("isUserPermitted must deny when session.Claims is nil")
+	}
+}
+
+// TestIsUserPermittedEmptyClaims verifies that isUserPermitted returns false when
+// session.Claims exists but preferred_username is absent.
+func TestIsUserPermittedEmptyClaims(t *testing.T) {
+	f := &Filter{
+		config: &OAuthConfig{
+			Providers: map[string]ProviderConfig{
+				testProviderName: {AllowedUsers: []string{"*"}},
+			},
+			Clusters: map[string]ClusterConfig{
+				"test-cluster": {ProviderName: testProviderName, AllowedUsers: []string{"*"}},
+			},
+		},
+		cluster: "test-cluster",
+		logger:  zap.NewNop(),
+	}
+	sess := &session.Session{Claims: map[string]interface{}{}}
+	if f.isUserPermitted(sess) {
+		t.Error("isUserPermitted must deny when preferred_username claim is absent")
+	}
+}
+
+// TestIsUserPermittedEmptyUsername verifies that isUserPermitted returns false when
+// preferred_username is present but empty (or whitespace-only).
+func TestIsUserPermittedEmptyUsername(t *testing.T) {
+	f := &Filter{
+		config: &OAuthConfig{
+			Providers: map[string]ProviderConfig{
+				testProviderName: {AllowedUsers: []string{"*"}},
+			},
+			Clusters: map[string]ClusterConfig{
+				"test-cluster": {ProviderName: testProviderName, AllowedUsers: []string{"*"}},
+			},
+		},
+		cluster: "test-cluster",
+		logger:  zap.NewNop(),
+	}
+	for _, username := range []string{"", "   ", "\t"} {
+		sess := &session.Session{Claims: map[string]interface{}{"preferred_username": username}}
+		if f.isUserPermitted(sess) {
+			t.Errorf("isUserPermitted must deny for empty/whitespace username %q", username)
+		}
+	}
+}
+
+// TestBothListsNilDenies verifies default-deny when neither list is configured
+// (both provider.AllowedUsers and cluster.AllowedUsers are nil).
+// Distinct from TestBothListsMissDenies where lists exist but contain wrong names.
+func TestBothListsNilDenies(t *testing.T) {
+	f := &Filter{
+		config: &OAuthConfig{
+			Providers: map[string]ProviderConfig{
+				testProviderName: {AllowedUsers: nil},
+			},
+			Clusters: map[string]ClusterConfig{
+				"test-cluster": {ProviderName: testProviderName, AllowedUsers: nil},
+			},
+		},
+		cluster: "test-cluster",
+		logger:  zap.NewNop(),
+	}
+	sess := &session.Session{
+		Claims: map[string]interface{}{"preferred_username": "alice"},
+	}
+	if f.isUserPermitted(sess) {
+		t.Error("isUserPermitted must deny when both provider and cluster AllowedUsers are nil")
+	}
+}

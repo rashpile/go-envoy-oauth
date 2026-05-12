@@ -532,7 +532,7 @@ set.
 | `sso_appname` | string | (empty) | Branding name used by the welcome page for this cluster |
 | `add_token` | bool | `false` | Forward the access token to the upstream as `X-Auth-Token` |
 | `provider` | string | (`default_provider`) | Provider this cluster authenticates against |
-| `allowed_users` | string[] | empty | Lowercased usernames or emails allowed on this cluster (empty = any authenticated user) |
+| `allowed_users` | string[] | empty | Usernames permitted on this cluster (matched against preferred_username, case-insensitive). Use `["*"]` to allow any authenticated user. If empty, the user must match the resolved provider's `allowed_users`; otherwise access is denied. |
 
 Operators may set `enabled: false` on a client in the gateway YAML; such clients are filtered out at the xDS layer and never appear in the `clusters` map below.
 

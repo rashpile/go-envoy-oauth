@@ -384,7 +384,10 @@ func (p *Parser) populateConfig(conf *OAuthConfig, m map[string]interface{}) err
 					clusterConf.AllowedUsers = make([]string, 0, len(allowedUsers))
 					for _, user := range allowedUsers {
 						if u, ok := user.(string); ok {
-							clusterConf.AllowedUsers = append(clusterConf.AllowedUsers, strings.ToLower(u))
+							normalized := strings.TrimSpace(strings.ToLower(u))
+							if normalized != "" {
+								clusterConf.AllowedUsers = append(clusterConf.AllowedUsers, normalized)
+							}
 						}
 					}
 				}

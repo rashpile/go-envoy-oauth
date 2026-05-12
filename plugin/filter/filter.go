@@ -202,7 +202,7 @@ func (f *Filter) handleAuthSuccess(header api.RequestHeaderMap, session *session
 	if !f.isUserPermitted(session) {
 		username := ""
 		if u, ok := session.Claims["preferred_username"].(string); ok {
-			username = u
+			username = strings.ToLower(strings.TrimSpace(u))
 		}
 
 		// Audit log: permission denied

@@ -239,6 +239,8 @@ Example:
 curl http://localhost:9102/metrics
 ```
 
+**Breaking change:** The top-level `super_users` config field has been removed. Configs that still include `super_users:` will have those entries silently ignored — affected users will be denied access. Migrate by moving usernames into the `allowed_users` field of the relevant provider entry (for OR-grant access across all clusters) or the cluster's `allowed_users` field.
+
 **Breaking change (Phase 04):** The `idp` Prometheus label on OAuth metrics
 (`envoy_oauth_login_total`, `envoy_oauth_logout_total`, `envoy_oauth_session_*`,
 `envoy_oauth_token_validation_*`, `envoy_oauth_callback_duration_seconds_*`)

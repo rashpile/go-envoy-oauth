@@ -46,8 +46,6 @@ oauth:
   session_secure: false
   session_http_only: true
   session_same_site: Lax
-super_users:
-  - demo
 clients:
   - id: keycloak #required
     description: "Keycloak IdP — auth UI exposed under /auth/, no gateway auth"
