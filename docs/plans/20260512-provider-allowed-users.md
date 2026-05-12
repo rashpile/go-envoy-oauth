@@ -170,18 +170,18 @@ Atomic because deleting `OAuthConfig.SuperUsers` breaks the parse/clone/merge re
 **Files:**
 - Modify: `plugin/filter/filter_test.go`
 
-- [ ] Convert the four `SuperUsers: []string{...}` literals at `filter_test.go:324, 362, 405, 457` to use `Providers: map[string]ProviderConfig{"test-provider": {AllowedUsers: []string{...}}}` plus a matching `Clusters[clusterName].ProviderName = "test-provider"`. Use a single shared provider-name constant if it improves readability.
-- [ ] Add `TestProviderAllowGrantsWhenClusterDenies` — user in `provider.allowed_users`, NOT in `cluster.allowed_users`, cluster entry exists → permit. Proves OR-grant.
-- [ ] Add `TestProviderWildcardAllow` — `provider.allowed_users: ["*"]`, user listed nowhere else → permit.
-- [ ] Add `TestProviderAllowGrantsForClusterWithoutEntry` — user in `provider.allowed_users`, `f.cluster` is NOT a key in `f.config.Clusters` → permit. Documents the intentional widened-reach behavior called out in Overview.
-- [ ] Add `TestEmptyProviderListDefersToCluster` — `provider.AllowedUsers: nil`, user in `cluster.allowed_users` → permit.
-- [ ] Add `TestBothListsMissDenies` — user in neither list → deny.
-- [ ] Add `TestUnknownProviderSkipsProviderCheck` — cluster's `ProviderName: "nonexistent"`, user in `cluster.allowed_users` → permit (provider lookup misses silently, cluster check still runs).
-- [ ] Add `TestClusterWildcardStillWorks` — provider absent/empty, `cluster.allowed_users: ["*"]` → permit. Confirms cluster-level wildcard wasn't regressed.
-- [ ] Add `TestAuditLogFiresWithProviderOnlyAllow` — using a captured zap logger (`zap/zaptest/observer`), permit a user via `provider.allowed_users` with `cluster.AllowedUsers` empty; assert the existing "permission granted" audit log entry fired. Covers the audit-log condition change at filter.go:218-219.
-- [ ] Add `TestDenyLogOmitsListContents` — using the observer, trigger a deny path with non-empty `provider.AllowedUsers` and `cluster.AllowedUsers`; assert the debug log fires with `provider_allowed_count` / `cluster_allowed_count` fields and assert NO field contains the literal allowed-user strings. Locks in the PII guarantee.
-- [ ] Run `go test ./plugin/filter/...` — all tests must pass before next task.
-- [ ] Run `go vet ./plugin/...` — must be clean.
+- [x] Convert the four `SuperUsers: []string{...}` literals at `filter_test.go:324, 362, 405, 457` to use `Providers: map[string]ProviderConfig{"test-provider": {AllowedUsers: []string{...}}}` plus a matching `Clusters[clusterName].ProviderName = "test-provider"`. Use a single shared provider-name constant if it improves readability.
+- [x] Add `TestProviderAllowGrantsWhenClusterDenies` — user in `provider.allowed_users`, NOT in `cluster.allowed_users`, cluster entry exists → permit. Proves OR-grant.
+- [x] Add `TestProviderWildcardAllow` — `provider.allowed_users: ["*"]`, user listed nowhere else → permit.
+- [x] Add `TestProviderAllowGrantsForClusterWithoutEntry` — user in `provider.allowed_users`, `f.cluster` is NOT a key in `f.config.Clusters` → permit. Documents the intentional widened-reach behavior called out in Overview.
+- [x] Add `TestEmptyProviderListDefersToCluster` — `provider.AllowedUsers: nil`, user in `cluster.allowed_users` → permit.
+- [x] Add `TestBothListsMissDenies` — user in neither list → deny.
+- [x] Add `TestUnknownProviderSkipsProviderCheck` — cluster's `ProviderName: "nonexistent"`, user in `cluster.allowed_users` → permit (provider lookup misses silently, cluster check still runs).
+- [x] Add `TestClusterWildcardStillWorks` — provider absent/empty, `cluster.allowed_users: ["*"]` → permit. Confirms cluster-level wildcard wasn't regressed.
+- [x] Add `TestAuditLogFiresWithProviderOnlyAllow` — using a captured zap logger (`zap/zaptest/observer`), permit a user via `provider.allowed_users` with `cluster.AllowedUsers` empty; assert the existing "permission granted" audit log entry fired. Covers the audit-log condition change at filter.go:218-219.
+- [x] Add `TestDenyLogOmitsListContents` — using the observer, trigger a deny path with non-empty `provider.AllowedUsers` and `cluster.AllowedUsers`; assert the debug log fires with `provider_allowed_count` / `cluster_allowed_count` fields and assert NO field contains the literal allowed-user strings. Locks in the PII guarantee.
+- [x] Run `go test ./plugin/filter/...` — all tests must pass before next task.
+- [x] Run `go vet ./plugin/...` — must be clean.
 
 ### Task 4: xds — schema + serializer (atomic: struct + serialize + delete super_users)
 
