@@ -520,7 +520,6 @@ set.
 | `enable_llms_txt` | bool | `true` | Enable the `/oauth/llms.txt` endpoint (this document) |
 | `clusters` | map<string,ClusterConfig> | empty | Per-cluster authorization rules |
 | `exclude_paths` | string[] | `["/health"]` | Paths exempt from auth |
-| `super_users` | string[] | empty | Lowercased usernames or emails granted access to all clusters |
 | `remove_headers` | string[] | identity headers above | Headers stripped from inbound requests (defense-in-depth) |
 
 ### 10.2 `ClusterConfig` (per-cluster)
@@ -548,3 +547,4 @@ The gateway YAML also accepts a free-form `description` string per client. It is
 | `client_secret` | string | (required) | OAuth client secret |
 | `redirect_url` | string | (required) | OAuth redirect URL |
 | `scopes` | string[] | `["openid","profile","email"]` | OAuth scopes |
+| `allowed_users` | string[] | empty | Lowercased usernames or emails granted access to all clusters served by this provider (OR-grant). Use `["*"]` to permit any authenticated user from this provider. |

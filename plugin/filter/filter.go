@@ -930,7 +930,6 @@ func (f *Filter) isUserPermitted(sess *session.Session) bool {
 	}
 
 	// Provider-level OR-grant: a match here permits immediately, regardless of cluster config.
-	// This mirrors the old super_users reach but scoped to the provider.
 	providerName := f.resolveProviderName()
 	lenP := 0
 	if providerName != "" {

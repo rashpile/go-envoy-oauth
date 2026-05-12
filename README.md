@@ -92,6 +92,7 @@ Each provider value supports these fields:
 | `client_secret` | yes | OAuth client secret |
 | `redirect_url` | yes | Callback path registered with the provider (e.g. `/oauth/callback`) |
 | `scopes` | no | Additional scopes (default `openid profile email`) |
+| `allowed_users` | no | Lowercased usernames or emails granted access to all clusters served by this provider (OR-grant). Use `["*"]` to permit any authenticated user from this provider. |
 
 #### Legacy single-provider format (backward compatible)
 
@@ -183,7 +184,7 @@ The `clusters` section maps Envoy cluster names to per-cluster auth settings.
 | `exclude` | boolean | false | Bypass authentication for all requests to this cluster |
 | `exclude_paths` | string[] | [] | Paths to exclude from authentication within this cluster |
 | `add_token` | boolean | false | Add `Authorization: Bearer <token>` header to upstream requests |
-| `allowed_users` | string[] | [] | Usernames permitted to access this cluster (matched against `preferred_username` claim, case-insensitive). Use `["*"]` to allow any authenticated user. If empty and the user is not in `super_users`, access is denied. |
+| `allowed_users` | string[] | [] | Usernames permitted to access this cluster (matched against `preferred_username` claim, case-insensitive). Use `["*"]` to allow any authenticated user. If empty, the user must match the resolved provider's `allowed_users` to be permitted, otherwise access is denied. |
 
 ### Provider Health
 

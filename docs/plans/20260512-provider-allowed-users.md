@@ -208,13 +208,13 @@ Atomic for the same reason as Task 1: deleting `GatewayConfig.SuperUsers` breaks
 - Modify: `README.md` (repo root)
 - Modify: `plugin/filter/llms.txt`
 
-- [ ] In `xds/README.md:162`, update the `allowed_users` row description from "If empty and the user is not in `super_users`, access is denied." to "If empty, the user must match the resolved provider's `allowed_users` to be permitted, otherwise access is denied."
-- [ ] In `README.md:186`, apply the same wording fix to the `allowed_users` row.
-- [ ] In `plugin/filter/llms.txt:523`, **delete the `super_users` row entirely** (it is part of the top-level config schema table and no longer exists as a config field).
-- [ ] In `plugin/filter/llms.txt`, locate the `ProviderConfig` section (search for a `ProviderConfig` schema table around the providers documentation). Add a new row: `| \`allowed_users\` | string[] | empty | Lowercased usernames or emails granted access to all clusters served by this provider (OR-grant). Use \`["*"]\` to permit any authenticated user from this provider. |`
-- [ ] In `xds/README.md` and `README.md`, search for any remaining mentions of `super_users` in either README (top-level config schema sections, examples, or migration notes). Each one: either delete (if it's an example) or replace with a `providers.<name>.allowed_users` equivalent (if it's a feature description).
-- [ ] Repo-wide grep sanity: `grep -rn "super_users\|SuperUsers" plugin/ xds/ README.md CLAUDE.md` should now return zero hits, except inside `docs/superpowers/plans/` (frozen historical artifacts — leave alone).
-- [ ] No tests in this task (docs only).
+- [x] In `xds/README.md:162`, update the `allowed_users` row description from "If empty and the user is not in `super_users`, access is denied." to "If empty, the user must match the resolved provider's `allowed_users` to be permitted, otherwise access is denied."
+- [x] In `README.md:186`, apply the same wording fix to the `allowed_users` row.
+- [x] In `plugin/filter/llms.txt:523`, **delete the `super_users` row entirely** (it is part of the top-level config schema table and no longer exists as a config field).
+- [x] In `plugin/filter/llms.txt`, locate the `ProviderConfig` section (search for a `ProviderConfig` schema table around the providers documentation). Add a new row: `| \`allowed_users\` | string[] | empty | Lowercased usernames or emails granted access to all clusters served by this provider (OR-grant). Use \`["*"]\` to permit any authenticated user from this provider. |`
+- [x] In `xds/README.md` and `README.md`, search for any remaining mentions of `super_users` in either README (top-level config schema sections, examples, or migration notes). Each one: either delete (if it's an example) or replace with a `providers.<name>.allowed_users` equivalent (if it's a feature description).
+- [x] Repo-wide grep sanity: `grep -rn "super_users\|SuperUsers" plugin/ xds/ README.md CLAUDE.md` should now return zero hits, except inside `docs/superpowers/plans/` (frozen historical artifacts — leave alone).
+- [x] No tests in this task (docs only).
 
 ### Task 6: Verify acceptance criteria
 
