@@ -31,6 +31,8 @@ providers:
     client_secret: ${OAUTH_CLIENTSECRET}
     redirect_url: /oauth/callback
     scopes: [openid, profile, email]
+    allowed_users:
+      - demo
   auth:
    issuer_url: ${PL_ISSUERURL}
    client_id: ${PL_CLIENT_ID}
