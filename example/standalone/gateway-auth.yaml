@@ -31,6 +31,8 @@ providers:
     client_secret: ${OAUTH_CLIENTSECRET}
     redirect_url: /oauth/callback
     scopes: [openid, profile, email]
+    allowed_users:
+      - demo
   auth:
    issuer_url: ${PL_ISSUERURL}
    client_id: ${PL_CLIENT_ID}
@@ -46,8 +48,6 @@ oauth:
   session_secure: false
   session_http_only: true
   session_same_site: Lax
-super_users:
-  - demo
 clients:
   - id: keycloak #required
     description: "Keycloak IdP — auth UI exposed under /auth/, no gateway auth"

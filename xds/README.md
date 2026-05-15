@@ -110,7 +110,7 @@ clients:
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
 | `default_provider` | No | - | Fallback provider name for clients without an explicit `provider` field |
-| `providers` | No | - | Map of named provider configs. Each entry: `issuer_url`, `client_id`, `client_secret`, `redirect_url`, `scopes` |
+| `providers` | No | - | Map of named provider configs. Each entry: `issuer_url`, `client_id`, `client_secret`, `redirect_url`, `scopes`, `allowed_users` |
 
 The legacy `oauth:` block (single flat config) is still supported and treated as a provider named `default`.
 
@@ -159,7 +159,7 @@ Each client in the `clients` array represents a backend service cluster.
 | `host_rewrite` | No | - | Rewrite the Host header for upstream requests |
 | `prefix_rewrite` | No | - | Rewrite path prefix for upstream requests (see [Path Rewriting](#path-rewriting)) |
 | `provider` | No | `default_provider` | Named provider to use for this client |
-| `allowed_users` | No | `[]` | Usernames permitted to access this client (matched against `preferred_username` claim, case-insensitive). Use `["*"]` to allow any authenticated user. If empty and the user is not in `super_users`, access is denied. |
+| `allowed_users` | No | `[]` | Usernames permitted to access this client (matched against `preferred_username` claim, case-insensitive). Use `["*"]` to allow any authenticated user. If empty, the user must match the resolved provider's `allowed_users` to be permitted, otherwise access is denied. |
 | `add_token` | No | `false` | Add `Authorization: Bearer <token>` header to upstream |
 | `cluster_idle_timeout` | No | - | Connection idle timeout (e.g., `300s`) |
 | `route_timeout` | No | - | Request timeout for this route (e.g., `15s`) |

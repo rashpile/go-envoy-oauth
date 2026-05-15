@@ -92,6 +92,7 @@ Each provider value supports these fields:
 | `client_secret` | yes | OAuth client secret |
 | `redirect_url` | yes | Callback path registered with the provider (e.g. `/oauth/callback`) |
 | `scopes` | no | Additional scopes (default `openid profile email`) |
+| `allowed_users` | no | Lowercased usernames or emails granted access to all clusters served by this provider (OR-grant). Use `["*"]` to permit any authenticated user from this provider. |
 
 #### Legacy single-provider format (backward compatible)
 
@@ -183,7 +184,7 @@ The `clusters` section maps Envoy cluster names to per-cluster auth settings.
 | `exclude` | boolean | false | Bypass authentication for all requests to this cluster |
 | `exclude_paths` | string[] | [] | Paths to exclude from authentication within this cluster |
 | `add_token` | boolean | false | Add `Authorization: Bearer <token>` header to upstream requests |
-| `allowed_users` | string[] | [] | Usernames permitted to access this cluster (matched against `preferred_username` claim, case-insensitive). Use `["*"]` to allow any authenticated user. If empty and the user is not in `super_users`, access is denied. |
+| `allowed_users` | string[] | [] | Usernames permitted to access this cluster (matched against `preferred_username` claim, case-insensitive). Use `["*"]` to allow any authenticated user. If empty, the user must match the resolved provider's `allowed_users` to be permitted, otherwise access is denied. |
 
 ### Provider Health
 
@@ -237,6 +238,8 @@ Example:
 ```bash
 curl http://localhost:9102/metrics
 ```
+
+**Breaking change:** The top-level `super_users` config field has been removed. Configs that still include `super_users:` will have those entries silently ignored — affected users will be denied access. Migrate by moving usernames into the `allowed_users` field of the relevant provider entry (for OR-grant access across all clusters) or the cluster's `allowed_users` field.
 
 **Breaking change (Phase 04):** The `idp` Prometheus label on OAuth metrics
 (`envoy_oauth_login_total`, `envoy_oauth_logout_total`, `envoy_oauth_session_*`,

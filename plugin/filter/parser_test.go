@@ -466,6 +466,51 @@ func TestMergePreservesAuthProviderHeaderName(t *testing.T) {
 	}
 }
 
+// TestMergePreservesProviderAllowedUsers verifies that Merge() copies AllowedUsers
+// from parent providers and that the copy is independent (deep clone).
+func TestMergePreservesProviderAllowedUsers(t *testing.T) {
+	p := &Parser{}
+
+	parentCfg := baseConfig()
+	parentCfg["providers"] = map[string]interface{}{
+		"keycloak": map[string]interface{}{
+			"issuer_url":    "https://keycloak.example.com",
+			"client_id":     "kc-client",
+			"client_secret": "kc-secret",
+			"allowed_users": []interface{}{"alice", "bob"},
+		},
+	}
+	parentCfg["default_provider"] = "keycloak"
+	parent, err := p.parseRawConfig(buildAny(t, parentCfg))
+	if err != nil {
+		t.Fatalf("parent parseRawConfig: %v", err)
+	}
+
+	childCfg := baseConfig()
+	child, err := p.parseRawConfig(buildAny(t, childCfg))
+	if err != nil {
+		t.Fatalf("child parseRawConfig: %v", err)
+	}
+
+	merged := p.Merge(parent, child).(*OAuthConfig)
+
+	kc, ok := merged.Providers["keycloak"]
+	if !ok {
+		t.Fatal("keycloak provider lost after Merge")
+	}
+	if !slices.Equal(kc.AllowedUsers, []string{"alice", "bob"}) {
+		t.Errorf("AllowedUsers after Merge: got %v, want [alice bob]", kc.AllowedUsers)
+	}
+
+	// Mutate the merged slice to verify it is a clone, not the original.
+	kc.AllowedUsers[0] = "mutated"
+	merged.Providers["keycloak"] = kc
+	orig := parent.Providers["keycloak"]
+	if orig.AllowedUsers[0] != "alice" {
+		t.Errorf("Merge AllowedUsers is not a deep clone: parent mutated to %v", orig.AllowedUsers)
+	}
+}
+
 // TestParseLegacyCookieName verifies that Parse() with a legacy single-provider config
 // (no providers map) creates a "default" handler whose CookieManager uses the namespaced
 // cookie name "<base>_default" (D-02, Pitfall 1 in RESEARCH).
@@ -512,6 +557,103 @@ func TestParseLegacyCookieName(t *testing.T) {
 	}
 	if err2 != nil && !strings.Contains(err2.Error(), "not found") && !strings.Contains(err2.Error(), "cookie") {
 		t.Logf("GetSessionCookie old name error (acceptable): %v", err2)
+	}
+}
+
+// TestParseProviderAllowedUsers verifies that allowed_users under a provider entry
+// is lowercased, trimmed, and empty strings dropped. Dedup is NOT performed.
+func TestParseProviderAllowedUsers(t *testing.T) {
+	cfg := map[string]interface{}{
+		"providers": map[string]interface{}{
+			"kc": map[string]interface{}{
+				"issuer_url":    "https://keycloak.example.com",
+				"client_id":     "test",
+				"client_secret": "secret",
+				"allowed_users": []interface{}{"Alice", "  ", "BOB", "alice"},
+			},
+		},
+		"default_provider": "kc",
+	}
+	p := &Parser{}
+	conf, err := p.parseRawConfig(buildAny(t, cfg))
+	if err != nil {
+		t.Fatalf("parseRawConfig() error: %v", err)
+	}
+	kc, ok := conf.Providers["kc"]
+	if !ok {
+		t.Fatal("expected kc provider")
+	}
+	// "  " trims to "" and is dropped; "Alice" → "alice", "BOB" → "bob", "alice" stays
+	want := []string{"alice", "bob", "alice"}
+	if len(kc.AllowedUsers) != len(want) {
+		t.Fatalf("AllowedUsers len: got %d, want %d; got %v", len(kc.AllowedUsers), len(want), kc.AllowedUsers)
+	}
+	for i, w := range want {
+		if kc.AllowedUsers[i] != w {
+			t.Errorf("AllowedUsers[%d]: got %q, want %q", i, kc.AllowedUsers[i], w)
+		}
+	}
+}
+
+// TestParseProviderAllowedUsersEmpty verifies that a provider with no allowed_users
+// key results in nil (not an empty slice) and does not panic.
+func TestParseProviderAllowedUsersEmpty(t *testing.T) {
+	cfg := map[string]interface{}{
+		"providers": map[string]interface{}{
+			"kc": map[string]interface{}{
+				"issuer_url":    "https://keycloak.example.com",
+				"client_id":     "test",
+				"client_secret": "secret",
+				// no allowed_users key
+			},
+		},
+		"default_provider": "kc",
+	}
+	p := &Parser{}
+	conf, err := p.parseRawConfig(buildAny(t, cfg))
+	if err != nil {
+		t.Fatalf("parseRawConfig() error: %v", err)
+	}
+	kc, ok := conf.Providers["kc"]
+	if !ok {
+		t.Fatal("expected kc provider")
+	}
+	if kc.AllowedUsers != nil {
+		t.Errorf("AllowedUsers: got %v, want nil when key absent", kc.AllowedUsers)
+	}
+}
+
+// TestParseProviderAllowedUsersNonStringEntries verifies that non-string entries in
+// allowed_users are silently skipped; only string values survive.
+func TestParseProviderAllowedUsersNonStringEntries(t *testing.T) {
+	cfg := map[string]interface{}{
+		"providers": map[string]interface{}{
+			"kc": map[string]interface{}{
+				"issuer_url":    "https://keycloak.example.com",
+				"client_id":     "test",
+				"client_secret": "secret",
+				"allowed_users": []interface{}{"alice", 123.0, true, "bob"},
+			},
+		},
+		"default_provider": "kc",
+	}
+	p := &Parser{}
+	conf, err := p.parseRawConfig(buildAny(t, cfg))
+	if err != nil {
+		t.Fatalf("parseRawConfig() error: %v", err)
+	}
+	kc, ok := conf.Providers["kc"]
+	if !ok {
+		t.Fatal("expected kc provider")
+	}
+	want := []string{"alice", "bob"}
+	if len(kc.AllowedUsers) != len(want) {
+		t.Fatalf("AllowedUsers: got %v, want %v", kc.AllowedUsers, want)
+	}
+	for i, w := range want {
+		if kc.AllowedUsers[i] != w {
+			t.Errorf("AllowedUsers[%d]: got %q, want %q", i, kc.AllowedUsers[i], w)
+		}
 	}
 }
 

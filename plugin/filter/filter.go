@@ -202,7 +202,7 @@ func (f *Filter) handleAuthSuccess(header api.RequestHeaderMap, session *session
 	if !f.isUserPermitted(session) {
 		username := ""
 		if u, ok := session.Claims["preferred_username"].(string); ok {
-			username = u
+			username = strings.ToLower(strings.TrimSpace(u))
 		}
 
 		// Audit log: permission denied
@@ -215,11 +215,18 @@ func (f *Filter) handleAuthSuccess(header api.RequestHeaderMap, session *session
 		return f.handleAccessDenied(header)
 	}
 
-	// Audit log: permission granted (only if allowed_users is configured)
-	if clusterConfig, exists := f.config.Clusters[f.cluster]; exists && len(clusterConfig.AllowedUsers) > 0 {
+	// Audit log: permission granted (if either provider or cluster allowed_users is configured)
+	hasProviderList := false
+	if pn := f.resolveProviderName(); pn != "" {
+		if p, ok := f.config.Providers[pn]; ok && len(p.AllowedUsers) > 0 {
+			hasProviderList = true
+		}
+	}
+	clusterConfig, clusterExists := f.config.Clusters[f.cluster]
+	if hasProviderList || (clusterExists && len(clusterConfig.AllowedUsers) > 0) {
 		username := ""
 		if u, ok := session.Claims["preferred_username"].(string); ok {
-			username = u
+			username = strings.ToLower(strings.TrimSpace(u))
 		}
 		f.logger.Info("Access permitted",
 			zap.String("user", username),
@@ -906,14 +913,15 @@ func getClusterName(callbacks api.FilterCallbackHandler) string {
 	return clusterName
 }
 
-// isUserPermitted checks if the user is permitted to access the current cluster
-// Default: all users denied unless explicitly permitted via super_users or allowed_users
-// Use "*" in allowed_users to allow any authenticated user for a specific cluster
-func (f *Filter) isUserPermitted(session *session.Session) bool {
+// isUserPermitted checks if the user is permitted to access the current cluster.
+// Check order: provider-level allowed_users first (OR-grant), then cluster-level allowed_users.
+// Default-deny: if neither list grants access, the user is denied.
+// Use "*" in either list to permit any authenticated user.
+func (f *Filter) isUserPermitted(sess *session.Session) bool {
 	// Get username from session claims
 	username := ""
-	if u, ok := session.Claims["preferred_username"].(string); ok {
-		username = strings.ToLower(u)
+	if u, ok := sess.Claims["preferred_username"].(string); ok {
+		username = strings.ToLower(strings.TrimSpace(u))
 	}
 
 	if username == "" {
@@ -921,28 +929,38 @@ func (f *Filter) isUserPermitted(session *session.Session) bool {
 		return false
 	}
 
-	// Check super users first (always permitted)
-	for _, superUser := range f.config.SuperUsers {
-		if username == superUser {
-			return true
+	// Provider-level OR-grant: a match here permits immediately, regardless of cluster config.
+	providerName := f.resolveProviderName()
+	lenP := 0
+	if providerName != "" {
+		if provider, ok := f.config.Providers[providerName]; ok {
+			lenP = len(provider.AllowedUsers)
+			for _, allowed := range provider.AllowedUsers {
+				if allowed == "*" || allowed == username {
+					return true
+				}
+			}
 		}
 	}
 
-	// Get cluster config
+	// Cluster-level check: fall through to per-cluster allowed_users.
 	clusterConfig, exists := f.config.Clusters[f.cluster]
-	if !exists {
-		// No cluster config = deny by default
-		return false
-	}
-
-	// Check if user is in allowed list
-	for _, allowedUser := range clusterConfig.AllowedUsers {
-		// Wildcard "*" allows any authenticated user
-		if allowedUser == "*" || username == allowedUser {
-			return true
+	lenC := 0
+	if exists {
+		lenC = len(clusterConfig.AllowedUsers)
+		for _, allowed := range clusterConfig.AllowedUsers {
+			if allowed == "*" || allowed == username {
+				return true
+			}
 		}
 	}
 
-	// Default: deny access
+	// Default: deny access with a structured debug log (counts only — no list contents).
+	f.logger.Debug("authorization denied",
+		zap.String("username", username),
+		zap.String("provider_name", providerName),
+		zap.String("cluster", f.cluster),
+		zap.Int("provider_allowed_count", lenP),
+		zap.Int("cluster_allowed_count", lenC))
 	return false
 }

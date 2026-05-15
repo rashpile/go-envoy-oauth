@@ -10,7 +10,12 @@ import (
 	"github.com/envoyproxy/envoy/contrib/golang/common/go/api"
 	"github.com/rashpile/go-envoy-oauth/plugin/session"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
 )
+
+// testProviderName is a shared constant for isUserPermitted tests to avoid duplicating
+// the string literal across multiple test functions.
+const testProviderName = "test-provider"
 
 // recordingHandler wraps mockOAuthHandler with call recording for mismatch-branch testing.
 // Methods not explicitly overridden delegate to mockOAuthHandler.
@@ -317,11 +322,13 @@ func TestHandleAuthSuccessSetsProviderHeader(t *testing.T) {
 
 	f := &Filter{
 		config: &OAuthConfig{
+			Providers: map[string]ProviderConfig{
+				"keycloak": {AllowedUsers: []string{"*"}},
+			},
 			Clusters: map[string]ClusterConfig{
 				"cluster1": {ProviderName: "keycloak"},
 			},
 			DefaultProvider: "keycloak",
-			SuperUsers:      []string{"alice"},
 		},
 		cluster:          "cluster1",
 		providerRegistry: NewProviderRegistry(zap.NewNop()),
@@ -355,11 +362,13 @@ func TestHandleAuthSuccessCustomProviderHeaderName(t *testing.T) {
 
 	f := &Filter{
 		config: &OAuthConfig{
+			Providers: map[string]ProviderConfig{
+				"google": {AllowedUsers: []string{"*"}},
+			},
 			Clusters: map[string]ClusterConfig{
 				"cluster1": {ProviderName: "google"},
 			},
 			DefaultProvider:        "google",
-			SuperUsers:             []string{"charlie"},
 			AuthProviderHeaderName: "X-Custom-Provider",
 		},
 		cluster:          "cluster1",
@@ -398,11 +407,13 @@ func TestHandleAuthSuccessLegacySessionFallback(t *testing.T) {
 
 	f := &Filter{
 		config: &OAuthConfig{
+			Providers: map[string]ProviderConfig{
+				"keycloak": {AllowedUsers: []string{"*"}},
+			},
 			Clusters: map[string]ClusterConfig{
 				"cluster-legacy": {ProviderName: "keycloak"},
 			},
 			DefaultProvider: "keycloak",
-			SuperUsers:      []string{"diana"},
 		},
 		cluster:          "cluster-legacy",
 		providerRegistry: NewProviderRegistry(zap.NewNop()),
@@ -450,11 +461,13 @@ func TestHandleAuthSuccessMultiProviderHeaders(t *testing.T) {
 
 			f := &Filter{
 				config: &OAuthConfig{
+					Providers: map[string]ProviderConfig{
+						tc.providerName: {AllowedUsers: []string{"*"}},
+					},
 					Clusters: map[string]ClusterConfig{
 						"cluster1": {ProviderName: tc.providerName},
 					},
 					DefaultProvider: tc.providerName,
-					SuperUsers:      []string{tc.username},
 				},
 				cluster:          "cluster1",
 				providerRegistry: NewProviderRegistry(zap.NewNop()),
@@ -528,4 +541,369 @@ func TestStripUntrustedHeadersSafeOnEmptyConfig(t *testing.T) {
 	// Nil config
 	f = &Filter{logger: zap.NewNop()}
 	f.stripUntrustedHeaders(hdr) // must not panic
+}
+
+// TestProviderAllowGrantsWhenClusterDenies verifies the OR-grant: a user in
+// provider.AllowedUsers is permitted even when cluster.AllowedUsers excludes them.
+func TestProviderAllowGrantsWhenClusterDenies(t *testing.T) {
+	f := &Filter{
+		config: &OAuthConfig{
+			Providers: map[string]ProviderConfig{
+				testProviderName: {AllowedUsers: []string{"alice"}},
+			},
+			Clusters: map[string]ClusterConfig{
+				"test-cluster": {ProviderName: testProviderName, AllowedUsers: []string{"bob"}},
+			},
+		},
+		cluster: "test-cluster",
+		logger:  zap.NewNop(),
+	}
+	sess := &session.Session{
+		Claims: map[string]interface{}{"preferred_username": "alice"},
+	}
+	if !f.isUserPermitted(sess) {
+		t.Error("isUserPermitted denied alice who is in provider.AllowedUsers; OR-grant must permit immediately")
+	}
+}
+
+// TestProviderWildcardAllow verifies that provider.AllowedUsers = ["*"] permits any
+// authenticated user regardless of cluster.AllowedUsers.
+func TestProviderWildcardAllow(t *testing.T) {
+	f := &Filter{
+		config: &OAuthConfig{
+			Providers: map[string]ProviderConfig{
+				testProviderName: {AllowedUsers: []string{"*"}},
+			},
+			Clusters: map[string]ClusterConfig{
+				"test-cluster": {ProviderName: testProviderName},
+			},
+		},
+		cluster: "test-cluster",
+		logger:  zap.NewNop(),
+	}
+	sess := &session.Session{
+		Claims: map[string]interface{}{"preferred_username": "anyuser"},
+	}
+	if !f.isUserPermitted(sess) {
+		t.Error("isUserPermitted denied user with provider wildcard '*'; wildcard must permit any authenticated user")
+	}
+}
+
+// TestProviderAllowGrantsForClusterWithoutEntry documents the intentional widened-reach
+// behavior: a user in provider.AllowedUsers can reach clusters with no Clusters[] entry.
+// resolveProviderName() falls back to DefaultProvider when the cluster is not configured.
+func TestProviderAllowGrantsForClusterWithoutEntry(t *testing.T) {
+	f := &Filter{
+		config: &OAuthConfig{
+			Providers: map[string]ProviderConfig{
+				testProviderName: {AllowedUsers: []string{"alice"}},
+			},
+			Clusters:        map[string]ClusterConfig{},
+			DefaultProvider: testProviderName,
+		},
+		cluster: "unconfigured-cluster",
+		logger:  zap.NewNop(),
+	}
+	sess := &session.Session{
+		Claims: map[string]interface{}{"preferred_username": "alice"},
+	}
+	if !f.isUserPermitted(sess) {
+		t.Error("isUserPermitted denied alice for an unconfigured cluster; provider OR-grant must reach clusters with no Clusters[] entry (widened-reach documented in plan Overview)")
+	}
+}
+
+// TestEmptyProviderListDefersToCluster verifies that an empty provider.AllowedUsers
+// skips the provider check and falls through to cluster.AllowedUsers.
+func TestEmptyProviderListDefersToCluster(t *testing.T) {
+	f := &Filter{
+		config: &OAuthConfig{
+			Providers: map[string]ProviderConfig{
+				testProviderName: {AllowedUsers: nil},
+			},
+			Clusters: map[string]ClusterConfig{
+				"test-cluster": {ProviderName: testProviderName, AllowedUsers: []string{"alice"}},
+			},
+		},
+		cluster: "test-cluster",
+		logger:  zap.NewNop(),
+	}
+	sess := &session.Session{
+		Claims: map[string]interface{}{"preferred_username": "alice"},
+	}
+	if !f.isUserPermitted(sess) {
+		t.Error("isUserPermitted denied alice who is in cluster.AllowedUsers; empty provider list must fall through to cluster check")
+	}
+}
+
+// TestBothListsMissDenies verifies default-deny: a user in neither list is denied.
+func TestBothListsMissDenies(t *testing.T) {
+	f := &Filter{
+		config: &OAuthConfig{
+			Providers: map[string]ProviderConfig{
+				testProviderName: {AllowedUsers: []string{"bob"}},
+			},
+			Clusters: map[string]ClusterConfig{
+				"test-cluster": {ProviderName: testProviderName, AllowedUsers: []string{"charlie"}},
+			},
+		},
+		cluster: "test-cluster",
+		logger:  zap.NewNop(),
+	}
+	sess := &session.Session{
+		Claims: map[string]interface{}{"preferred_username": "alice"},
+	}
+	if f.isUserPermitted(sess) {
+		t.Error("isUserPermitted permitted alice who is in neither list; default-deny must hold")
+	}
+}
+
+// TestUnknownProviderSkipsProviderCheck verifies that a cluster referencing a provider
+// not in config.Providers silently skips the provider check and falls through to
+// cluster.AllowedUsers. No panic or error must occur.
+func TestUnknownProviderSkipsProviderCheck(t *testing.T) {
+	f := &Filter{
+		config: &OAuthConfig{
+			Providers: map[string]ProviderConfig{},
+			Clusters: map[string]ClusterConfig{
+				"test-cluster": {ProviderName: "nonexistent", AllowedUsers: []string{"alice"}},
+			},
+		},
+		cluster: "test-cluster",
+		logger:  zap.NewNop(),
+	}
+	sess := &session.Session{
+		Claims: map[string]interface{}{"preferred_username": "alice"},
+	}
+	if !f.isUserPermitted(sess) {
+		t.Error("isUserPermitted denied alice when the cluster provider is not in config.Providers; missing provider must be a silent skip, cluster check must still run")
+	}
+}
+
+// TestClusterWildcardStillWorks verifies that cluster.AllowedUsers = ["*"] still works
+// when provider.AllowedUsers is empty, confirming the cluster-level wildcard was not regressed.
+func TestClusterWildcardStillWorks(t *testing.T) {
+	f := &Filter{
+		config: &OAuthConfig{
+			Providers: map[string]ProviderConfig{
+				testProviderName: {AllowedUsers: nil},
+			},
+			Clusters: map[string]ClusterConfig{
+				"test-cluster": {ProviderName: testProviderName, AllowedUsers: []string{"*"}},
+			},
+		},
+		cluster: "test-cluster",
+		logger:  zap.NewNop(),
+	}
+	sess := &session.Session{
+		Claims: map[string]interface{}{"preferred_username": "anyuser"},
+	}
+	if !f.isUserPermitted(sess) {
+		t.Error("isUserPermitted denied user with cluster wildcard '*'; cluster-level wildcard must still permit any authenticated user")
+	}
+}
+
+// TestAuditLogFiresWithProviderOnlyAllow verifies that the "Access permitted" audit log
+// fires when the user is granted via provider.AllowedUsers and cluster.AllowedUsers is empty.
+// This covers the audit-log condition change at filter.go (hasProviderList check).
+func TestAuditLogFiresWithProviderOnlyAllow(t *testing.T) {
+	core, logs := observer.New(zap.DebugLevel)
+	logger := zap.New(core)
+
+	store := session.NewInMemorySessionStore()
+	sess := &session.Session{
+		ID:        "audit-sess",
+		UserID:    "user-audit",
+		ExpiresAt: time.Now().Add(1 * time.Hour),
+		Claims:    map[string]interface{}{"preferred_username": "alice"},
+	}
+	_ = store.Store(sess)
+
+	f := &Filter{
+		config: &OAuthConfig{
+			Providers: map[string]ProviderConfig{
+				testProviderName: {AllowedUsers: []string{"alice"}},
+			},
+			Clusters: map[string]ClusterConfig{
+				"test-cluster": {ProviderName: testProviderName},
+			},
+		},
+		cluster:      "test-cluster",
+		sessionStore: store,
+		logger:       logger,
+	}
+
+	hdr := &capturingHeaderMap{headers: make(map[string]string)}
+	_ = f.handleAuthSuccess(hdr, sess)
+
+	var found bool
+	for _, entry := range logs.All() {
+		if entry.Message == "Access permitted" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("audit log 'Access permitted' did not fire when user was permitted via provider.AllowedUsers with empty cluster.AllowedUsers")
+	}
+}
+
+// TestDenyLogOmitsListContents verifies the PII guarantee: the "authorization denied"
+// debug log fires with provider_allowed_count and cluster_allowed_count fields, but
+// must NOT contain the actual allowed-user strings (which are PII).
+func TestDenyLogOmitsListContents(t *testing.T) {
+	core, logs := observer.New(zap.DebugLevel)
+	logger := zap.New(core)
+
+	f := &Filter{
+		config: &OAuthConfig{
+			Providers: map[string]ProviderConfig{
+				testProviderName: {AllowedUsers: []string{"bob", "charlie"}},
+			},
+			Clusters: map[string]ClusterConfig{
+				"test-cluster": {ProviderName: testProviderName, AllowedUsers: []string{"dave", "eve"}},
+			},
+		},
+		cluster: "test-cluster",
+		logger:  logger,
+	}
+	sess := &session.Session{
+		Claims: map[string]interface{}{"preferred_username": "alice"},
+	}
+	if f.isUserPermitted(sess) {
+		t.Fatal("expected deny; alice is in neither list")
+	}
+
+	allLogs := logs.All()
+	denyIdx := -1
+	for i, entry := range allLogs {
+		if entry.Message == "authorization denied" {
+			denyIdx = i
+			break
+		}
+	}
+	if denyIdx < 0 {
+		t.Fatal("'authorization denied' debug log did not fire on deny path")
+	}
+	denyEntry := allLogs[denyIdx]
+
+	var foundProviderCount, foundClusterCount bool
+	for _, field := range denyEntry.Context {
+		switch field.Key {
+		case "provider_allowed_count":
+			foundProviderCount = true
+			if field.Integer != 2 {
+				t.Errorf("provider_allowed_count: got %d, want 2", field.Integer)
+			}
+		case "cluster_allowed_count":
+			foundClusterCount = true
+			if field.Integer != 2 {
+				t.Errorf("cluster_allowed_count: got %d, want 2", field.Integer)
+			}
+		}
+	}
+	if !foundProviderCount {
+		t.Error("deny log missing 'provider_allowed_count' field")
+	}
+	if !foundClusterCount {
+		t.Error("deny log missing 'cluster_allowed_count' field")
+	}
+
+	// PII guarantee: none of the allowed-user strings may appear in any log field.
+	prohibitedValues := []string{"bob", "charlie", "dave", "eve"}
+	for _, field := range denyEntry.Context {
+		for _, prohibited := range prohibitedValues {
+			if field.String == prohibited {
+				t.Errorf("deny log field %q contains allowed-user string %q — list contents are PII and must not be logged", field.Key, prohibited)
+			}
+		}
+	}
+}
+
+// TestIsUserPermittedNilClaims verifies that isUserPermitted returns false when
+// session.Claims is nil (no preferred_username available).
+func TestIsUserPermittedNilClaims(t *testing.T) {
+	f := &Filter{
+		config: &OAuthConfig{
+			Providers: map[string]ProviderConfig{
+				testProviderName: {AllowedUsers: []string{"*"}},
+			},
+			Clusters: map[string]ClusterConfig{
+				"test-cluster": {ProviderName: testProviderName, AllowedUsers: []string{"*"}},
+			},
+		},
+		cluster: "test-cluster",
+		logger:  zap.NewNop(),
+	}
+	sess := &session.Session{Claims: nil}
+	if f.isUserPermitted(sess) {
+		t.Error("isUserPermitted must deny when session.Claims is nil")
+	}
+}
+
+// TestIsUserPermittedEmptyClaims verifies that isUserPermitted returns false when
+// session.Claims exists but preferred_username is absent.
+func TestIsUserPermittedEmptyClaims(t *testing.T) {
+	f := &Filter{
+		config: &OAuthConfig{
+			Providers: map[string]ProviderConfig{
+				testProviderName: {AllowedUsers: []string{"*"}},
+			},
+			Clusters: map[string]ClusterConfig{
+				"test-cluster": {ProviderName: testProviderName, AllowedUsers: []string{"*"}},
+			},
+		},
+		cluster: "test-cluster",
+		logger:  zap.NewNop(),
+	}
+	sess := &session.Session{Claims: map[string]interface{}{}}
+	if f.isUserPermitted(sess) {
+		t.Error("isUserPermitted must deny when preferred_username claim is absent")
+	}
+}
+
+// TestIsUserPermittedEmptyUsername verifies that isUserPermitted returns false when
+// preferred_username is present but empty (or whitespace-only).
+func TestIsUserPermittedEmptyUsername(t *testing.T) {
+	f := &Filter{
+		config: &OAuthConfig{
+			Providers: map[string]ProviderConfig{
+				testProviderName: {AllowedUsers: []string{"*"}},
+			},
+			Clusters: map[string]ClusterConfig{
+				"test-cluster": {ProviderName: testProviderName, AllowedUsers: []string{"*"}},
+			},
+		},
+		cluster: "test-cluster",
+		logger:  zap.NewNop(),
+	}
+	for _, username := range []string{"", "   ", "\t"} {
+		sess := &session.Session{Claims: map[string]interface{}{"preferred_username": username}}
+		if f.isUserPermitted(sess) {
+			t.Errorf("isUserPermitted must deny for empty/whitespace username %q", username)
+		}
+	}
+}
+
+// TestBothListsNilDenies verifies default-deny when neither list is configured
+// (both provider.AllowedUsers and cluster.AllowedUsers are nil).
+// Distinct from TestBothListsMissDenies where lists exist but contain wrong names.
+func TestBothListsNilDenies(t *testing.T) {
+	f := &Filter{
+		config: &OAuthConfig{
+			Providers: map[string]ProviderConfig{
+				testProviderName: {AllowedUsers: nil},
+			},
+			Clusters: map[string]ClusterConfig{
+				"test-cluster": {ProviderName: testProviderName, AllowedUsers: nil},
+			},
+		},
+		cluster: "test-cluster",
+		logger:  zap.NewNop(),
+	}
+	sess := &session.Session{
+		Claims: map[string]interface{}{"preferred_username": "alice"},
+	}
+	if f.isUserPermitted(sess) {
+		t.Error("isUserPermitted must deny when both provider and cluster AllowedUsers are nil")
+	}
 }
