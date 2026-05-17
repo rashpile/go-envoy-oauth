@@ -937,8 +937,8 @@ func assertRestartResponse(t *testing.T, dec *captureDecoderCallbacks) {
 		t.Errorf("statusCode = %d, want 302", dec.statusCode)
 	}
 	locs := dec.headers["Location"]
-	if len(locs) == 0 || locs[0] != "/" {
-		t.Errorf("Location = %v, want [\"/\"]", locs)
+	if len(locs) == 0 || locs[0] != "/oauth/login" {
+		t.Errorf("Location = %v, want [\"/oauth/login\"]", locs)
 	}
 	cookies := dec.headers["Set-Cookie"]
 	if len(cookies) != 1 {
