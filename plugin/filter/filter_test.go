@@ -928,9 +928,9 @@ func buildCallbackFilter(cbs *captureCallbacks) *Filter {
 	}
 }
 
-// assertRestartResponse asserts that dec captured a 302 to "/" with exactly the
-// oauthRestartCookie constant as its Set-Cookie. Pin the whole cookie string so
-// any drift in lifetime, path, or attribute order is caught.
+// assertRestartResponse asserts that dec captured a 302 to "/oauth/login" with
+// exactly the oauthRestartCookie constant as its Set-Cookie. Pin the whole
+// cookie string so any drift in lifetime, path, or attribute order is caught.
 func assertRestartResponse(t *testing.T, dec *captureDecoderCallbacks) {
 	t.Helper()
 	if dec.statusCode != 302 {
@@ -950,8 +950,9 @@ func assertRestartResponse(t *testing.T, dec *captureDecoderCallbacks) {
 }
 
 // TestHandleCallbackRestartsOnMissingPendingAuth verifies that a callback with a
-// state param whose pending-auth entry is missing triggers a 302 restart to "/"
-// with the oauth_restart=1 cookie when no restart cookie is present on the request.
+// state param whose pending-auth entry is missing triggers a 302 restart to
+// "/oauth/login" with the oauth_restart=1 cookie when no restart cookie is
+// present on the request.
 func TestHandleCallbackRestartsOnMissingPendingAuth(t *testing.T) {
 	dec := &captureDecoderCallbacks{}
 	cbs := &captureCallbacks{decoder: dec}
@@ -1028,8 +1029,8 @@ func TestHandleCallbackLoopGuardFallsBackTo400(t *testing.T) {
 }
 
 // TestHandleCallbackRestartsOnMissingStateParam verifies that a callback with no
-// state parameter at all triggers a 302 restart to "/" with the oauth_restart=1
-// cookie when no restart guard cookie is present.
+// state parameter at all triggers a 302 restart to "/oauth/login" with the
+// oauth_restart=1 cookie when no restart guard cookie is present.
 func TestHandleCallbackRestartsOnMissingStateParam(t *testing.T) {
 	dec := &captureDecoderCallbacks{}
 	cbs := &captureCallbacks{decoder: dec}
