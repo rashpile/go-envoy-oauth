@@ -34,11 +34,11 @@ providers:
     allowed_users:
       - demo
   auth:
-   issuer_url: ${PL_ISSUERURL}
-   client_id: ${PL_CLIENT_ID}
-   client_secret: ${PL_CLIENT_SECRET}
-   redirect_url: /oauth/callback
-   scopes: [openid, profile, email]
+    issuer_url: ${PL_ISSUERURL}
+    client_id: ${PL_CLIENT_ID}
+    client_secret: ${PL_CLIENT_SECRET}
+    redirect_url: /oauth/callback
+    scopes: [openid, profile, email]
 
 listener:
   address: 0.0.0.0
@@ -63,6 +63,7 @@ clients:
     sso_appname: Keycloak
   - id: admin_cluster #required
     address: httpbin.org # required
+    provider: auth
     domain: localhost:8081
     port: 443 # default 8080
     ssl: true # default false
@@ -92,15 +93,15 @@ clients:
     exclude_paths:
       - /status/200
       - /status/201
-#  - id: echo2_service_cluster
-#    domain: local.home:8081
-#    host_rewrite: httpbin.org
-#    address: http-echo
-#    port: 8080
-#    ssl: false
-#    exclude: false
-#    exclude_paths:
-#      - /favicon.ico
+  #  - id: echo2_service_cluster
+  #    domain: local.home:8081
+  #    host_rewrite: httpbin.org
+  #    address: http-echo
+  #    port: 8080
+  #    ssl: false
+  #    exclude: false
+  #    exclude_paths:
+  #      - /favicon.ico
   # websocket example
   - id: chat_service_cluster
     domain: local.home:8081
