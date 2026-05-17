@@ -716,6 +716,45 @@ func (f *Filter) handleLogin(header api.RequestHeaderMap) api.StatusType {
 	return f.handleRedirect(authURL, "")
 }
 
+// oauthRestartCookie is the Set-Cookie string used by the single-bounce restart guard.
+// Plaintext and short-lived — carries no secret, only a loop-break marker.
+const oauthRestartCookie = "oauth_restart=1; Path=/; Max-Age=10; HttpOnly; SameSite=Lax"
+
+// hasOAuthRestartCookie reports whether the inbound request already carries the
+// single-bounce restart marker. Plaintext, no CookieManager — this cookie holds
+// no secret, only a counter to break a potential redirect loop.
+func hasOAuthRestartCookie(header api.RequestHeaderMap) bool {
+	raw, _ := header.Get("cookie")
+	if raw == "" {
+		return false
+	}
+	for _, part := range strings.Split(raw, ";") {
+		if strings.TrimSpace(part) == "oauth_restart=1" {
+			return true
+		}
+	}
+	return false
+}
+
+// restartOrGuard implements the self-healing redirect for the two missing/expired
+// pending-auth branches of handleCallback. On first hit (no oauth_restart cookie),
+// it 302s to "/" with a short-lived single-bounce cookie so the next request enters
+// the normal unauth flow and produces a fresh pending-auth entry. On the second hit
+// (cookie already present), it falls back to the existing 400 so a true loop is
+// visible to operators instead of being silently papered over.
+func (f *Filter) restartOrGuard(header api.RequestHeaderMap, traceID, reason, failureMsg string) api.StatusType {
+	if hasOAuthRestartCookie(header) {
+		f.logger.Warn("OAuth restart loop guard tripped — returning 400",
+			zap.String("trace_id", traceID),
+			zap.String("reason", reason))
+		return f.handleAuthFailure(400, failureMsg)
+	}
+	f.logger.Warn("Restarting OAuth flow on missing/expired state",
+		zap.String("trace_id", traceID),
+		zap.String("reason", reason))
+	return f.handleRedirect("/", oauthRestartCookie)
+}
+
 // handleCallback processes the OAuth callback
 func (f *Filter) handleCallback(header api.RequestHeaderMap) api.StatusType {
 	traceID := f.getTraceID(header)
@@ -736,7 +775,8 @@ func (f *Filter) handleCallback(header api.RequestHeaderMap) api.StatusType {
 	values, _ := url.ParseQuery(query)
 	nonce := values.Get("state")
 	if nonce == "" {
-		return f.handleAuthFailure(400, "Missing state parameter in OAuth callback")
+		return f.restartOrGuard(header, traceID, "missing_state",
+			"Missing state parameter in OAuth callback")
 	}
 	providerName, err := session.PeekPendingAuthProvider(f.sessionStore, nonce)
 	if err != nil {
@@ -744,7 +784,8 @@ func (f *Filter) handleCallback(header api.RequestHeaderMap) api.StatusType {
 			zap.String("trace_id", traceID),
 			zap.String("nonce", nonce),
 			zap.Error(err))
-		return f.handleAuthFailure(400, "Invalid or expired state parameter")
+		return f.restartOrGuard(header, traceID, "invalid_or_expired_state",
+			"Invalid or expired state parameter")
 	}
 
 	callbackHandler, err := f.providerRegistry.GetHandler(providerName)
