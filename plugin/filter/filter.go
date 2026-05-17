@@ -716,6 +716,64 @@ func (f *Filter) handleLogin(header api.RequestHeaderMap) api.StatusType {
 	return f.handleRedirect(authURL, "")
 }
 
+// oauthRestartCookie is the Set-Cookie string used by the single-bounce restart guard.
+// Plaintext and short-lived — carries no secret, only a loop-break marker.
+//
+// Why Max-Age=10s: the cookie only needs to live long enough to catch a SECOND
+// stale-callback hit (back-button replay, IdP-mediated immediate re-callback,
+// preload/refresh). The legitimate flow after the 302 — handleLogin → IdP
+// authorize → user types credentials/MFA → fresh /oauth/callback — does NOT
+// re-enter restartOrGuard, because that second callback carries a *new* state
+// produced by handleLogin. A longer TTL would defer the true-loop signal
+// without preventing any real loop.
+//
+// Why no Secure: this marker carries no confidentiality (value is a fixed
+// literal). HttpOnly+SameSite=Lax block the realistic browser-side write
+// vectors. Omitting Secure preserves local-dev HTTP behavior; a hypothetical
+// HTTP-MITM injecting oauth_restart=1 only achieves a one-time 400 page on a
+// genuinely stale callback — UX nuisance, not a security incident.
+const oauthRestartCookie = "oauth_restart=1; Path=/; Max-Age=10; HttpOnly; SameSite=Lax"
+
+// hasOAuthRestartCookie reports whether the inbound request already carries the
+// single-bounce restart marker. Plaintext, no CookieManager — this cookie holds
+// no secret, only a marker to break a potential redirect loop.
+func hasOAuthRestartCookie(header api.RequestHeaderMap) bool {
+	raw, _ := header.Get("cookie")
+	if raw == "" {
+		return false
+	}
+	for _, part := range strings.Split(raw, ";") {
+		if strings.TrimSpace(part) == "oauth_restart=1" {
+			return true
+		}
+	}
+	return false
+}
+
+// restartOrGuard implements the self-healing redirect for the two missing/expired
+// pending-auth branches of handleCallback. On first hit (no oauth_restart cookie),
+// it 302s to "/oauth/login" with a short-lived single-bounce cookie so the filter
+// re-enters the OAuth flow and produces a fresh pending-auth entry. On the second
+// hit (cookie already present), it falls back to the existing 400 so a true loop
+// is visible to operators instead of being silently papered over.
+//
+// Target is "/oauth/login" (not "/"): the OAuth endpoint switch always handles
+// it regardless of cluster ExcludePaths, and handleLogin tolerates missing
+// query params (defaults redirect_uri to "/" and resolves the provider from
+// cluster config).
+func (f *Filter) restartOrGuard(header api.RequestHeaderMap, traceID, reason, failureMsg string) api.StatusType {
+	if hasOAuthRestartCookie(header) {
+		f.logger.Warn("OAuth restart loop guard tripped — returning 400",
+			zap.String("trace_id", traceID),
+			zap.String("reason", reason))
+		return f.handleAuthFailure(400, failureMsg)
+	}
+	f.logger.Warn("Restarting OAuth flow on missing/expired state",
+		zap.String("trace_id", traceID),
+		zap.String("reason", reason))
+	return f.handleRedirect("/oauth/login", oauthRestartCookie)
+}
+
 // handleCallback processes the OAuth callback
 func (f *Filter) handleCallback(header api.RequestHeaderMap) api.StatusType {
 	traceID := f.getTraceID(header)
@@ -736,7 +794,8 @@ func (f *Filter) handleCallback(header api.RequestHeaderMap) api.StatusType {
 	values, _ := url.ParseQuery(query)
 	nonce := values.Get("state")
 	if nonce == "" {
-		return f.handleAuthFailure(400, "Missing state parameter in OAuth callback")
+		return f.restartOrGuard(header, traceID, "missing_state",
+			"Missing state parameter in OAuth callback")
 	}
 	providerName, err := session.PeekPendingAuthProvider(f.sessionStore, nonce)
 	if err != nil {
@@ -744,7 +803,8 @@ func (f *Filter) handleCallback(header api.RequestHeaderMap) api.StatusType {
 			zap.String("trace_id", traceID),
 			zap.String("nonce", nonce),
 			zap.Error(err))
-		return f.handleAuthFailure(400, "Invalid or expired state parameter")
+		return f.restartOrGuard(header, traceID, "invalid_or_expired_state",
+			"Invalid or expired state parameter")
 	}
 
 	callbackHandler, err := f.providerRegistry.GetHandler(providerName)

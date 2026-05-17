@@ -884,6 +884,168 @@ func TestIsUserPermittedEmptyUsername(t *testing.T) {
 	}
 }
 
+// captureCallbacks implements api.FilterCallbackHandler for handleCallback tests.
+// Embed the interface (nil) so unimplemented methods compile and panic only if called.
+type captureCallbacks struct {
+	api.FilterCallbackHandler
+	decoder *captureDecoderCallbacks
+}
+
+func (c *captureCallbacks) DecoderFilterCallbacks() api.DecoderFilterCallbacks { return c.decoder }
+
+// captureDecoderCallbacks records SendLocalReply calls for assertion.
+type captureDecoderCallbacks struct {
+	api.DecoderFilterCallbacks
+	statusCode int
+	body       string
+	headers    map[string][]string
+	details    string
+	called     bool
+}
+
+func (c *captureDecoderCallbacks) SendLocalReply(code int, body string,
+	headers map[string][]string, grpcStatus int64, details string) {
+	c.called = true
+	c.statusCode = code
+	c.body = body
+	c.headers = headers
+	c.details = details
+}
+
+// buildCallbackFilter returns a minimal Filter wired for handleCallback tests:
+// empty session store, empty provider registry, nop logger, and the given capture callbacks.
+func buildCallbackFilter(cbs *captureCallbacks) *Filter {
+	registry := NewProviderRegistry(zap.NewNop())
+	store := session.NewInMemorySessionStore()
+	return &Filter{
+		config: &OAuthConfig{
+			Clusters: map[string]ClusterConfig{},
+		},
+		providerRegistry: registry,
+		sessionStore:     store,
+		callbacks:        cbs,
+		logger:           zap.NewNop(),
+	}
+}
+
+// assertRestartResponse asserts that dec captured a 302 to "/oauth/login" with
+// exactly the oauthRestartCookie constant as its Set-Cookie. Pin the whole
+// cookie string so any drift in lifetime, path, or attribute order is caught.
+func assertRestartResponse(t *testing.T, dec *captureDecoderCallbacks) {
+	t.Helper()
+	if dec.statusCode != 302 {
+		t.Errorf("statusCode = %d, want 302", dec.statusCode)
+	}
+	locs := dec.headers["Location"]
+	if len(locs) == 0 || locs[0] != "/oauth/login" {
+		t.Errorf("Location = %v, want [\"/oauth/login\"]", locs)
+	}
+	cookies := dec.headers["Set-Cookie"]
+	if len(cookies) != 1 {
+		t.Fatalf("Set-Cookie = %v, want exactly one entry", cookies)
+	}
+	if cookies[0] != oauthRestartCookie {
+		t.Errorf("Set-Cookie = %q, want %q", cookies[0], oauthRestartCookie)
+	}
+}
+
+// TestHandleCallbackRestartsOnMissingPendingAuth verifies that a callback with a
+// state param whose pending-auth entry is missing triggers a 302 restart to
+// "/oauth/login" with the oauth_restart=1 cookie when no restart cookie is
+// present on the request.
+func TestHandleCallbackRestartsOnMissingPendingAuth(t *testing.T) {
+	dec := &captureDecoderCallbacks{}
+	cbs := &captureCallbacks{decoder: dec}
+	f := buildCallbackFilter(cbs)
+
+	hdr := &capturingHeaderMap{headers: make(map[string]string)}
+	hdr.Set(":path", "/oauth/callback?state=does-not-exist&code=abc")
+
+	result := f.handleCallback(hdr)
+	if result != api.LocalReply {
+		t.Fatalf("handleCallback returned %v, want api.LocalReply", result)
+	}
+	assertRestartResponse(t, dec)
+}
+
+// TestHandleCallbackLoopGuardFallsBackTo400 verifies that when the inbound request
+// already carries an oauth_restart=1 cookie, the filter returns 400 instead of
+// another restart redirect (loop guard). Covers both restartOrGuard call sites:
+// missing_state and invalid_or_expired_state.
+func TestHandleCallbackLoopGuardFallsBackTo400(t *testing.T) {
+	cases := []struct {
+		name     string
+		path     string
+		cookie   string
+		wantBody string
+	}{
+		{
+			name:     "invalid_or_expired_state, bare cookie",
+			path:     "/oauth/callback?state=does-not-exist&code=abc",
+			cookie:   "oauth_restart=1",
+			wantBody: "Invalid or expired state parameter",
+		},
+		{
+			name:     "invalid_or_expired_state, cookie among others",
+			path:     "/oauth/callback?state=does-not-exist&code=abc",
+			cookie:   "foo=bar; oauth_restart=1; baz=qux",
+			wantBody: "Invalid or expired state parameter",
+		},
+		{
+			name:     "missing_state, bare cookie",
+			path:     "/oauth/callback?code=abc",
+			cookie:   "oauth_restart=1",
+			wantBody: "Missing state parameter in OAuth callback",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dec := &captureDecoderCallbacks{}
+			cbs := &captureCallbacks{decoder: dec}
+			f := buildCallbackFilter(cbs)
+
+			hdr := &capturingHeaderMap{headers: make(map[string]string)}
+			hdr.Set(":path", tc.path)
+			hdr.Set("cookie", tc.cookie)
+
+			result := f.handleCallback(hdr)
+			if result != api.LocalReply {
+				t.Fatalf("handleCallback returned %v, want api.LocalReply", result)
+			}
+			if dec.statusCode != 400 {
+				t.Errorf("statusCode = %d, want 400", dec.statusCode)
+			}
+			if !strings.Contains(dec.body, tc.wantBody) {
+				t.Errorf("body = %q, want to contain %q", dec.body, tc.wantBody)
+			}
+			// Loop guard must not re-set the restart cookie — otherwise the
+			// 400 fallback would self-renew the guard on every hit.
+			if got := dec.headers["Set-Cookie"]; len(got) != 0 {
+				t.Errorf("Set-Cookie = %v, want none on loop-guard 400", got)
+			}
+		})
+	}
+}
+
+// TestHandleCallbackRestartsOnMissingStateParam verifies that a callback with no
+// state parameter at all triggers a 302 restart to "/oauth/login" with the
+// oauth_restart=1 cookie when no restart guard cookie is present.
+func TestHandleCallbackRestartsOnMissingStateParam(t *testing.T) {
+	dec := &captureDecoderCallbacks{}
+	cbs := &captureCallbacks{decoder: dec}
+	f := buildCallbackFilter(cbs)
+
+	hdr := &capturingHeaderMap{headers: make(map[string]string)}
+	hdr.Set(":path", "/oauth/callback?code=abc")
+
+	result := f.handleCallback(hdr)
+	if result != api.LocalReply {
+		t.Fatalf("handleCallback returned %v, want api.LocalReply", result)
+	}
+	assertRestartResponse(t, dec)
+}
+
 // TestBothListsNilDenies verifies default-deny when neither list is configured
 // (both provider.AllowedUsers and cluster.AllowedUsers are nil).
 // Distinct from TestBothListsMissDenies where lists exist but contain wrong names.
