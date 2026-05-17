@@ -928,24 +928,11 @@ func buildCallbackFilter(cbs *captureCallbacks) *Filter {
 	}
 }
 
-// TestHandleCallbackRestartsOnMissingPendingAuth verifies that a callback with a
-// state param whose pending-auth entry is missing triggers a 302 restart to "/"
-// with the oauth_restart=1 cookie when no restart cookie is present on the request.
-func TestHandleCallbackRestartsOnMissingPendingAuth(t *testing.T) {
-	dec := &captureDecoderCallbacks{}
-	cbs := &captureCallbacks{decoder: dec}
-	f := buildCallbackFilter(cbs)
-
-	// Wire errorHandler so recordAndSendLocalReply does not panic on nil.
-	f.errorHandler = NewErrorHandler(f.logger, cbs, func(int) {})
-
-	hdr := &capturingHeaderMap{headers: make(map[string]string)}
-	hdr.Set(":path", "/oauth/callback?state=does-not-exist&code=abc")
-
-	result := f.handleCallback(hdr)
-	if result != api.LocalReply {
-		t.Fatalf("handleCallback returned %v, want api.LocalReply", result)
-	}
+// assertRestartResponse asserts that dec captured a 302 to "/" with exactly the
+// oauthRestartCookie constant as its Set-Cookie. Pin the whole cookie string so
+// any drift in lifetime, path, or attribute order is caught.
+func assertRestartResponse(t *testing.T, dec *captureDecoderCallbacks) {
+	t.Helper()
 	if dec.statusCode != 302 {
 		t.Errorf("statusCode = %d, want 302", dec.statusCode)
 	}
@@ -954,43 +941,71 @@ func TestHandleCallbackRestartsOnMissingPendingAuth(t *testing.T) {
 		t.Errorf("Location = %v, want [\"/\"]", locs)
 	}
 	cookies := dec.headers["Set-Cookie"]
-	if len(cookies) == 0 {
-		t.Fatal("Set-Cookie header missing")
+	if len(cookies) != 1 {
+		t.Fatalf("Set-Cookie = %v, want exactly one entry", cookies)
 	}
-	cookie := cookies[0]
-	for _, want := range []string{"oauth_restart=1", "Path=/", "Max-Age=10", "HttpOnly", "SameSite=Lax"} {
-		if !strings.Contains(cookie, want) {
-			t.Errorf("Set-Cookie %q missing %q", cookie, want)
-		}
+	if cookies[0] != oauthRestartCookie {
+		t.Errorf("Set-Cookie = %q, want %q", cookies[0], oauthRestartCookie)
 	}
-	for _, forbidden := range []string{"Secure", "Domain="} {
-		if strings.Contains(cookie, forbidden) {
-			t.Errorf("Set-Cookie %q must not contain %q", cookie, forbidden)
-		}
+}
+
+// TestHandleCallbackRestartsOnMissingPendingAuth verifies that a callback with a
+// state param whose pending-auth entry is missing triggers a 302 restart to "/"
+// with the oauth_restart=1 cookie when no restart cookie is present on the request.
+func TestHandleCallbackRestartsOnMissingPendingAuth(t *testing.T) {
+	dec := &captureDecoderCallbacks{}
+	cbs := &captureCallbacks{decoder: dec}
+	f := buildCallbackFilter(cbs)
+
+	hdr := &capturingHeaderMap{headers: make(map[string]string)}
+	hdr.Set(":path", "/oauth/callback?state=does-not-exist&code=abc")
+
+	result := f.handleCallback(hdr)
+	if result != api.LocalReply {
+		t.Fatalf("handleCallback returned %v, want api.LocalReply", result)
 	}
+	assertRestartResponse(t, dec)
 }
 
 // TestHandleCallbackLoopGuardFallsBackTo400 verifies that when the inbound request
 // already carries an oauth_restart=1 cookie, the filter returns 400 instead of
-// another restart redirect (loop guard).
+// another restart redirect (loop guard). Covers both restartOrGuard call sites:
+// missing_state and invalid_or_expired_state.
 func TestHandleCallbackLoopGuardFallsBackTo400(t *testing.T) {
-	cookieForms := []struct {
-		name   string
-		cookie string
+	cases := []struct {
+		name     string
+		path     string
+		cookie   string
+		wantBody string
 	}{
-		{"bare restart cookie", "oauth_restart=1"},
-		{"restart cookie among others", "foo=bar; oauth_restart=1; baz=qux"},
+		{
+			name:     "invalid_or_expired_state, bare cookie",
+			path:     "/oauth/callback?state=does-not-exist&code=abc",
+			cookie:   "oauth_restart=1",
+			wantBody: "Invalid or expired state parameter",
+		},
+		{
+			name:     "invalid_or_expired_state, cookie among others",
+			path:     "/oauth/callback?state=does-not-exist&code=abc",
+			cookie:   "foo=bar; oauth_restart=1; baz=qux",
+			wantBody: "Invalid or expired state parameter",
+		},
+		{
+			name:     "missing_state, bare cookie",
+			path:     "/oauth/callback?code=abc",
+			cookie:   "oauth_restart=1",
+			wantBody: "Missing state parameter in OAuth callback",
+		},
 	}
 
-	for _, tc := range cookieForms {
+	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			dec := &captureDecoderCallbacks{}
 			cbs := &captureCallbacks{decoder: dec}
 			f := buildCallbackFilter(cbs)
-			f.errorHandler = NewErrorHandler(f.logger, cbs, func(int) {})
 
 			hdr := &capturingHeaderMap{headers: make(map[string]string)}
-			hdr.Set(":path", "/oauth/callback?state=does-not-exist&code=abc")
+			hdr.Set(":path", tc.path)
 			hdr.Set("cookie", tc.cookie)
 
 			result := f.handleCallback(hdr)
@@ -1000,8 +1015,13 @@ func TestHandleCallbackLoopGuardFallsBackTo400(t *testing.T) {
 			if dec.statusCode != 400 {
 				t.Errorf("statusCode = %d, want 400", dec.statusCode)
 			}
-			if !strings.Contains(dec.body, "Invalid or expired state parameter") {
-				t.Errorf("body = %q, want to contain \"Invalid or expired state parameter\"", dec.body)
+			if !strings.Contains(dec.body, tc.wantBody) {
+				t.Errorf("body = %q, want to contain %q", dec.body, tc.wantBody)
+			}
+			// Loop guard must not re-set the restart cookie — otherwise the
+			// 400 fallback would self-renew the guard on every hit.
+			if got := dec.headers["Set-Cookie"]; len(got) != 0 {
+				t.Errorf("Set-Cookie = %v, want none on loop-guard 400", got)
 			}
 		})
 	}
@@ -1014,7 +1034,6 @@ func TestHandleCallbackRestartsOnMissingStateParam(t *testing.T) {
 	dec := &captureDecoderCallbacks{}
 	cbs := &captureCallbacks{decoder: dec}
 	f := buildCallbackFilter(cbs)
-	f.errorHandler = NewErrorHandler(f.logger, cbs, func(int) {})
 
 	hdr := &capturingHeaderMap{headers: make(map[string]string)}
 	hdr.Set(":path", "/oauth/callback?code=abc")
@@ -1023,23 +1042,7 @@ func TestHandleCallbackRestartsOnMissingStateParam(t *testing.T) {
 	if result != api.LocalReply {
 		t.Fatalf("handleCallback returned %v, want api.LocalReply", result)
 	}
-	if dec.statusCode != 302 {
-		t.Errorf("statusCode = %d, want 302", dec.statusCode)
-	}
-	locs := dec.headers["Location"]
-	if len(locs) == 0 || locs[0] != "/" {
-		t.Errorf("Location = %v, want [\"/\"]", locs)
-	}
-	cookies := dec.headers["Set-Cookie"]
-	if len(cookies) == 0 {
-		t.Fatal("Set-Cookie header missing")
-	}
-	cookie := cookies[0]
-	for _, want := range []string{"oauth_restart=1", "Path=/", "Max-Age=10", "HttpOnly", "SameSite=Lax"} {
-		if !strings.Contains(cookie, want) {
-			t.Errorf("Set-Cookie %q missing %q", cookie, want)
-		}
-	}
+	assertRestartResponse(t, dec)
 }
 
 // TestBothListsNilDenies verifies default-deny when neither list is configured
