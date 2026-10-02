@@ -527,7 +527,6 @@ func (p *Parser) Parse(any *anypb.Any, callbacks api.ConfigCallbackHandler) (int
 	return conf, nil
 }
 
-
 // Merge merges parent and child configurations
 func (p *Parser) Merge(parent interface{}, child interface{}) interface{} {
 	parentConfig := parent.(*OAuthConfig)
@@ -535,21 +534,21 @@ func (p *Parser) Merge(parent interface{}, child interface{}) interface{} {
 
 	// Create a new config to avoid modifying the parent
 	newConfig := &OAuthConfig{
-		IssuerURL:         parentConfig.IssuerURL,
-		ClientID:          parentConfig.ClientID,
-		ClientSecret:      parentConfig.ClientSecret,
-		RedirectURL:       parentConfig.RedirectURL,
-		Scopes:            slices.Clone(parentConfig.Scopes),
-		SessionCookieName: parentConfig.SessionCookieName,
-		SessionMaxAge:     parentConfig.SessionMaxAge,
-		SessionPath:       parentConfig.SessionPath,
-		SessionDomain:     parentConfig.SessionDomain,
-		SessionSecure:     parentConfig.SessionSecure,
-		SessionHttpOnly:   parentConfig.SessionHttpOnly,
-		SessionSameSite:   parentConfig.SessionSameSite,
-		ExcludePaths:      slices.Clone(parentConfig.ExcludePaths),
-		Clusters:          make(map[string]ClusterConfig),
-		SessionStore:      parentConfig.SessionStore,
+		IssuerURL:              parentConfig.IssuerURL,
+		ClientID:               parentConfig.ClientID,
+		ClientSecret:           parentConfig.ClientSecret,
+		RedirectURL:            parentConfig.RedirectURL,
+		Scopes:                 slices.Clone(parentConfig.Scopes),
+		SessionCookieName:      parentConfig.SessionCookieName,
+		SessionMaxAge:          parentConfig.SessionMaxAge,
+		SessionPath:            parentConfig.SessionPath,
+		SessionDomain:          parentConfig.SessionDomain,
+		SessionSecure:          parentConfig.SessionSecure,
+		SessionHttpOnly:        parentConfig.SessionHttpOnly,
+		SessionSameSite:        parentConfig.SessionSameSite,
+		ExcludePaths:           slices.Clone(parentConfig.ExcludePaths),
+		Clusters:               make(map[string]ClusterConfig),
+		SessionStore:           parentConfig.SessionStore,
 		EnableAPIKey:           parentConfig.EnableAPIKey,
 		EnableBearerToken:      parentConfig.EnableBearerToken,
 		EnableLLMsTxt:          parentConfig.EnableLLMsTxt,

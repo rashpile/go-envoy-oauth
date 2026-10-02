@@ -113,4 +113,3 @@ func TestHandleLogoutMetricsUsesProviderName(t *testing.T) {
 		t.Errorf("HandleLogout metrics: idp label still uses hostname %q — OBS-01 not applied", "keycloak.example.com")
 	}
 }
-

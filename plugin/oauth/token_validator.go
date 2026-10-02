@@ -25,22 +25,22 @@ type TokenValidator struct {
 
 // TokenClaims represents the claims extracted from a validated token
 type TokenClaims struct {
-	Subject         string                 `json:"sub"`
-	Email           string                 `json:"email"`
-	EmailVerified   bool                   `json:"email_verified"`
-	Name            string                 `json:"name"`
-	PreferredUsername string               `json:"preferred_username"`
-	GivenName       string                 `json:"given_name"`
-	FamilyName      string                 `json:"family_name"`
-	Audience        []string               `json:"aud"`
-	Issuer          string                 `json:"iss"`
-	IssuedAt        int64                  `json:"iat"`
-	ExpiresAt       int64                  `json:"exp"`
-	Nonce           string                 `json:"nonce"`
-	AuthorizedParty string                 `json:"azp"`
-	SessionState    string                 `json:"session_state"`
-	Scopes          string                 `json:"scope"`
-	Extra           map[string]interface{} `json:"-"`
+	Subject           string                 `json:"sub"`
+	Email             string                 `json:"email"`
+	EmailVerified     bool                   `json:"email_verified"`
+	Name              string                 `json:"name"`
+	PreferredUsername string                 `json:"preferred_username"`
+	GivenName         string                 `json:"given_name"`
+	FamilyName        string                 `json:"family_name"`
+	Audience          []string               `json:"aud"`
+	Issuer            string                 `json:"iss"`
+	IssuedAt          int64                  `json:"iat"`
+	ExpiresAt         int64                  `json:"exp"`
+	Nonce             string                 `json:"nonce"`
+	AuthorizedParty   string                 `json:"azp"`
+	SessionState      string                 `json:"session_state"`
+	Scopes            string                 `json:"scope"`
+	Extra             map[string]interface{} `json:"-"`
 }
 
 // NewTokenValidator creates a new token validator

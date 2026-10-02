@@ -34,10 +34,10 @@ func (m *mockOAuthHandler) ExchangeRefreshToken(_ context.Context, _ string) (st
 func (m *mockOAuthHandler) GetSessionCookie(_ api.RequestHeaderMap) (string, error) {
 	return "", nil
 }
-func (m *mockOAuthHandler) DeleteSessionCookie(_ api.RequestHeaderMap) {}
+func (m *mockOAuthHandler) DeleteSessionCookie(_ api.RequestHeaderMap)              {}
 func (m *mockOAuthHandler) SetSessionCookie(_ api.RequestHeaderMap, _ string) error { return nil }
 func (m *mockOAuthHandler) FormatSessionCookie(_ string) string                     { return "" }
-func (m *mockOAuthHandler) HealthState() oauth.ProviderState { return oauth.StateReady }
+func (m *mockOAuthHandler) HealthState() oauth.ProviderState                        { return oauth.StateReady }
 
 // Compile-time check: mockOAuthHandler must implement oauth.OAuthHandler.
 var _ oauth.OAuthHandler = (*mockOAuthHandler)(nil)
@@ -395,17 +395,17 @@ type mockRegistryHeaderMap struct {
 	headers map[string]string
 }
 
-func (m *mockRegistryHeaderMap) GetRaw(name string) string          { return m.headers[name] }
-func (m *mockRegistryHeaderMap) Get(key string) (string, bool)      { v, ok := m.headers[key]; return v, ok }
+func (m *mockRegistryHeaderMap) GetRaw(name string) string     { return m.headers[name] }
+func (m *mockRegistryHeaderMap) Get(key string) (string, bool) { v, ok := m.headers[key]; return v, ok }
 func (m *mockRegistryHeaderMap) Values(key string) []string {
 	if v, ok := m.headers[key]; ok {
 		return []string{v}
 	}
 	return nil
 }
-func (m *mockRegistryHeaderMap) Set(key, value string)             { m.headers[key] = value }
-func (m *mockRegistryHeaderMap) Add(key, value string)             { m.headers[key] = value }
-func (m *mockRegistryHeaderMap) Del(key string)                    { delete(m.headers, key) }
+func (m *mockRegistryHeaderMap) Set(key, value string) { m.headers[key] = value }
+func (m *mockRegistryHeaderMap) Add(key, value string) { m.headers[key] = value }
+func (m *mockRegistryHeaderMap) Del(key string)        { delete(m.headers, key) }
 func (m *mockRegistryHeaderMap) Range(f func(key, value string) bool) {
 	for k, v := range m.headers {
 		if !f(k, v) {
@@ -421,10 +421,10 @@ func (m *mockRegistryHeaderMap) GetAllHeaders() map[string][]string {
 	}
 	return result
 }
-func (m *mockRegistryHeaderMap) Scheme() string   { return "https" }
-func (m *mockRegistryHeaderMap) Method() string   { return "GET" }
-func (m *mockRegistryHeaderMap) Host() string     { return "localhost" }
-func (m *mockRegistryHeaderMap) Path() string     { return "/" }
+func (m *mockRegistryHeaderMap) Scheme() string          { return "https" }
+func (m *mockRegistryHeaderMap) Method() string          { return "GET" }
+func (m *mockRegistryHeaderMap) Host() string            { return "localhost" }
+func (m *mockRegistryHeaderMap) Path() string            { return "/" }
 func (m *mockRegistryHeaderMap) SetMethod(method string) { m.headers[":method"] = method }
 func (m *mockRegistryHeaderMap) SetHost(host string)     { m.headers[":authority"] = host }
 func (m *mockRegistryHeaderMap) SetPath(path string)     { m.headers[":path"] = path }
@@ -713,7 +713,6 @@ func TestGetProviderHandlerReadyPasses(t *testing.T) {
 		t.Error("expected readyHandler back from getProviderHandler")
 	}
 }
-
 
 type degradedTestMock struct{ mockOAuthHandler }
 

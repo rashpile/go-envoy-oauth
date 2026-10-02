@@ -33,7 +33,7 @@ type GatewayConfig struct {
 	Clients         []ClientConfig            `yaml:"clients"`
 	Template        string                    `yaml:"template,omitempty"` // Path to template config file
 	Listener        ListenerConfig            `yaml:"listener,omitempty"`
-	SSL             SSLConfig                 `yaml:"ssl,omitempty"`         // SSL/TLS configuration for listener
+	SSL             SSLConfig                 `yaml:"ssl,omitempty"` // SSL/TLS configuration for listener
 }
 
 type PluginConfig struct {

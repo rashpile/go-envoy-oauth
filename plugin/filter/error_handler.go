@@ -239,11 +239,11 @@ func (eh *ErrorHandler) HandleAccessDenied() api.StatusType {
 	}
 
 	eh.callbacks.DecoderFilterCallbacks().SendLocalReply(
-		403,              // Forbidden
-		html,             // HTML body
-		headers,          // headers
-		-1,               // grpcStatus
-		"access_denied",  // details
+		403,             // Forbidden
+		html,            // HTML body
+		headers,         // headers
+		-1,              // grpcStatus
+		"access_denied", // details
 	)
 
 	return api.LocalReply

@@ -25,7 +25,7 @@ import (
 // SDSServer implements the Secret Discovery Service
 type SDSServer struct {
 	secret.UnimplementedSecretDiscoveryServiceServer
-	mainCache       cache.SnapshotCache  // Use the main XDS cache
+	mainCache       cache.SnapshotCache // Use the main XDS cache
 	version         uint64
 	mu              sync.RWMutex
 	certificatePath string

@@ -133,7 +133,7 @@ func TestGetDomainFromHeaders(t *testing.T) {
 			name:         "explicit config domain takes precedence",
 			configDomain: "example.com",
 			headers: map[string]string{
-				"host":              "localhost:8080",
+				"host":             "localhost:8080",
 				"x-forwarded-host": "proxy.com",
 			},
 			expectedDomain: "example.com",
@@ -142,7 +142,7 @@ func TestGetDomainFromHeaders(t *testing.T) {
 			name:         "x-forwarded-host used when no config domain",
 			configDomain: "",
 			headers: map[string]string{
-				"host":              "localhost:8080",
+				"host":             "localhost:8080",
 				"x-forwarded-host": "app.example.com",
 			},
 			expectedDomain: "app.example.com",

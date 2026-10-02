@@ -11,8 +11,8 @@ import (
 
 	"github.com/envoyproxy/envoy/contrib/golang/common/go/api"
 	"github.com/rashpile/go-envoy-oauth/plugin/session"
-	"golang.org/x/oauth2"
 	"go.uber.org/zap"
+	"golang.org/x/oauth2"
 )
 
 const consentPageHTML = `
@@ -358,10 +358,10 @@ const tokenDisplayHTML = `
 
 // OfflineTokenHandler handles offline token requests
 type OfflineTokenHandler struct {
-	handler       *OAuthHandlerImpl
-	logger        *zap.Logger
-	consentTmpl   *template.Template
-	tokenTmpl     *template.Template
+	handler     *OAuthHandlerImpl
+	logger      *zap.Logger
+	consentTmpl *template.Template
+	tokenTmpl   *template.Template
 }
 
 // NewOfflineTokenHandler creates a new offline token handler
@@ -554,7 +554,7 @@ func (h *OfflineTokenHandler) HandleOfflineCallback(header api.RequestHeaderMap,
 	}
 
 	headers := map[string][]string{
-		"Content-Type": {"text/html; charset=utf-8"},
+		"Content-Type":  {"text/html; charset=utf-8"},
 		"Cache-Control": {"no-store, no-cache, must-revalidate, private"},
 	}
 

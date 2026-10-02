@@ -51,11 +51,11 @@ func TestCookieHelper_ParseCookies(t *testing.T) {
 
 func TestCookieHelper_BuildCookieString(t *testing.T) {
 	tests := []struct {
-		name     string
-		settings CookieSettings
+		name        string
+		settings    CookieSettings
 		cookieName  string
 		cookieValue string
-		want     string
+		want        string
 	}{
 		{
 			name: "basic cookie",
@@ -67,7 +67,7 @@ func TestCookieHelper_BuildCookieString(t *testing.T) {
 			},
 			cookieName:  "test",
 			cookieValue: "value",
-			want:     "test=value; Max-Age=3600; Path=/",
+			want:        "test=value; Max-Age=3600; Path=/",
 		},
 		{
 			name: "secure and http only cookie",
@@ -79,7 +79,7 @@ func TestCookieHelper_BuildCookieString(t *testing.T) {
 			},
 			cookieName:  "test",
 			cookieValue: "value",
-			want:     "test=value; Max-Age=3600; Path=/; Secure; HttpOnly",
+			want:        "test=value; Max-Age=3600; Path=/; Secure; HttpOnly",
 		},
 		{
 			name: "cookie with domain and samesite",
@@ -93,7 +93,7 @@ func TestCookieHelper_BuildCookieString(t *testing.T) {
 			},
 			cookieName:  "test",
 			cookieValue: "value",
-			want:     "test=value; Max-Age=3600; Path=/api; Domain=example.com; Secure; HttpOnly; SameSite=Strict",
+			want:        "test=value; Max-Age=3600; Path=/api; Domain=example.com; Secure; HttpOnly; SameSite=Strict",
 		},
 	}
 

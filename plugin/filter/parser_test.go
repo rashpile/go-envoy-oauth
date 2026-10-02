@@ -273,17 +273,17 @@ func newParserTestHeaderMap(cookieValue string) *parserTestHeaderMap {
 	return &parserTestHeaderMap{headers: map[string]string{"cookie": cookieValue}}
 }
 
-func (m *parserTestHeaderMap) GetRaw(name string) string          { return m.headers[name] }
-func (m *parserTestHeaderMap) Get(key string) (string, bool)      { v, ok := m.headers[key]; return v, ok }
+func (m *parserTestHeaderMap) GetRaw(name string) string     { return m.headers[name] }
+func (m *parserTestHeaderMap) Get(key string) (string, bool) { v, ok := m.headers[key]; return v, ok }
 func (m *parserTestHeaderMap) Values(key string) []string {
 	if v, ok := m.headers[key]; ok {
 		return []string{v}
 	}
 	return nil
 }
-func (m *parserTestHeaderMap) Set(key, value string)              { m.headers[key] = value }
-func (m *parserTestHeaderMap) Add(key, value string)              { m.headers[key] = value }
-func (m *parserTestHeaderMap) Del(key string)                     { delete(m.headers, key) }
+func (m *parserTestHeaderMap) Set(key, value string) { m.headers[key] = value }
+func (m *parserTestHeaderMap) Add(key, value string) { m.headers[key] = value }
+func (m *parserTestHeaderMap) Del(key string)        { delete(m.headers, key) }
 func (m *parserTestHeaderMap) Range(f func(key, value string) bool) {
 	for k, v := range m.headers {
 		if !f(k, v) {
@@ -299,13 +299,13 @@ func (m *parserTestHeaderMap) GetAllHeaders() map[string][]string {
 	}
 	return result
 }
-func (m *parserTestHeaderMap) Scheme() string              { return "https" }
-func (m *parserTestHeaderMap) Method() string              { return "GET" }
-func (m *parserTestHeaderMap) Host() string                { return "localhost" }
-func (m *parserTestHeaderMap) Path() string                { return "/" }
-func (m *parserTestHeaderMap) SetMethod(method string)     { m.headers[":method"] = method }
-func (m *parserTestHeaderMap) SetHost(host string)         { m.headers[":authority"] = host }
-func (m *parserTestHeaderMap) SetPath(path string)         { m.headers[":path"] = path }
+func (m *parserTestHeaderMap) Scheme() string          { return "https" }
+func (m *parserTestHeaderMap) Method() string          { return "GET" }
+func (m *parserTestHeaderMap) Host() string            { return "localhost" }
+func (m *parserTestHeaderMap) Path() string            { return "/" }
+func (m *parserTestHeaderMap) SetMethod(method string) { m.headers[":method"] = method }
+func (m *parserTestHeaderMap) SetHost(host string)     { m.headers[":authority"] = host }
+func (m *parserTestHeaderMap) SetPath(path string)     { m.headers[":path"] = path }
 
 // TestParseAuthProviderHeaderName verifies that parseRawConfig() reads the
 // auth_provider_header_name field (REQ-01, D-02).

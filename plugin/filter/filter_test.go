@@ -270,17 +270,17 @@ type capturingHeaderMap struct {
 	headers map[string]string
 }
 
-func (c *capturingHeaderMap) GetRaw(name string) string          { return c.headers[name] }
-func (c *capturingHeaderMap) Get(key string) (string, bool)      { v, ok := c.headers[key]; return v, ok }
+func (c *capturingHeaderMap) GetRaw(name string) string     { return c.headers[name] }
+func (c *capturingHeaderMap) Get(key string) (string, bool) { v, ok := c.headers[key]; return v, ok }
 func (c *capturingHeaderMap) Values(key string) []string {
 	if v, ok := c.headers[key]; ok {
 		return []string{v}
 	}
 	return nil
 }
-func (c *capturingHeaderMap) Set(key, value string)             { c.headers[key] = value }
-func (c *capturingHeaderMap) Add(key, value string)             { c.headers[key] = value }
-func (c *capturingHeaderMap) Del(key string)                    { delete(c.headers, key) }
+func (c *capturingHeaderMap) Set(key, value string) { c.headers[key] = value }
+func (c *capturingHeaderMap) Add(key, value string) { c.headers[key] = value }
+func (c *capturingHeaderMap) Del(key string)        { delete(c.headers, key) }
 func (c *capturingHeaderMap) Range(f func(key, value string) bool) {
 	for k, v := range c.headers {
 		if !f(k, v) {
@@ -296,13 +296,13 @@ func (c *capturingHeaderMap) GetAllHeaders() map[string][]string {
 	}
 	return result
 }
-func (c *capturingHeaderMap) Scheme() string              { return "https" }
-func (c *capturingHeaderMap) Method() string              { return "GET" }
-func (c *capturingHeaderMap) Host() string                { return "localhost" }
-func (c *capturingHeaderMap) Path() string                { return "/" }
-func (c *capturingHeaderMap) SetMethod(method string)     { c.headers[":method"] = method }
-func (c *capturingHeaderMap) SetHost(host string)         { c.headers[":authority"] = host }
-func (c *capturingHeaderMap) SetPath(path string)         { c.headers[":path"] = path }
+func (c *capturingHeaderMap) Scheme() string          { return "https" }
+func (c *capturingHeaderMap) Method() string          { return "GET" }
+func (c *capturingHeaderMap) Host() string            { return "localhost" }
+func (c *capturingHeaderMap) Path() string            { return "/" }
+func (c *capturingHeaderMap) SetMethod(method string) { c.headers[":method"] = method }
+func (c *capturingHeaderMap) SetHost(host string)     { c.headers[":authority"] = host }
+func (c *capturingHeaderMap) SetPath(path string)     { c.headers[":path"] = path }
 
 // TestHandleAuthSuccessSetsProviderHeader verifies that handleAuthSuccess writes
 // X-Auth-Provider from session.ProviderName when AuthProviderHeaderName is empty

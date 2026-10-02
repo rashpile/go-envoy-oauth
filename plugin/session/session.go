@@ -13,17 +13,17 @@ import (
 
 // Session represents a user session
 type Session struct {
-	ID              string                 // Unique session ID
-	UserID          string                 // User identifier from OAuth provider
-	Token           string                 // OAuth access token
-	TokenExpiresAt  time.Time              // When the access token expires
-	IDToken         string                 // OAuth ID token for logout hint
-	RefreshToken    string                 // OAuth refresh token (API key)
-	IDP             string                 // Identity provider hostname for metrics — NOT the registry key
-	ProviderName    string                 // Named provider registry key (SESS-02 double-verification)
-	Claims          map[string]interface{} // Additional claims from token
-	CreatedAt       time.Time              // When the session was created
-	ExpiresAt       time.Time              // When the session expires
+	ID             string                 // Unique session ID
+	UserID         string                 // User identifier from OAuth provider
+	Token          string                 // OAuth access token
+	TokenExpiresAt time.Time              // When the access token expires
+	IDToken        string                 // OAuth ID token for logout hint
+	RefreshToken   string                 // OAuth refresh token (API key)
+	IDP            string                 // Identity provider hostname for metrics — NOT the registry key
+	ProviderName   string                 // Named provider registry key (SESS-02 double-verification)
+	Claims         map[string]interface{} // Additional claims from token
+	CreatedAt      time.Time              // When the session was created
+	ExpiresAt      time.Time              // When the session expires
 }
 
 // IsExpired checks if the session has expired

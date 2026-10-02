@@ -30,7 +30,7 @@ type Filter struct {
 	sessionStore     session.SessionStore
 	callbacks        api.FilterCallbackHandler
 	logger           *zap.Logger
-	errorHandler *ErrorHandler
+	errorHandler     *ErrorHandler
 	// Access log fields
 	requestStart  time.Time
 	requestMethod string
