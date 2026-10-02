@@ -32,7 +32,7 @@ The filter intercepts incoming HTTP requests at the Envoy gateway and:
 
 - Docker
 - Go 1.25+
-- Envoy Proxy (v1.33+)
+- Envoy Proxy v1.39.x (the Envoy release must match the `github.com/envoyproxy/envoy` Go SDK version in `go.mod`; the standalone image is built on `envoyproxy/envoy:contrib-v1.39.2`)
 - OAuth provider (e.g., Keycloak, Auth0, etc.)
 
 ### Building the Filter

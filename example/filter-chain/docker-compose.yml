@@ -12,7 +12,7 @@ services:
   #     - envoy-network
 
   envoy:
-    image: envoyproxy/envoy:contrib-v1.33.2
+    image: envoyproxy/envoy:contrib-v1.39.2
     container_name: envoy-gateway
     volumes:
       - ./envoy.yaml:/etc/envoy/envoy.yaml

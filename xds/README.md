@@ -311,7 +311,7 @@ envoy -c envoy-xds.yaml
 Or with Docker:
 ```bash
 docker run -v $(pwd):/app -v $(pwd)/../:/plugin \
-  envoyproxy/envoy:v1.33-latest \
+  envoyproxy/envoy:v1.39-latest \
   -c /app/envoy-xds.yaml
 ```
 
@@ -356,5 +356,5 @@ The XDS server watches `gateway-auth.yaml` for changes. When you modify the file
 ## Dependencies
 
 - Go 1.23+
-- Envoy v1.33+
+- Envoy v1.39.x (must match the Go SDK version pinned in the parent `go.mod`)
 - go-envoy-oauth plugin (built from parent project)
