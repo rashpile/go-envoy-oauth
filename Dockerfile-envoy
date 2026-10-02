@@ -27,7 +27,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /output/xds-server ./app
 # Final stage - bundle everything into Envoy image
 FROM envoyproxy/envoy:contrib-v1.35.2
 
-LABEL org.opencontainers.image.source="https://github.com/rashpile/go-envoy-oauth"
+LABEL org.opencontainers.image.source="https://gitea.rashpile.net/pkoptilin/go-envoy-oauth"
 LABEL org.opencontainers.image.description="Standalone Envoy with OAuth authentication"
 LABEL org.opencontainers.image.licenses="MIT"
 

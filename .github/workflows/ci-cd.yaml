@@ -1,14 +1,20 @@
 name: CI/CD Pipeline
 
+# Runs on Gitea Actions (gitea.rashpile.net). Gitea reads .github/workflows/ directly.
+# `permissions:` is not supported there, and the built-in GITHUB_TOKEN is rejected by the
+# container registry, so registry login uses the account-level secrets REGISTRY_USER /
+# REGISTRY_TOKEN shared by every repo (same pattern as pako-telegram and ai-learn-app).
 on:
   push:
     branches: [ main, master ]
     tags: [ 'v*' ]
   pull_request:
     branches: [ main, master ]
+  workflow_dispatch:
 
 env:
-  REGISTRY: ghcr.io
+  # Registry host is a repo variable so a fork can push elsewhere without editing this file.
+  REGISTRY: ${{ vars.REGISTRY || 'gitea.rashpile.net' }}
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
@@ -35,25 +41,28 @@ jobs:
     name: Build and Push Image
     needs: test
     runs-on: ubuntu-latest
-    # Only run on push to main/master or on tag
-    if: github.event_name == 'push'
-    permissions:
-      contents: read
-      packages: write
+    # Only publish on push to main/master, on a tag, or on a manual run; PRs only test.
+    if: github.event_name != 'pull_request'
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
 
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+        with:
+          # act_runner serves the GHA cache API on the host network.
+          driver-opts: network=host
 
-      - name: Log in to GitHub Container Registry
+      - name: Log in to Gitea Container Registry
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          username: ${{ secrets.REGISTRY_USER }}
+          password: ${{ secrets.REGISTRY_TOKEN }}
 
       - name: Extract metadata
         id: meta
@@ -61,15 +70,13 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
             type=ref,event=branch
-            type=ref,event=pr
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=sha,format=short
           annotations: |
-                org.opencontainers.image.description=API Key authentication filter for Envoy Proxy
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+            org.opencontainers.image.description=OAuth 2.0/OIDC authentication filter for Envoy Proxy
 
       - name: Build and push
         uses: docker/build-push-action@v5
@@ -86,24 +93,26 @@ jobs:
     name: Build Standalone Envoy Image
     needs: test
     runs-on: ubuntu-latest
-    if: github.event_name == 'push'
-    permissions:
-      contents: read
-      packages: write
+    if: github.event_name != 'pull_request'
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
 
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: network=host
 
-      - name: Log in to GitHub Container Registry
+      - name: Log in to Gitea Container Registry
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          username: ${{ secrets.REGISTRY_USER }}
+          password: ${{ secrets.REGISTRY_TOKEN }}
 
       - name: Extract metadata
         id: meta
@@ -111,17 +120,13 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-standalone
           tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
             type=ref,event=branch
-            type=ref,event=pr
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=sha,format=short
-            type=raw,value=latest,enable={{is_default_branch}}
           annotations: |
             org.opencontainers.image.description=Standalone Envoy with OAuth authentication
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
 
       - name: Build and push standalone image
         uses: docker/build-push-action@v5

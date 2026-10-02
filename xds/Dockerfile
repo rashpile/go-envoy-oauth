@@ -23,7 +23,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /output/xds-server ./app
 FROM alpine:3.19
 
 # Label the image with standard OCI annotations
-LABEL org.opencontainers.image.source="https://github.com/rashpile/go-envoy-oauth"
+LABEL org.opencontainers.image.source="https://gitea.rashpile.net/pkoptilin/go-envoy-oauth"
 LABEL org.opencontainers.image.description="XDS control plane server for go-envoy-oauth"
 LABEL org.opencontainers.image.licenses="MIT"
 
@@ -44,7 +44,7 @@ RUN echo '#!/bin/sh' > /extract.sh && \
     echo '  echo "Copied xds-server and envoy-xds.yaml to /output directory"' >> /extract.sh && \
     echo 'else' >> /extract.sh && \
     echo '  echo "No output directory mounted. Run with -v /path/on/host:/output to extract the files."' >> /extract.sh && \
-    echo '  echo "Example: docker run --rm -v \$(pwd)/dist:/output ghcr.io/rashpile/go-envoy-xds:latest"' >> /extract.sh && \
+    echo '  echo "Example: docker run --rm -v \$(pwd)/dist:/output gitea.rashpile.net/pkoptilin/go-envoy-xds:latest"' >> /extract.sh && \
     echo 'fi' >> /extract.sh && \
     chmod +x /extract.sh
 

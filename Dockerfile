@@ -23,7 +23,7 @@ RUN go build -o /output/go-envoy-oauth.so -buildmode=c-shared ./plugin/libgolang
 FROM alpine:3.19
 
 # Label the image with standard OCI annotations
-LABEL org.opencontainers.image.source="https://github.com/rashpile/go-envoy-oauth"
+LABEL org.opencontainers.image.source="https://gitea.rashpile.net/pkoptilin/go-envoy-oauth"
 LABEL org.opencontainers.image.description="OAuth authentication filter for Envoy Proxy"
 LABEL org.opencontainers.image.licenses="MIT"
 
