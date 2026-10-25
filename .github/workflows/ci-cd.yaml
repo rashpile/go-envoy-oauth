@@ -1,9 +1,10 @@
 name: CI/CD Pipeline
 
-# Runs on Gitea Actions (gitea.rashpile.net). Gitea reads .github/workflows/ directly.
-# `permissions:` is not supported there, and the built-in GITHUB_TOKEN is rejected by the
-# container registry, so registry login uses the account-level secrets REGISTRY_USER /
-# REGISTRY_TOKEN shared by every repo (same pattern as pako-telegram and ai-learn-app).
+# Runs on both hosts of this repo:
+# - Gitea Actions (gitea.rashpile.net), which reads .github/workflows/ directly. Its
+#   built-in token is rejected by the container registry, so registry login uses the
+#   account-level secrets REGISTRY_USER / REGISTRY_TOKEN shared by every repo.
+# - GitHub Actions (the public mirror), which publishes to ghcr.io with GITHUB_TOKEN.
 on:
   push:
     branches: [ main, master ]
@@ -13,8 +14,9 @@ on:
   workflow_dispatch:
 
 env:
-  # Registry host is a repo variable so a fork can push elsewhere without editing this file.
-  REGISTRY: ${{ vars.REGISTRY || 'gitea.rashpile.net' }}
+  # Registry host: ghcr.io on GitHub, the Gitea registry elsewhere. A repo variable
+  # REGISTRY overrides both, so a fork can push elsewhere without editing this file.
+  REGISTRY: ${{ vars.REGISTRY || (github.server_url == 'https://github.com' && 'ghcr.io' || 'gitea.rashpile.net') }}
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
@@ -43,6 +45,10 @@ jobs:
     runs-on: ubuntu-latest
     # Only publish on push to main/master, on a tag, or on a manual run; PRs only test.
     if: github.event_name != 'pull_request'
+    # GitHub needs packages: write for ghcr.io; Gitea ignores this block.
+    permissions:
+      contents: read
+      packages: write
 
     steps:
       - name: Checkout code
@@ -57,12 +63,12 @@ jobs:
           # act_runner serves the GHA cache API on the host network.
           driver-opts: network=host
 
-      - name: Log in to Gitea Container Registry
+      - name: Log in to Container Registry
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
-          username: ${{ secrets.REGISTRY_USER }}
-          password: ${{ secrets.REGISTRY_TOKEN }}
+          username: ${{ github.server_url == 'https://github.com' && github.actor || secrets.REGISTRY_USER }}
+          password: ${{ github.server_url == 'https://github.com' && secrets.GITHUB_TOKEN || secrets.REGISTRY_TOKEN }}
 
       - name: Extract metadata
         id: meta
@@ -94,6 +100,9 @@ jobs:
     needs: test
     runs-on: ubuntu-latest
     if: github.event_name != 'pull_request'
+    permissions:
+      contents: read
+      packages: write
 
     steps:
       - name: Checkout code
@@ -107,12 +116,12 @@ jobs:
         with:
           driver-opts: network=host
 
-      - name: Log in to Gitea Container Registry
+      - name: Log in to Container Registry
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
-          username: ${{ secrets.REGISTRY_USER }}
-          password: ${{ secrets.REGISTRY_TOKEN }}
+          username: ${{ github.server_url == 'https://github.com' && github.actor || secrets.REGISTRY_USER }}
+          password: ${{ github.server_url == 'https://github.com' && secrets.GITHUB_TOKEN || secrets.REGISTRY_TOKEN }}
 
       - name: Extract metadata
         id: meta
