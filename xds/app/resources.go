@@ -122,6 +122,16 @@ func MakeListener(config *GatewayConfig) ([]types.Resource, error) {
 	return listeners, nil
 }
 
+// applyPathNormalization makes Envoy normalize the request path before any
+// filter sees it, so the auth filter's path exclusions and the upstream agree
+// on which path is requested (issue #8). It is also applied to HCMs merged from
+// a template, since the template's own settings would otherwise win.
+func applyPathNormalization(m *hcm.HttpConnectionManager) {
+	m.NormalizePath = wrapperspb.Bool(true)
+	m.MergeSlashes = true
+	m.PathWithEscapedSlashesAction = hcm.HttpConnectionManager_UNESCAPE_AND_REDIRECT
+}
+
 // createHTTPConnectionManager creates the shared HTTP connection manager configuration
 func createHTTPConnectionManager(config *GatewayConfig) (*anypb.Any, error) {
 	// Create golang filter configuration
@@ -326,6 +336,8 @@ func createHTTPConnectionManager(config *GatewayConfig) (*anypb.Any, error) {
 			},
 		},
 	}
+
+	applyPathNormalization(manager)
 
 	return anypb.New(manager)
 }

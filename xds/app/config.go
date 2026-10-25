@@ -282,6 +282,14 @@ func overrideFromEnv(config *GatewayConfig) {
 	}
 }
 
+// reservedClusterNames are static clusters in the Envoy bootstrap
+// (xds/envoy-xds.yaml). A client with the same ID would not override them:
+// Envoy keeps the static cluster and routes the client's traffic to it.
+var reservedClusterNames = map[string]struct{}{
+	"xds_cluster":          {},
+	"envoy_admin_loopback": {},
+}
+
 func LoadConfig(path string) (*GatewayConfig, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -371,6 +379,9 @@ func LoadConfig(path string) (*GatewayConfig, error) {
 		}
 		if client.ID == "" {
 			return nil, fmt.Errorf("client.id is required")
+		}
+		if _, reserved := reservedClusterNames[client.ID]; reserved {
+			return nil, fmt.Errorf("client.id %q is reserved for a static Envoy cluster", client.ID)
 		}
 		if client.Address == "" {
 			return nil, fmt.Errorf("client.address is required for client %s", client.ID)

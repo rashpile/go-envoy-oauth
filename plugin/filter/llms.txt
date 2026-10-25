@@ -518,7 +518,7 @@ set.
 | `enable_bearer_token` | bool | `true` | Enable bearer-JWT authentication |
 | `enable_llms_txt` | bool | `true` | Enable the `/oauth/llms.txt` endpoint (this document) |
 | `clusters` | map<string,ClusterConfig> | empty | Per-cluster authorization rules |
-| `exclude_paths` | string[] | `["/health"]` | Paths exempt from auth |
+| `exclude_paths` | string[] | (empty) | Path prefixes exempt from auth; paths with dot-segments or encoded separators never match |
 | `remove_headers` | string[] | identity headers above | Headers stripped from inbound requests (defense-in-depth) |
 
 ### 10.2 `ClusterConfig` (per-cluster)

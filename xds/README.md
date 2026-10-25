@@ -298,6 +298,8 @@ go build -o xds-server ./app
 ./xds-server --config=gateway-auth.yaml --port=18000
 ```
 
+The server listens on `127.0.0.1` by default. The config it serves contains provider client secrets and TLS private keys, and the gRPC endpoint has no authentication, so only pass `--listen` with a non-loopback address when Envoy runs on another host and the network between them is trusted.
+
 Or use the provided script:
 ```bash
 ./run.sh
@@ -329,8 +331,8 @@ docker run -v $(pwd):/app -v $(pwd)/../:/plugin \
 
 3. Verify resources are loaded:
    ```bash
-   curl localhost:9901/clusters
-   curl localhost:9901/config_dump
+   curl localhost:9902/clusters
+   curl localhost:9902/config_dump
    ```
 
 4. Test OAuth flow:
@@ -349,7 +351,7 @@ The XDS server watches `gateway-auth.yaml` for changes. When you modify the file
 ## Troubleshooting
 
 - Check XDS server logs for configuration errors
-- Use Envoy admin interface (port 9901) to inspect loaded configuration
+- Use Envoy admin interface to inspect loaded configuration. It listens on `127.0.0.1:9902` only (in the standalone image: `docker exec <container>` first). Port `9901` serves only `GET /stats/prometheus` and `GET /ready`, so Prometheus and health checks keep working without exposing `config_dump` (which contains client secrets) or the admin endpoints that stop Envoy
 - Verify the OAuth plugin (.so file) path is correct
 - Ensure all required OAuth fields are configured
 

@@ -1662,3 +1662,31 @@ clients:
 		}
 	})
 }
+
+// TestLoadConfigRejectsReservedClientIDs verifies that a client cannot take the
+// name of a static bootstrap cluster, which would send its traffic to that
+// cluster (for example the loopback Envoy admin API).
+func TestLoadConfigRejectsReservedClientIDs(t *testing.T) {
+	for name := range reservedClusterNames {
+		t.Run(name, func(t *testing.T) {
+			configPath := filepath.Join(t.TempDir(), "gateway-auth.yaml")
+			content := `plugin:
+  library_path: /app/filter.so
+oauth:
+  issuer_url: "https://issuer.example.com"
+  client_id: "cid"
+  client_secret: "secret"
+clients:
+  - id: ` + name + `
+    address: backend.example.com
+    port: 8080
+`
+			if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
+				t.Fatalf("write config: %v", err)
+			}
+			if _, err := LoadConfig(configPath); err == nil {
+				t.Errorf("LoadConfig accepted reserved client id %q", name)
+			}
+		})
+	}
+}

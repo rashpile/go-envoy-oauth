@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -260,7 +261,10 @@ func (s *XDSServer) watchConfig() error {
 	}
 }
 
-func (s *XDSServer) Start(port int) error {
+// Start serves xDS/SDS on listenAddr:port. The served config carries client
+// secrets and TLS private keys and the gRPC server has no authentication, so
+// listenAddr should stay on loopback unless Envoy runs elsewhere (issue #8).
+func (s *XDSServer) Start(listenAddr string, port int) error {
 	// Start HTTP challenge server if SSL is enabled
 	if s.config.SSL.Enabled {
 		if err := s.startHTTPChallenge(); err != nil {
@@ -317,12 +321,13 @@ func (s *XDSServer) Start(port int) error {
 	}
 
 	// Start listening
-	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", port))
+	addr := net.JoinHostPort(listenAddr, strconv.Itoa(port))
+	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("failed to listen: %w", err)
 	}
 
-	log.Printf("XDS server listening on port %d", port)
+	log.Printf("XDS server listening on %s", addr)
 	return s.grpcServer.Serve(listener)
 }
 

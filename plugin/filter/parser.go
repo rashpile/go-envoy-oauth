@@ -126,7 +126,7 @@ func (p *Parser) parseRawConfig(any *anypb.Any) (*OAuthConfig, error) {
 		SessionSecure:     true,
 		SessionHttpOnly:   true,
 		SessionSameSite:   "Lax",
-		ExcludePaths:      []string{"/health"},
+		ExcludePaths:      nil, // no implicit exclusions: a default here applied to every cluster (issue #8)
 		Clusters:          make(map[string]ClusterConfig),
 		Providers:         make(map[string]ProviderConfig),
 		SessionStore:      session.NewInMemorySessionStore(),

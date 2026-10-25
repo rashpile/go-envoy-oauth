@@ -3,6 +3,7 @@ package oauth
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
@@ -124,10 +125,12 @@ func (v *TokenValidator) ValidateAccessToken(ctx context.Context, token string) 
 	}
 
 	// If that fails, try to validate with more lenient settings
-	// Create a verifier that skips some checks for access tokens
+	// Create a verifier that skips some checks for access tokens.
+	// Keycloak access tokens carry aud=account, so the aud check is done below
+	// against azp as well.
 	accessTokenVerifier := v.provider.Verifier(&oidc.Config{
 		ClientID:          v.clientID,
-		SkipClientIDCheck: true, // Access tokens might not have client_id in aud
+		SkipClientIDCheck: true,
 		SkipExpiryCheck:   false,
 	})
 
@@ -145,6 +148,15 @@ func (v *TokenValidator) ValidateAccessToken(ctx context.Context, token string) 
 
 	// Try to parse claims, but don't fail if some are missing
 	_ = idToken.Claims(claims)
+
+	// Any client in the realm can obtain a signed access token, so the token
+	// must have been issued to this client (issue #8).
+	if !issuedToClient(claims.AuthorizedParty, idToken.Audience, v.clientID) {
+		v.logger.Debug("Access token not issued to this client",
+			zap.String("azp", claims.AuthorizedParty),
+			zap.Strings("aud", idToken.Audience))
+		return nil, fmt.Errorf("access token was not issued to client %q", v.clientID)
+	}
 
 	// Set basic fields
 	claims.Subject = idToken.Subject
@@ -170,6 +182,14 @@ func (v *TokenValidator) ValidateAccessToken(ctx context.Context, token string) 
 		zap.Int64("expires_at", claims.ExpiresAt))
 
 	return claims, nil
+}
+
+// issuedToClient reports whether a token's azp or aud names clientID.
+func issuedToClient(azp string, aud []string, clientID string) bool {
+	if clientID == "" {
+		return false
+	}
+	return azp == clientID || slices.Contains(aud, clientID)
 }
 
 // checkRefresh checks if the provider needs to be refreshed for key rotation

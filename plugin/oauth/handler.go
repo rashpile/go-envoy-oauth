@@ -3,7 +3,9 @@ package oauth
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -766,10 +768,17 @@ func (h *OAuthHandlerImpl) ValidateBearerToken(ctx context.Context, token string
 	return sess, nil
 }
 
+// refreshTokenCacheKey hashes the whole refresh token. A prefix is not enough:
+// JWT refresh tokens from one realm share their header, so prefix keys collide
+// across users (issue #8).
+func refreshTokenCacheKey(refreshToken string) string {
+	sum := sha256.Sum256([]byte(refreshToken))
+	return hex.EncodeToString(sum[:])
+}
+
 // ExchangeRefreshToken exchanges a refresh token for an access token with caching
 func (h *OAuthHandlerImpl) ExchangeRefreshToken(ctx context.Context, refreshToken string) (string, error) {
-	// Create a hash of the refresh token for cache key (don't store the actual token)
-	cacheKey := base64.RawURLEncoding.EncodeToString([]byte(refreshToken))[:32] // Use first 32 chars as key
+	cacheKey := refreshTokenCacheKey(refreshToken)
 
 	// Check cache first
 	h.cacheMu.RLock()

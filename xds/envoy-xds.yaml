@@ -17,7 +17,64 @@ dynamic_resources:
     ads: {}
 
 static_resources:
+  # The admin API exposes config_dump (provider client secrets) and endpoints
+  # that stop or drain Envoy, so it only listens on loopback. This listener
+  # keeps :9901 reachable for Prometheus and readiness checks, with nothing
+  # else from the admin API (issue #8).
+  listeners:
+    - name: admin_stats_listener
+      address:
+        socket_address:
+          address: 0.0.0.0
+          port_value: 9901
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: admin_stats
+                route_config:
+                  virtual_hosts:
+                    - name: admin_stats
+                      domains: ["*"]
+                      routes:
+                        - match:
+                            path: /stats/prometheus
+                            headers:
+                              - name: ":method"
+                                string_match:
+                                  exact: GET
+                          route:
+                            cluster: envoy_admin_loopback
+                        - match:
+                            path: /ready
+                            headers:
+                              - name: ":method"
+                                string_match:
+                                  exact: GET
+                          route:
+                            cluster: envoy_admin_loopback
+                        - match:
+                            prefix: /
+                          direct_response:
+                            status: 404
+                http_filters:
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
   clusters:
+    - name: envoy_admin_loopback
+      type: STATIC
+      connect_timeout: 1s
+      load_assignment:
+        cluster_name: envoy_admin_loopback
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address:
+                      address: 127.0.0.1
+                      port_value: 9902
     - name: xds_cluster
       type: STATIC
       connect_timeout: 1s
@@ -34,11 +91,11 @@ static_resources:
               - endpoint:
                   address:
                     socket_address:
-                      address: 0.0.0.0
+                      address: 127.0.0.1
                       port_value: 18000
 
 admin:
   address:
     socket_address:
-      address: 0.0.0.0
-      port_value: 9901
+      address: 127.0.0.1
+      port_value: 9902

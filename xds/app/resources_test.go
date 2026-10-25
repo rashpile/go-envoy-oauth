@@ -10,6 +10,7 @@ import (
 	route "github.com/envoyproxy/go-control-plane/envoy/config/route/v3"
 	hcm "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/network/http_connection_manager/v3"
 	tls "github.com/envoyproxy/go-control-plane/envoy/extensions/transport_sockets/tls/v3"
+	"github.com/envoyproxy/go-control-plane/pkg/wellknown"
 	"google.golang.org/protobuf/types/known/anypb"
 	"google.golang.org/protobuf/types/known/structpb"
 )
@@ -658,4 +659,55 @@ func TestPluginConfigOmitsSkipAuthHeaderName(t *testing.T) {
 	if v, present := pluginStruct.Fields["skip_auth_header_name"]; present {
 		t.Errorf("plugin config must not have 'skip_auth_header_name' key, got %q", v.GetStringValue())
 	}
+}
+
+// assertPathNormalization fails the test unless the HCM normalizes paths before
+// the auth filter runs (issue #8).
+func assertPathNormalization(t *testing.T, m *hcm.HttpConnectionManager) {
+	t.Helper()
+	if !m.GetNormalizePath().GetValue() {
+		t.Error("normalize_path must be true")
+	}
+	if !m.GetMergeSlashes() {
+		t.Error("merge_slashes must be true")
+	}
+	if got := m.GetPathWithEscapedSlashesAction(); got != hcm.HttpConnectionManager_UNESCAPE_AND_REDIRECT {
+		t.Errorf("path_with_escaped_slashes_action = %v, want UNESCAPE_AND_REDIRECT", got)
+	}
+}
+
+func TestHTTPConnectionManagerNormalizesPaths(t *testing.T) {
+	cfg := &GatewayConfig{
+		Plugin:          PluginConfig{LibraryPath: "/app/filter.so"},
+		DefaultProvider: "kc",
+		Providers:       map[string]ProviderConfig{"kc": {IssuerURL: "https://issuer.example.com", ClientID: "cid"}},
+		Listener:        ListenerConfig{Address: "0.0.0.0", Port: 8080},
+	}
+	managerAny, err := createHTTPConnectionManager(cfg)
+	if err != nil {
+		t.Fatalf("createHTTPConnectionManager: %v", err)
+	}
+	var m hcm.HttpConnectionManager
+	if err := managerAny.UnmarshalTo(&m); err != nil {
+		t.Fatalf("unmarshal HCM: %v", err)
+	}
+	assertPathNormalization(t, &m)
+
+	// A template HCM without these settings must not switch normalization off.
+	templateAny, err := anypb.New(&hcm.HttpConnectionManager{StatPrefix: "template"})
+	if err != nil {
+		t.Fatalf("marshal template HCM: %v", err)
+	}
+	merged, err := mergeHttpConnectionManagers(
+		&listener.Filter{Name: wellknown.HTTPConnectionManager, ConfigType: &listener.Filter_TypedConfig{TypedConfig: templateAny}},
+		&listener.Filter{Name: wellknown.HTTPConnectionManager, ConfigType: &listener.Filter_TypedConfig{TypedConfig: managerAny}},
+	)
+	if err != nil {
+		t.Fatalf("mergeHttpConnectionManagers: %v", err)
+	}
+	var mm hcm.HttpConnectionManager
+	if err := merged.GetTypedConfig().UnmarshalTo(&mm); err != nil {
+		t.Fatalf("unmarshal merged HCM: %v", err)
+	}
+	assertPathNormalization(t, &mm)
 }

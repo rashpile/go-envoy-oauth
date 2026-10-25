@@ -175,6 +175,11 @@ http_filters:
 
 `skip_auth_header_name` was removed in 0.2.3; the key is ignored with a warning. Use cluster `exclude` or `exclude_paths` for trusted bypass.
 
+Since 0.2.4:
+- `exclude_paths` has no default. Earlier versions excluded `/health` on every cluster; list it explicitly where a backend needs it.
+- Exclusions are prefixes on the path without its query string. A path with `.`/`..` segments, `//`, `;`, `\` or encoded `.`, `/`, `\` never matches an exclusion, and the xDS-generated listener has Envoy normalize paths before the filter runs.
+- Bearer access tokens must be issued to this gateway's client: `azp` or `aud` has to contain `client_id`.
+
 #### Cluster Configuration Options
 
 The `clusters` section maps Envoy cluster names to per-cluster auth settings.

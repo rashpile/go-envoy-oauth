@@ -24,20 +24,13 @@ func (f *Filter) isWebSocketUpgrade(header api.RequestHeaderMap) bool {
 
 // isWebSocketPathExcluded checks if a WebSocket path should skip authentication
 func (f *Filter) isWebSocketPathExcluded(path, cluster string) bool {
-	// Check global WebSocket exclude paths
-	for _, excluded := range f.config.WebSocketExcludePaths {
-		if path == excluded || strings.HasPrefix(path, excluded) {
-			return true
-		}
+	if isExcludedPath(path, f.config.WebSocketExcludePaths) {
+		return true
 	}
 
 	// Check cluster-specific WebSocket exclusions
 	if clusterConfig, ok := f.config.Clusters[cluster]; ok {
-		for _, excluded := range clusterConfig.WebSocketExcludePaths {
-			if path == excluded || strings.HasPrefix(path, excluded) {
-				return true
-			}
-		}
+		return isExcludedPath(path, clusterConfig.WebSocketExcludePaths)
 	}
 
 	return false

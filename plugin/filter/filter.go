@@ -855,11 +855,8 @@ func (f *Filter) handleLogout(header api.RequestHeaderMap) api.StatusType {
 }
 
 func (f *Filter) isPathExcluded(path, cluster string) bool {
-	// Check global exclude paths
-	for _, excluded := range f.config.ExcludePaths {
-		if path == excluded || strings.HasPrefix(path, excluded) {
-			return true
-		}
+	if isExcludedPath(path, f.config.ExcludePaths) {
+		return true
 	}
 
 	// Check cluster-specific configuration
@@ -867,11 +864,7 @@ func (f *Filter) isPathExcluded(path, cluster string) bool {
 		if clusterConfig.Exclude {
 			return true
 		}
-		for _, excluded := range clusterConfig.ExcludePaths {
-			if path == excluded || strings.HasPrefix(path, excluded) {
-				return true
-			}
-		}
+		return isExcludedPath(path, clusterConfig.ExcludePaths)
 	}
 
 	return false

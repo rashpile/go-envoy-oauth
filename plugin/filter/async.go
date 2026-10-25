@@ -18,22 +18,23 @@ func (f *Filter) handleAsyncDecodeHeaders(
 	ctx, cancel := context.WithTimeout(context.Background(), asyncOperationTimeout)
 	go func() {
 		defer cancel()
-		defer func() {
-			if r := recover(); r != nil {
-				f.logger.Error("Panic in async decode headers",
-					zap.String("trace_id", traceID),
-					zap.Any("panic", r))
-				f.handleRedirect("/", "")
-			}
-		}()
+		defer f.callbacks.DecoderFilterCallbacks().RecoverPanic()
 
 		done := make(chan api.StatusType, 1)
 		go func() {
+			// close runs after RecoverPanic, so a panicking callback still
+			// releases the outer goroutine instead of leaving it on the timeout.
+			defer close(done)
+			defer f.callbacks.DecoderFilterCallbacks().RecoverPanic()
 			done <- callback(header, path, traceID)
 		}()
 
 		select {
-		case status := <-done:
+		case status, ok := <-done:
+			if !ok {
+				// callback panicked; RecoverPanic already ended the request
+				return
+			}
 			switch status {
 			case api.LocalReply:
 				// Local reply was sent successfully
@@ -60,12 +61,7 @@ func (f *Filter) handleAsyncValidateSession(
 	callback func(header api.RequestHeaderMap, session *session.Session) api.StatusType) api.StatusType {
 
 	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				f.logger.Error("Panic in async callback", zap.Any("panic", r))
-				f.handleRedirect("/", "")
-			}
-		}()
+		defer f.callbacks.DecoderFilterCallbacks().RecoverPanic()
 
 		sessionHandler, err := f.getProviderHandler()
 		if err != nil {
@@ -97,13 +93,7 @@ func (f *Filter) handleAsyncValidateSession(
 
 func (f *Filter) handleAsyncCallback(header api.RequestHeaderMap, query string, traceID string, handler oauth.OAuthHandler) api.StatusType {
 	go func() {
-		// Add panic recovery
-		defer func() {
-			if r := recover(); r != nil {
-				f.logger.Error("Panic in async callback", zap.Any("panic", r))
-				f.handleRedirect("/", "")
-			}
-		}()
+		defer f.callbacks.DecoderFilterCallbacks().RecoverPanic()
 		err := handler.HandleCallback(header, query)
 		if err != nil {
 			f.logger.Error("Failed to handle OAuth callback",
