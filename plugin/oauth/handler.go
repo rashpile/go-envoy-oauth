@@ -186,17 +186,20 @@ func NewOAuthHandler(config *OIDCConfig, sessionStore session.SessionStore, cook
 	}, nil
 }
 
+// requestHost returns the host the request was routed by. X-Forwarded-Host is
+// ignored: Envoy is the gateway, so that header can only come from the client,
+// and it must not decide where an authorization code is sent (issue #12).
+func requestHost(header api.RequestHeaderMap) string {
+	if host, _ := header.Get(":authority"); host != "" {
+		return host
+	}
+	host, _ := header.Get("host")
+	return host
+}
+
 // GetAbsoluteRedirectURL returns an absolute redirect URL based on the request headers
 func (h *OAuthHandlerImpl) GetAbsoluteRedirectURL(header api.RequestHeaderMap) string {
-	// Get the host from the request
-	host, _ := header.Get(":authority")
-	if host == "" {
-		host, _ = header.Get("host")
-	}
-
-	if forwardedHost, _ := header.Get("x-forwarded-host"); forwardedHost != "" {
-		host = forwardedHost
-	}
+	host := requestHost(header)
 
 	// Ensure the redirect URL is absolute and properly formatted
 	redirectURL := h.getOAuth2Config().RedirectURL
@@ -620,13 +623,7 @@ func (h *OAuthHandlerImpl) GetPostLogoutRedirectURI(header api.RequestHeaderMap)
 					// Validate that it's a relative path or same-origin URL for security
 					if strings.HasPrefix(redirectURI, "/") {
 						// Relative path - make it absolute
-						host, _ := header.Get(":authority")
-						if host == "" {
-							host, _ = header.Get("host")
-						}
-						if forwardedHost, _ := header.Get("x-forwarded-host"); forwardedHost != "" {
-							host = forwardedHost
-						}
+						host := requestHost(header)
 
 						scheme := "http"
 						if forwardedProto, _ := header.Get("x-forwarded-proto"); forwardedProto == "https" {
@@ -643,15 +640,7 @@ func (h *OAuthHandlerImpl) GetPostLogoutRedirectURI(header api.RequestHeaderMap)
 	}
 
 	// Fall back to /oauth/welcome page
-	// Get the host from the request
-	host, _ := header.Get(":authority")
-	if host == "" {
-		host, _ = header.Get("host")
-	}
-
-	if forwardedHost, _ := header.Get("x-forwarded-host"); forwardedHost != "" {
-		host = forwardedHost
-	}
+	host := requestHost(header)
 
 	// Determine the scheme
 	scheme := "http"

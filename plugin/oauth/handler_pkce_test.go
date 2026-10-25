@@ -16,6 +16,7 @@ import (
 
 	"github.com/rashpile/go-envoy-oauth/plugin/session"
 	"go.uber.org/zap"
+	"golang.org/x/oauth2"
 )
 
 // mockHeaderMap implements api.RequestHeaderMap for testing.
@@ -716,5 +717,34 @@ func TestOAuthHandlerImpl_SessionCookieWriteDelegation(t *testing.T) {
 	formatted := h.FormatSessionCookie("xyz")
 	if !strings.Contains(formatted, "session=xyz") {
 		t.Errorf("expected formatted cookie to contain 'session=xyz', got %q", formatted)
+	}
+}
+
+// TestRedirectURLsIgnoreXForwardedHost verifies that the OAuth redirect_uri and
+// the post-logout URL are built from the routed host, never from the
+// client-supplied X-Forwarded-Host (issue #12).
+func TestRedirectURLsIgnoreXForwardedHost(t *testing.T) {
+	h := &OAuthHandlerImpl{
+		config:       &OIDCConfig{ProviderName: "kc"},
+		oauth2Config: &oauth2.Config{RedirectURL: "/oauth/callback"},
+		logger:       zap.NewNop(),
+	}
+	hdr := newMockHeaderMap()
+	hdr.headers[":authority"] = "app.example.com"
+	hdr.headers["x-forwarded-host"] = "other.example.net"
+	hdr.headers["x-forwarded-proto"] = "https"
+
+	if got := h.GetAbsoluteRedirectURL(hdr); got != "https://app.example.com/oauth/callback" {
+		t.Errorf("GetAbsoluteRedirectURL = %q, want https://app.example.com/oauth/callback", got)
+	}
+
+	hdr.headers[":path"] = "/oauth/logout?redirect_uri=%2Foauth%2Fwelcome"
+	if got := h.GetPostLogoutRedirectURI(hdr); got != "https://app.example.com/oauth/welcome" {
+		t.Errorf("GetPostLogoutRedirectURI (relative) = %q, want https://app.example.com/oauth/welcome", got)
+	}
+
+	hdr.headers[":path"] = "/oauth/logout"
+	if got := h.GetPostLogoutRedirectURI(hdr); strings.Contains(got, "other.example.net") || !strings.HasPrefix(got, "https://app.example.com/") {
+		t.Errorf("GetPostLogoutRedirectURI (default) = %q, want a URL on app.example.com", got)
 	}
 }

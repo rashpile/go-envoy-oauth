@@ -184,21 +184,7 @@ func (cm *CookieManager) getDomainFromHeaders(header api.RequestHeaderMap) strin
 		return cm.config.Domain
 	}
 
-	// Try X-Forwarded-Host first (for proxied requests)
-	if forwardedHost, ok := header.Get("x-forwarded-host"); ok && forwardedHost != "" {
-		// Extract domain from host (remove port if present)
-		domain := forwardedHost
-		if idx := strings.LastIndex(domain, ":"); idx != -1 {
-			domain = domain[:idx]
-		}
-		// Don't set Domain attribute for localhost - it causes issues with browsers
-		if domain == "localhost" || domain == "127.0.0.1" || strings.HasPrefix(domain, "192.168.") || strings.HasPrefix(domain, "10.") {
-			return ""
-		}
-		return domain
-	}
-
-	// Fall back to Host header
+	// X-Forwarded-Host is not used: it can only come from the client (issue #12).
 	if host, ok := header.Get("host"); ok && host != "" {
 		// Extract domain from host (remove port if present)
 		domain := host

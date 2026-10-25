@@ -139,21 +139,21 @@ func TestGetDomainFromHeaders(t *testing.T) {
 			expectedDomain: "example.com",
 		},
 		{
-			name:         "x-forwarded-host used when no config domain",
+			name:         "x-forwarded-host is ignored (client-controlled)",
 			configDomain: "",
 			headers: map[string]string{
-				"host":             "localhost:8080",
+				"host":             "myapp.com",
 				"x-forwarded-host": "app.example.com",
 			},
-			expectedDomain: "app.example.com",
+			expectedDomain: "myapp.com",
 		},
 		{
-			name:         "x-forwarded-host with port stripped",
+			name:         "x-forwarded-host alone sets no domain",
 			configDomain: "",
 			headers: map[string]string{
 				"x-forwarded-host": "app.example.com:443",
 			},
-			expectedDomain: "app.example.com",
+			expectedDomain: "",
 		},
 		{
 			name:         "host header used when no x-forwarded-host",
@@ -235,13 +235,13 @@ func TestSetCookieWithDynamicDomain(t *testing.T) {
 		expectNoDomain bool
 	}{
 		{
-			name:         "cookie with x-forwarded-host",
+			name:         "cookie ignores x-forwarded-host",
 			configDomain: "",
 			headers: map[string]string{
 				"x-forwarded-host": "app.example.com",
 			},
-			expectedDomain: "app.example.com",
-			expectNoDomain: false,
+			expectedDomain: "",
+			expectNoDomain: true,
 		},
 		{
 			name:         "cookie with localhost host header",
