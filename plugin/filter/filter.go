@@ -593,7 +593,9 @@ func (f *Filter) handleDecodeHeaders(header api.RequestHeaderMap, path string, t
 
 	if sessionHandler.IsNeedValidateSession(session) {
 		// Perform async validation to avoid blocking
-		return f.handleAsyncValidateSession(header, session, path, traceID, f.handleAuthSuccess)
+		return f.handleAsyncValidateSession(header, session, traceID, f.handleAuthSuccess, func(err error) {
+			f.handleUnauthenticatedRequest(header, path, traceID, err, "Session validation failed")
+		})
 	}
 
 	return f.handleAuthSuccess(header, session)

@@ -116,6 +116,19 @@ func (f *Filter) handleWebSocketAuth(header api.RequestHeaderMap, path string, t
 		return f.handleAuthFailure(401, "Unauthorized: Session expired")
 	}
 
+	// Same IdP revalidation and refresh as the HTTP path, so a revoked or
+	// disabled user loses WebSocket access too (issue #13). Handshakes cannot
+	// follow a login redirect, so an invalid session gets 401.
+	if wsSessionHandler.IsNeedValidateSession(session) {
+		return f.handleAsyncValidateSession(header, session, traceID, f.handleAuthSuccess, func(err error) {
+			f.logger.Debug("WebSocket: Session revalidation failed",
+				zap.String("session_id", session.ID),
+				zap.String("trace_id", traceID),
+				zap.Error(err))
+			f.handleAuthFailure(401, "Unauthorized: Session expired")
+		})
+	}
+
 	f.logger.Debug("WebSocket: Session validated successfully",
 		zap.String("session_id", session.ID),
 		zap.String("user_id", session.UserID),

@@ -56,10 +56,14 @@ func (f *Filter) handleAsyncDecodeHeaders(
 	return api.Running
 }
 
+// handleAsyncValidateSession validates (and if needed refreshes) the session
+// with the IdP off the request thread. callback runs on success; onInvalid
+// sends the reply when the session is no longer valid.
 func (f *Filter) handleAsyncValidateSession(
 	header api.RequestHeaderMap, session *session.Session,
-	path string, traceID string,
-	callback func(header api.RequestHeaderMap, session *session.Session) api.StatusType) api.StatusType {
+	traceID string,
+	callback func(header api.RequestHeaderMap, session *session.Session) api.StatusType,
+	onInvalid func(err error)) api.StatusType {
 
 	go func() {
 		defer f.callbacks.DecoderFilterCallbacks().RecoverPanic()
@@ -73,7 +77,7 @@ func (f *Filter) handleAsyncValidateSession(
 			return
 		}
 		if err := sessionHandler.ValidateSession(session); err != nil {
-			f.handleUnauthenticatedRequest(header, path, traceID, err, "Session validation failed")
+			onInvalid(err)
 			return
 		}
 		status := callback(header, session)

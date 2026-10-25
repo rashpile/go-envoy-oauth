@@ -17,6 +17,7 @@ type asyncDecoderCallbacks struct {
 	destroyed bool
 	recovered chan interface{}
 	replied   chan int
+	continued chan struct{}
 }
 
 func newAsyncDecoderCallbacks(destroyed bool) *asyncDecoderCallbacks {
@@ -24,6 +25,7 @@ func newAsyncDecoderCallbacks(destroyed bool) *asyncDecoderCallbacks {
 		destroyed: destroyed,
 		recovered: make(chan interface{}, 4),
 		replied:   make(chan int, 4),
+		continued: make(chan struct{}, 4),
 	}
 }
 
@@ -34,7 +36,7 @@ func (c *asyncDecoderCallbacks) SendLocalReply(code int, _ string, _ map[string]
 	c.replied <- code
 }
 
-func (c *asyncDecoderCallbacks) Continue(api.StatusType) {}
+func (c *asyncDecoderCallbacks) Continue(api.StatusType) { c.continued <- struct{}{} }
 
 func (c *asyncDecoderCallbacks) RecoverPanic() {
 	if r := recover(); r != nil {
