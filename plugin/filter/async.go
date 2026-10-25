@@ -2,6 +2,7 @@ package filter
 
 import (
 	"context"
+	"net/url"
 	"time"
 
 	"github.com/envoyproxy/envoy/contrib/golang/common/go/api"
@@ -92,6 +93,8 @@ func (f *Filter) handleAsyncValidateSession(
 }
 
 func (f *Filter) handleAsyncCallback(header api.RequestHeaderMap, query string, traceID string, handler oauth.OAuthHandler) api.StatusType {
+	values, _ := url.ParseQuery(query)
+	clearState := f.clearStateCookie(values.Get("state"), callbackPath)
 	go func() {
 		defer f.callbacks.DecoderFilterCallbacks().RecoverPanic()
 		err := handler.HandleCallback(header, query)
@@ -121,7 +124,7 @@ func (f *Filter) handleAsyncCallback(header api.RequestHeaderMap, query string, 
 			redirectURI = "/"
 		}
 
-		f.handleRedirect(redirectURI, sessionID)
+		f.handleRedirect(redirectURI, sessionID, clearState)
 		// SendLocalReply already called inside handleRedirect
 	}()
 	return api.Running // Tell Envoy we're processing async

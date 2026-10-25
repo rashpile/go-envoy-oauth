@@ -330,18 +330,25 @@ func (f *Filter) handleAccessDeniedPage(header api.RequestHeaderMap) api.StatusT
 	return f.errorHandler.HandleAccessDenied()
 }
 
-// handleRedirect creates a redirect response using SendLocalReply
-func (f *Filter) handleRedirect(url string, cookieValue string) api.StatusType {
+// handleRedirect creates a redirect response using SendLocalReply.
+// Empty cookie values are skipped.
+func (f *Filter) handleRedirect(url string, cookieValues ...string) api.StatusType {
+	var cookies []string
+	for _, c := range cookieValues {
+		if c != "" {
+			cookies = append(cookies, c)
+		}
+	}
 	f.logger.Debug("Handling redirect",
 		zap.String("url", url),
-		zap.Bool("has_cookie", cookieValue != ""))
+		zap.Int("cookies", len(cookies)))
 
 	headers := map[string][]string{
 		"Location":     {url},
 		"Content-Type": {"text/html"},
 	}
-	if cookieValue != "" {
-		headers["Set-Cookie"] = []string{cookieValue}
+	if len(cookies) > 0 {
+		headers["Set-Cookie"] = cookies
 	}
 
 	return f.recordAndSendLocalReply(http.StatusFound, "", headers, 0, "")
@@ -704,8 +711,12 @@ func (f *Filter) handleLogin(header api.RequestHeaderMap) api.StatusType {
 	if authURL == "" {
 		return f.handleAuthFailure(500, "Internal Server Error: No authorization URL generated")
 	}
+	state := stateFromAuthURL(authURL)
+	if state == "" {
+		return f.handleAuthFailure(500, "Internal Server Error: No state in authorization URL")
+	}
 
-	return f.handleRedirect(authURL, "")
+	return f.handleRedirect(authURL, f.stateCookie(state, callbackPath))
 }
 
 // oauthRestartCookie is the Set-Cookie string used by the single-bounce restart guard.
@@ -788,6 +799,11 @@ func (f *Filter) handleCallback(header api.RequestHeaderMap) api.StatusType {
 	if nonce == "" {
 		return f.restartOrGuard(header, traceID, "missing_state",
 			"Missing state parameter in OAuth callback")
+	}
+	// The login must finish in the browser that started it (issue #11).
+	if !hasStateCookie(header, nonce) {
+		return f.restartOrGuard(header, traceID, "state_not_bound_to_browser",
+			"OAuth state does not belong to this browser")
 	}
 	providerName, err := session.PeekPendingAuthProvider(f.sessionStore, nonce)
 	if err != nil {

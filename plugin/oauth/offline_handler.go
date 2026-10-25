@@ -407,13 +407,14 @@ func (h *OfflineTokenHandler) HandleOfflineAuthRedirect(header api.RequestHeader
 
 	// Generate state for offline flow
 	state := generateRandomState() + "|offline"
+	verifier := oauth2.GenerateVerifier()
 
 	// Store state in temporary session
 	stateSession := &session.Session{
 		ID:        state,
 		UserID:    "",
 		Token:     "",
-		Claims:    map[string]interface{}{"type": "offline_token"},
+		Claims:    map[string]interface{}{"type": "offline_token", "code_verifier": verifier},
 		CreatedAt: time.Now(),
 		ExpiresAt: time.Now().Add(5 * time.Minute),
 	}
@@ -454,7 +455,8 @@ func (h *OfflineTokenHandler) HandleOfflineAuthRedirect(header api.RequestHeader
 	// Generate auth URL with access_type=offline for refresh token and prompt=login to force re-authentication
 	authURL := oauth2Config.AuthCodeURL(state,
 		oauth2.AccessTypeOffline,
-		oauth2.SetAuthURLParam("prompt", "login"))
+		oauth2.SetAuthURLParam("prompt", "login"),
+		oauth2.S256ChallengeOption(verifier))
 
 	headers := map[string][]string{
 		"Location": {authURL},
@@ -492,6 +494,10 @@ func (h *OfflineTokenHandler) HandleOfflineCallback(header api.RequestHeaderMap,
 
 	// Delete state session
 	_ = h.handler.GetSessionStore().Delete(state)
+	verifier, _ := stateSession.Claims["code_verifier"].(string)
+	if verifier == "" {
+		return http.StatusBadRequest, "Invalid or expired state parameter", nil
+	}
 
 	// Get authorization code
 	code := values.Get("code")
@@ -527,7 +533,7 @@ func (h *OfflineTokenHandler) HandleOfflineCallback(header api.RequestHeaderMap,
 		oauth2Config.Scopes = append(oauth2Config.Scopes, "offline_access")
 	}
 
-	token, err := oauth2Config.Exchange(context.Background(), code, oauth2.AccessTypeOffline)
+	token, err := oauth2Config.Exchange(context.Background(), code, oauth2.AccessTypeOffline, oauth2.VerifierOption(verifier))
 	if err != nil {
 		h.logger.Error("Failed to exchange code for token", zap.Error(err))
 		return http.StatusInternalServerError, "Failed to obtain token", nil

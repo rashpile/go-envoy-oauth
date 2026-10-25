@@ -1109,6 +1109,11 @@ func TestHandleCallbackRestartsOnMissingPendingAuth(t *testing.T) {
 // another restart redirect (loop guard). Covers both restartOrGuard call sites:
 // missing_state and invalid_or_expired_state.
 func TestHandleCallbackLoopGuardFallsBackTo400(t *testing.T) {
+	// The state cookie for "does-not-exist" lets the request reach the
+	// pending-auth lookup, which then fails because no entry exists.
+	name, value := stateCookieNameValue("does-not-exist")
+	stateCookie := name + "=" + value
+
 	cases := []struct {
 		name     string
 		path     string
@@ -1118,13 +1123,13 @@ func TestHandleCallbackLoopGuardFallsBackTo400(t *testing.T) {
 		{
 			name:     "invalid_or_expired_state, bare cookie",
 			path:     "/oauth/callback?state=does-not-exist&code=abc",
-			cookie:   "oauth_restart=1",
+			cookie:   "oauth_restart=1; " + stateCookie,
 			wantBody: "Invalid or expired state parameter",
 		},
 		{
 			name:     "invalid_or_expired_state, cookie among others",
 			path:     "/oauth/callback?state=does-not-exist&code=abc",
-			cookie:   "foo=bar; oauth_restart=1; baz=qux",
+			cookie:   "foo=bar; oauth_restart=1; " + stateCookie + "; baz=qux",
 			wantBody: "Invalid or expired state parameter",
 		},
 		{
@@ -1132,6 +1137,12 @@ func TestHandleCallbackLoopGuardFallsBackTo400(t *testing.T) {
 			path:     "/oauth/callback?code=abc",
 			cookie:   "oauth_restart=1",
 			wantBody: "Missing state parameter in OAuth callback",
+		},
+		{
+			name:     "state_not_bound_to_browser, bare cookie",
+			path:     "/oauth/callback?state=does-not-exist&code=abc",
+			cookie:   "oauth_restart=1",
+			wantBody: "OAuth state does not belong to this browser",
 		},
 	}
 

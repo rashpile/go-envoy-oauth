@@ -59,6 +59,11 @@ func (f *Filter) handleOfflineRedirect(header api.RequestHeaderMap) api.StatusTy
 	}
 
 	statusCode, body, headers := offlineHandler.HandleOfflineAuthRedirect(header)
+	if locs := headers["Location"]; len(locs) > 0 {
+		if state := stateFromAuthURL(locs[0]); state != "" {
+			headers["Set-Cookie"] = append(headers["Set-Cookie"], f.stateCookie(state, offlineCallback))
+		}
+	}
 	return f.recordAndSendLocalReply(statusCode, body, headers, 0, "")
 }
 
@@ -69,19 +74,30 @@ func (f *Filter) handleOfflineCallback(header api.RequestHeaderMap, path string)
 		return f.handleAuthFailure(404, "API key generation feature is disabled")
 	}
 
-	offlineHandler, err := f.getOfflineTokenHandler()
-	if err != nil {
-		f.logger.Error("Failed to get offline token handler for callback", zap.Error(err))
-		return f.errorHandler.HandleIDPUnavailable()
-	}
-
 	// Extract query parameters
 	query := ""
 	if idx := strings.Index(path, "?"); idx != -1 {
 		query = path[idx+1:]
 	}
 
+	// The API-key login must finish in the browser that started it (issue #11).
+	values, _ := url.ParseQuery(query)
+	state := values.Get("state")
+	if !hasStateCookie(header, state) {
+		return f.handleAuthFailure(400, "This sign-in was started in another browser. Start again from /oauth/offline.")
+	}
+
+	offlineHandler, err := f.getOfflineTokenHandler()
+	if err != nil {
+		f.logger.Error("Failed to get offline token handler for callback", zap.Error(err))
+		return f.errorHandler.HandleIDPUnavailable()
+	}
+
 	statusCode, body, headers := offlineHandler.HandleOfflineCallback(header, query)
+	if headers == nil {
+		headers = map[string][]string{}
+	}
+	headers["Set-Cookie"] = append(headers["Set-Cookie"], f.clearStateCookie(state, offlineCallback))
 	return f.recordAndSendLocalReply(statusCode, body, headers, 0, "")
 }
 
