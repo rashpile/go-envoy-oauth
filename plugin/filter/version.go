@@ -3,7 +3,7 @@ package filter
 // Version information
 var (
 	// Version is the current version of the filter
-	Version = "0.2.2"
+	Version = "0.2.3"
 
 	// GitCommit is the git commit that was compiled
 	// This will be filled in by the compiler

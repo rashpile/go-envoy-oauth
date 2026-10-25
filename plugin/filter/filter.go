@@ -308,7 +308,7 @@ func createAuthErrorHeaders() map[string][]string {
 // stripUntrustedHeaders deletes the headers listed in f.config.RemoveHeaders
 // from the incoming request (T-04-01). Called from DecodeHeaders before any
 // early-return so client-supplied identity/provider headers cannot spoof
-// upstream services even on excluded or skip-auth paths.
+// upstream services even on excluded paths.
 func (f *Filter) stripUntrustedHeaders(header api.RequestHeaderMap) {
 	if f.config == nil {
 		return

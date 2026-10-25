@@ -142,7 +142,6 @@ func createHTTPConnectionManager(config *GatewayConfig) (*anypb.Any, error) {
 		"user_id_header_name":       "X-User-ID",
 		"user_email_header_name":    "X-User-Email",
 		"user_username_header_name": "X-User",
-		"skip_auth_header_name":     "X-Skip-Auth",
 	}
 
 	// Add scopes if provided (convert []string to []interface{} for structpb)

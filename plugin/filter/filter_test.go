@@ -884,14 +884,28 @@ func TestIsUserPermittedEmptyUsername(t *testing.T) {
 	}
 }
 
-// captureCallbacks implements api.FilterCallbackHandler for handleCallback tests.
+// captureCallbacks implements api.FilterCallbackHandler for handleCallback and DecodeHeaders tests.
 // Embed the interface (nil) so unimplemented methods compile and panic only if called.
 type captureCallbacks struct {
 	api.FilterCallbackHandler
 	decoder *captureDecoderCallbacks
+	cluster string
 }
 
 func (c *captureCallbacks) DecoderFilterCallbacks() api.DecoderFilterCallbacks { return c.decoder }
+
+// StreamInfo returns a stub whose UpstreamClusterName reports c.cluster, so
+// DecodeHeaders tests can drive cluster-specific config.
+func (c *captureCallbacks) StreamInfo() api.StreamInfo { return &stubStreamInfo{cluster: c.cluster} }
+
+// stubStreamInfo implements api.StreamInfo for DecodeHeaders tests.
+// Embed the interface (nil) so unimplemented methods compile and panic only if called.
+type stubStreamInfo struct {
+	api.StreamInfo
+	cluster string
+}
+
+func (s *stubStreamInfo) UpstreamClusterName() (string, bool) { return s.cluster, s.cluster != "" }
 
 // captureDecoderCallbacks records SendLocalReply calls for assertion.
 type captureDecoderCallbacks struct {
@@ -912,7 +926,7 @@ func (c *captureDecoderCallbacks) SendLocalReply(code int, body string,
 	c.details = details
 }
 
-// buildCallbackFilter returns a minimal Filter wired for handleCallback tests:
+// buildCallbackFilter returns a minimal Filter wired for handleCallback and DecodeHeaders tests:
 // empty session store, empty provider registry, nop logger, and the given capture callbacks.
 func buildCallbackFilter(cbs *captureCallbacks) *Filter {
 	registry := NewProviderRegistry(zap.NewNop())
@@ -925,6 +939,128 @@ func buildCallbackFilter(cbs *captureCallbacks) *Filter {
 		sessionStore:     store,
 		callbacks:        cbs,
 		logger:           zap.NewNop(),
+	}
+}
+
+// TestDecodeHeadersIgnoresClientSkipAuthHeader verifies issue #3: a
+// client-supplied skip-auth header must not bypass authentication. The request
+// has no session, so it must go through real auth and get a 401. The
+// "legacy config" case parses a config that still sets skip_auth_header_name,
+// so the test fails if the parser starts honoring the key again.
+func TestDecodeHeadersIgnoresClientSkipAuthHeader(t *testing.T) {
+	cases := []struct {
+		name      string
+		configure func(t *testing.T, f *Filter)
+	}{
+		{name: "hand-built config"},
+		{
+			name: "legacy config sets skip_auth_header_name",
+			configure: func(t *testing.T, f *Filter) {
+				cfg := baseConfig()
+				cfg["skip_auth_header_name"] = "X-Skip-Auth"
+				conf, err := (&Parser{}).parseRawConfig(buildAny(t, cfg))
+				if err != nil {
+					t.Fatalf("parseRawConfig() error: %v", err)
+				}
+				f.config = conf
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dec := &captureDecoderCallbacks{}
+			cbs := &captureCallbacks{decoder: dec}
+			f := buildCallbackFilter(cbs)
+			if tc.configure != nil {
+				tc.configure(t, f)
+			}
+			h := &recordingHandler{}
+			f.providerRegistry.Register("keycloak", h)
+			f.config.DefaultProvider = "keycloak"
+
+			hdr := &capturingHeaderMap{headers: map[string]string{
+				":path":       "/private",
+				"X-Skip-Auth": "1",
+			}}
+
+			result := f.DecodeHeaders(hdr, true)
+			if result != api.LocalReply {
+				t.Fatalf("DecodeHeaders returned %v, want api.LocalReply (client skip header must not bypass auth)", result)
+			}
+			if dec.statusCode != 401 {
+				t.Errorf("statusCode = %d, want 401", dec.statusCode)
+			}
+			if dec.details != "auth_failure" {
+				t.Errorf("details = %q, want %q", dec.details, "auth_failure")
+			}
+			if h.getSessionCookieCalls != 1 {
+				t.Errorf("GetSessionCookie calls = %d, want 1 (request must go through session auth)", h.getSessionCookieCalls)
+			}
+		})
+	}
+}
+
+// TestDecodeHeadersExcludedPathStillContinues guards the trusted,
+// operator-controlled bypasses: exclude_paths, cluster exclude and
+// websocket_exclude_paths must still return api.Continue without auth.
+func TestDecodeHeadersExcludedPathStillContinues(t *testing.T) {
+	cases := []struct {
+		name      string
+		path      string
+		cluster   string
+		headers   map[string]string
+		configure func(c *OAuthConfig)
+	}{
+		{
+			name: "global exclude_paths",
+			path: "/public/info",
+			configure: func(c *OAuthConfig) {
+				c.ExcludePaths = []string{"/public"}
+			},
+		},
+		{
+			name:    "cluster exclude",
+			path:    "/private",
+			cluster: "c1",
+			configure: func(c *OAuthConfig) {
+				c.Clusters["c1"] = ClusterConfig{Exclude: true}
+			},
+		},
+		{
+			name:    "websocket_exclude_paths",
+			path:    "/ws/live",
+			headers: map[string]string{"connection": "Upgrade", "upgrade": "websocket"},
+			configure: func(c *OAuthConfig) {
+				c.WebSocketExcludePaths = []string{"/ws"}
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dec := &captureDecoderCallbacks{}
+			cbs := &captureCallbacks{decoder: dec, cluster: tc.cluster}
+			f := buildCallbackFilter(cbs)
+			h := &recordingHandler{}
+			f.providerRegistry.Register("keycloak", h)
+			f.config.DefaultProvider = "keycloak"
+			tc.configure(f.config)
+
+			hdr := &capturingHeaderMap{headers: map[string]string{":path": tc.path}}
+			for k, v := range tc.headers {
+				hdr.headers[k] = v
+			}
+
+			result := f.DecodeHeaders(hdr, true)
+			if result != api.Continue {
+				t.Fatalf("DecodeHeaders returned %v, want api.Continue", result)
+			}
+			if dec.called {
+				t.Errorf("SendLocalReply called with %d, want no local reply", dec.statusCode)
+			}
+			if h.getSessionCookieCalls != 0 {
+				t.Errorf("GetSessionCookie calls = %d, want 0 for excluded request", h.getSessionCookieCalls)
+			}
+		})
 	}
 }
 

@@ -146,7 +146,6 @@ http_filters:
         user_email_header_name: "X-User-Email"
         user_username_header_name: "X-User-Username"
         auth_provider_header_name: "X-Auth-Provider"  # verified provider key on downstream requests
-        skip_auth_header_name: "X-Skip-Auth"
 
         # Identity headers stripped from inbound requests to prevent spoofing.
         # auth_provider_header_name is always enforced here regardless of this list.
@@ -173,6 +172,8 @@ http_filters:
           public_api_cluster:
             exclude: true
 ```
+
+`skip_auth_header_name` was removed in 0.2.3; the key is ignored with a warning. Use cluster `exclude` or `exclude_paths` for trusted bypass.
 
 #### Cluster Configuration Options
 

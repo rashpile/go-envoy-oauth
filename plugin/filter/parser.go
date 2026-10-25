@@ -67,7 +67,6 @@ type OAuthConfig struct {
 	UserEmailHeaderName    string   `json:"user_email_header_name"`
 	UserUsernameHeaderName string   `json:"user_username_header_name"`
 	AuthProviderHeaderName string   `json:"auth_provider_header_name"`
-	SkipAuthHeaderName     string   `json:"skip_auth_header_name"`
 	RemoveHeaders          []string `json:"remove_headers"`
 
 	// Paths that should be excluded from authentication
@@ -120,22 +119,21 @@ func (p *Parser) parseRawConfig(any *anypb.Any) (*OAuthConfig, error) {
 	m := v.AsMap()
 
 	conf := &OAuthConfig{
-		Scopes:             []string{"openid", "profile", "email"},
-		SessionCookieName:  "session",
-		SessionMaxAge:      24 * time.Hour,
-		SessionPath:        "/",
-		SessionSecure:      true,
-		SessionHttpOnly:    true,
-		SessionSameSite:    "Lax",
-		ExcludePaths:       []string{"/health"},
-		Clusters:           make(map[string]ClusterConfig),
-		Providers:          make(map[string]ProviderConfig),
-		SessionStore:       session.NewInMemorySessionStore(),
-		SkipAuthHeaderName: "",
-		RemoveHeaders:      []string{"X-User-ID", "X-User-Email", "X-User-Username", "X-Auth-Provider"},
-		EnableAPIKey:       false, // API key generation disabled by default
-		EnableBearerToken:  true,  // Bearer token authentication enabled by default
-		EnableLLMsTxt:      true,  // /oauth/llms.txt agent docs enabled by default
+		Scopes:            []string{"openid", "profile", "email"},
+		SessionCookieName: "session",
+		SessionMaxAge:     24 * time.Hour,
+		SessionPath:       "/",
+		SessionSecure:     true,
+		SessionHttpOnly:   true,
+		SessionSameSite:   "Lax",
+		ExcludePaths:      []string{"/health"},
+		Clusters:          make(map[string]ClusterConfig),
+		Providers:         make(map[string]ProviderConfig),
+		SessionStore:      session.NewInMemorySessionStore(),
+		RemoveHeaders:     []string{"X-User-ID", "X-User-Email", "X-User-Username", "X-Auth-Provider"},
+		EnableAPIKey:      false, // API key generation disabled by default
+		EnableBearerToken: true,  // Bearer token authentication enabled by default
+		EnableLLMsTxt:     true,  // /oauth/llms.txt agent docs enabled by default
 	}
 
 	if err := p.populateConfig(conf, m); err != nil {
@@ -265,8 +263,11 @@ func (p *Parser) populateConfig(conf *OAuthConfig, m map[string]interface{}) err
 	if authProviderHeaderName, ok := m["auth_provider_header_name"].(string); ok {
 		conf.AuthProviderHeaderName = authProviderHeaderName
 	}
-	if skipAuthHeaderName, ok := m["skip_auth_header_name"].(string); ok {
-		conf.SkipAuthHeaderName = skipAuthHeaderName
+	// skip_auth_header_name was removed: any client could send the header and
+	// bypass auth (issue #3). Accept the key so old configs still load, but ignore it.
+	if skipAuthHeaderName, ok := m["skip_auth_header_name"].(string); ok && skipAuthHeaderName != "" {
+		GetLogger().Warn("skip_auth_header_name is no longer supported and is ignored; use cluster exclude or exclude_paths",
+			zap.String("header", skipAuthHeaderName))
 	}
 
 	if removeHeaders, ok := m["remove_headers"].([]interface{}); ok {
@@ -559,7 +560,6 @@ func (p *Parser) Merge(parent interface{}, child interface{}) interface{} {
 		UserEmailHeaderName:    parentConfig.UserEmailHeaderName,
 		UserUsernameHeaderName: parentConfig.UserUsernameHeaderName,
 		AuthProviderHeaderName: parentConfig.AuthProviderHeaderName,
-		SkipAuthHeaderName:     parentConfig.SkipAuthHeaderName,
 		RemoveHeaders:          slices.Clone(parentConfig.RemoveHeaders),
 		ProviderRegistry:       parentConfig.ProviderRegistry,
 	}

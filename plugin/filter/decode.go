@@ -39,10 +39,8 @@ func (f *Filter) DecodeHeaders(header api.RequestHeaderMap, endStream bool) api.
 	)
 
 	// Strip client-supplied identity headers (T-04-01) before any early-return
-	// branch so the guarantee holds on excluded paths and skip-auth paths too.
+	// branch so the guarantee holds on excluded paths too.
 	// Authenticated paths re-Set these headers from the verified session.
-	// Skip-auth deployments must carry identity in skip_auth_header_name itself;
-	// this filter does not forward client-supplied X-User-* / X-Auth-Provider.
 	f.stripUntrustedHeaders(header)
 
 	// Get the request path and cluster
@@ -51,16 +49,6 @@ func (f *Filter) DecodeHeaders(header api.RequestHeaderMap, endStream bool) api.
 	f.cluster = cluster
 
 	f.logger.Debug(fmt.Sprintf("path: %s, cluster: %s, trace_id: %s", sanitizePathForLogging(path), cluster, traceID))
-
-	if f.config.SkipAuthHeaderName != "" {
-		if username, exists := header.Get(f.config.SkipAuthHeaderName); exists && username != "" {
-			f.logger.Debug("Skipping authentication - header already exists",
-				zap.String("header", f.config.SkipAuthHeaderName),
-				zap.String("username", username),
-				zap.String("trace_id", traceID))
-			return api.Continue
-		}
-	}
 
 	// Check if the path should be excluded
 	if !strings.HasPrefix(path, "/oauth/") && f.isPathExcluded(path, cluster) {

@@ -9,6 +9,9 @@ import (
 	"testing"
 
 	xds "github.com/cncf/xds/go/xds/type/v3"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 	"google.golang.org/protobuf/types/known/anypb"
 	"google.golang.org/protobuf/types/known/structpb"
 )
@@ -703,5 +706,82 @@ func TestParseEnableLLMsTxtTrue(t *testing.T) {
 
 	if !conf.EnableLLMsTxt {
 		t.Errorf("EnableLLMsTxt: got %v, want true (explicit true in config)", conf.EnableLLMsTxt)
+	}
+}
+
+// observeWarnLogs swaps the package logger for an observer at Warn level and
+// restores it when the test ends. It replaces a package-level global, so tests
+// that use it must not call t.Parallel.
+func observeWarnLogs(t *testing.T) *observer.ObservedLogs {
+	t.Helper()
+	core, logs := observer.New(zap.WarnLevel)
+	orig := logger
+	logger = zap.New(core)
+	t.Cleanup(func() { logger = orig })
+	return logs
+}
+
+// TestParseLegacySkipAuthHeaderNameIgnored verifies that a legacy
+// skip_auth_header_name key still parses (old configs keep loading) and logs
+// exactly one Warn saying it is ignored (issue #3: the header was a client-controlled bypass).
+func TestParseLegacySkipAuthHeaderNameIgnored(t *testing.T) {
+	logs := observeWarnLogs(t)
+
+	cfg := baseConfig()
+	cfg["skip_auth_header_name"] = "X-Skip-Auth"
+
+	p := &Parser{}
+	if _, err := p.parseRawConfig(buildAny(t, cfg)); err != nil {
+		t.Fatalf("parseRawConfig() error: %v", err)
+	}
+
+	entries := logs.FilterMessageSnippet("skip_auth_header_name").All()
+	if len(entries) != 1 {
+		t.Fatalf("skip_auth_header_name log entries: got %d, want 1", len(entries))
+	}
+	e := entries[0]
+	if e.Level != zapcore.WarnLevel {
+		t.Errorf("log level: got %v, want %v", e.Level, zapcore.WarnLevel)
+	}
+	if got := e.ContextMap()["header"]; got != "X-Skip-Auth" {
+		t.Errorf("header field: got %v, want %q", got, "X-Skip-Auth")
+	}
+}
+
+// TestParseNoSkipAuthWarnWhenAbsentEmptyOrNonString verifies that no
+// skip_auth_header_name warning is logged when the key is absent, empty, or
+// not a string, and that parsing still succeeds. Only string values were ever
+// honored before the removal, so a non-string value never enabled the bypass
+// and there is nothing stale to warn about.
+func TestParseNoSkipAuthWarnWhenAbsentEmptyOrNonString(t *testing.T) {
+	tests := []struct {
+		name  string
+		set   bool
+		value interface{}
+	}{
+		{name: "absent"},
+		{name: "empty", set: true, value: ""},
+		{name: "bool", set: true, value: true},
+		{name: "number", set: true, value: 1},
+		{name: "list", set: true, value: []interface{}{"X-Skip-Auth"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			logs := observeWarnLogs(t)
+
+			cfg := baseConfig()
+			if tt.set {
+				cfg["skip_auth_header_name"] = tt.value
+			}
+
+			p := &Parser{}
+			if _, err := p.parseRawConfig(buildAny(t, cfg)); err != nil {
+				t.Fatalf("parseRawConfig() error: %v", err)
+			}
+
+			if got := logs.FilterMessageSnippet("skip_auth_header_name").Len(); got != 0 {
+				t.Errorf("skip_auth_header_name warnings: got %d, want 0", got)
+			}
+		})
 	}
 }

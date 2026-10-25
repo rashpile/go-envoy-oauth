@@ -60,7 +60,6 @@ static_resources:
                       user_id_header_name: "X-User-ID"
                       user_email_header_name: "X-User-Email"
                       user_username_header_name: "X-User"
-                      skip_auth_header_name: "X-Skip-Auth"  # Header to check for skipping auth
 
                       # Paths that should be excluded from authentication
                       # exclude_paths: ["/health"]

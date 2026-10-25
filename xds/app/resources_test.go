@@ -562,28 +562,34 @@ func extractPluginTypedStruct(t *testing.T, managerAny *anypb.Any) *structpb.Str
 	return typed.Value
 }
 
-// TestProviderAllowedUsersSerialization verifies that ProviderConfig.AllowedUsers is
-// lowercased and written into the plugin config under providers.<name>.allowed_users.
-func TestProviderAllowedUsersSerialization(t *testing.T) {
+// pluginStructFor builds a minimal GatewayConfig with the given providers ("kc" as
+// default), runs createHTTPConnectionManager and returns the decoded plugin config.
+func pluginStructFor(t *testing.T, providers map[string]ProviderConfig) *structpb.Struct {
+	t.Helper()
 	cfg := &GatewayConfig{
 		Plugin:          PluginConfig{LibraryPath: "/app/filter.so"},
 		DefaultProvider: "kc",
-		Providers: map[string]ProviderConfig{
-			"kc": {
-				IssuerURL:    "https://issuer.example.com",
-				ClientID:     "cid",
-				ClientSecret: "secret",
-				AllowedUsers: []string{"Alice", "BOB"},
-			},
-		},
-		Listener: ListenerConfig{Address: "0.0.0.0", Port: 8080},
+		Providers:       providers,
+		Listener:        ListenerConfig{Address: "0.0.0.0", Port: 8080},
 	}
-
 	managerAny, err := createHTTPConnectionManager(cfg)
 	if err != nil {
 		t.Fatalf("createHTTPConnectionManager: %v", err)
 	}
-	pluginStruct := extractPluginTypedStruct(t, managerAny)
+	return extractPluginTypedStruct(t, managerAny)
+}
+
+// TestProviderAllowedUsersSerialization verifies that ProviderConfig.AllowedUsers is
+// lowercased and written into the plugin config under providers.<name>.allowed_users.
+func TestProviderAllowedUsersSerialization(t *testing.T) {
+	pluginStruct := pluginStructFor(t, map[string]ProviderConfig{
+		"kc": {
+			IssuerURL:    "https://issuer.example.com",
+			ClientID:     "cid",
+			ClientSecret: "secret",
+			AllowedUsers: []string{"Alice", "BOB"},
+		},
+	})
 
 	providersField, ok := pluginStruct.Fields["providers"]
 	if !ok {
@@ -612,25 +618,14 @@ func TestProviderAllowedUsersSerialization(t *testing.T) {
 // TestProviderAllowedUsersOmittedWhenEmpty verifies that providers with no AllowedUsers
 // do not emit an allowed_users key in the serialized plugin config.
 func TestProviderAllowedUsersOmittedWhenEmpty(t *testing.T) {
-	cfg := &GatewayConfig{
-		Plugin:          PluginConfig{LibraryPath: "/app/filter.so"},
-		DefaultProvider: "kc",
-		Providers: map[string]ProviderConfig{
-			"kc": {
-				IssuerURL:    "https://issuer.example.com",
-				ClientID:     "cid",
-				ClientSecret: "secret",
-				// AllowedUsers intentionally absent
-			},
+	pluginStruct := pluginStructFor(t, map[string]ProviderConfig{
+		"kc": {
+			IssuerURL:    "https://issuer.example.com",
+			ClientID:     "cid",
+			ClientSecret: "secret",
+			// AllowedUsers intentionally absent
 		},
-		Listener: ListenerConfig{Address: "0.0.0.0", Port: 8080},
-	}
-
-	managerAny, err := createHTTPConnectionManager(cfg)
-	if err != nil {
-		t.Fatalf("createHTTPConnectionManager: %v", err)
-	}
-	pluginStruct := extractPluginTypedStruct(t, managerAny)
+	})
 
 	providersField, ok := pluginStruct.Fields["providers"]
 	if !ok {
@@ -642,5 +637,25 @@ func TestProviderAllowedUsersOmittedWhenEmpty(t *testing.T) {
 	}
 	if _, present := kcField.GetStructValue().Fields["allowed_users"]; present {
 		t.Error("providers.kc must not have 'allowed_users' key when AllowedUsers is empty")
+	}
+}
+
+// TestPluginConfigOmitsSkipAuthHeaderName verifies that the plugin config no longer
+// carries skip_auth_header_name: any client could send that header and bypass auth (issue #3).
+func TestPluginConfigOmitsSkipAuthHeaderName(t *testing.T) {
+	pluginStruct := pluginStructFor(t, map[string]ProviderConfig{
+		"kc": {
+			IssuerURL:    "https://issuer.example.com",
+			ClientID:     "cid",
+			ClientSecret: "secret",
+		},
+	})
+
+	// Sanity check: the decoded struct is the real plugin config.
+	if _, ok := pluginStruct.Fields["user_id_header_name"]; !ok {
+		t.Fatal("plugin config missing 'user_id_header_name' field")
+	}
+	if v, present := pluginStruct.Fields["skip_auth_header_name"]; present {
+		t.Errorf("plugin config must not have 'skip_auth_header_name' key, got %q", v.GetStringValue())
 	}
 }

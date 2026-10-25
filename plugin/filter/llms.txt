@@ -514,7 +514,6 @@ set.
 | `user_email_header_name` | string | `X-User-Email` | Header name for email injection |
 | `user_username_header_name` | string | `X-User-Username` | Header name for username injection |
 | `auth_provider_header_name` | string | `X-Auth-Provider` | Header name for provider-name injection |
-| `skip_auth_header_name` | string | (empty) | When non-empty, requests carrying this header bypass auth (operator-controlled trusted-source bypass) |
 | `enable_api_key` | bool | `false` | Enable the API-key (offline-token) flow |
 | `enable_bearer_token` | bool | `true` | Enable bearer-JWT authentication |
 | `enable_llms_txt` | bool | `true` | Enable the `/oauth/llms.txt` endpoint (this document) |
