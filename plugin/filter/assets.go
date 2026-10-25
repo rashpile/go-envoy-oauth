@@ -344,8 +344,8 @@ func getSSOScript() string {
 
         // Global logout function
         window.ssoLogout = function() {
-            // Get the current page URL to use as home-url
-            const currentUrl = window.location.href;
+            // Use the current page as home-url; the welcome page only accepts same-origin paths
+            const currentUrl = window.location.pathname + window.location.search + window.location.hash;
             const welcomeUrl = '/oauth/welcome?home-url=' + encodeURIComponent(currentUrl);
             const encodedWelcomeUrl = encodeURIComponent(welcomeUrl);
             window.location.href = ` + "`/oauth/logout?redirect_uri=${encodedWelcomeUrl}`" + `;

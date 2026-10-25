@@ -75,3 +75,45 @@ func hasAmbiguousSegments(path string) bool {
 	}
 	return false
 }
+
+// isSafeRelativePath reports whether s is a same-origin relative path that is
+// safe to redirect to or link to. The explicit second-character check handles
+// browser-normalised forms:
+//
+//	"//evil.com"  → protocol-relative
+//	"///evil.com" → triple-slash (parsed as path by Go, but browser collapses)
+//	"/\evil.com"  → backslash-normalised to // by Chromium
+func isSafeRelativePath(s string) bool {
+	parsed, err := url.Parse(s)
+	if err != nil || parsed.Host != "" || parsed.Scheme != "" || !strings.HasPrefix(s, "/") {
+		return false
+	}
+	return len(s) == 1 || (s[1] != '/' && s[1] != '\\')
+}
+
+// safeHomeURL returns a link target for the welcome page. A safe relative path
+// is kept; an absolute http(s) URL on the request's own host is reduced to its
+// path, query and fragment; anything else becomes "/" (issue #10).
+func safeHomeURL(raw, host string) string {
+	if isSafeRelativePath(raw) {
+		return raw
+	}
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || host == "" || !strings.EqualFold(u.Host, host) {
+		return "/"
+	}
+	rel := u.EscapedPath()
+	if rel == "" {
+		rel = "/"
+	}
+	if u.RawQuery != "" {
+		rel += "?" + u.RawQuery
+	}
+	if u.Fragment != "" {
+		rel += "#" + u.EscapedFragment()
+	}
+	if !isSafeRelativePath(rel) {
+		return "/"
+	}
+	return rel
+}

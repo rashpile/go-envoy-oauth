@@ -95,7 +95,7 @@ app.
 
 Query parameters:
 
-- `home-url` (string, optional) — URL for the "Continue to App" button.
+- `home-url` (string, optional) — same-origin path for the "Continue to App" button. Other values fall back to `/`.
 
 Response: `200 text/html`.
 

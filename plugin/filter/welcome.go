@@ -20,19 +20,20 @@ func (f *Filter) handleWelcome(header api.RequestHeaderMap) api.StatusType {
 
 	// Extract home-url parameter if present
 	homeURL := "/"
+	host, _ := header.Get(":authority")
 	if strings.Contains(path, "?") {
 		if idx := strings.Index(path, "?"); idx > 0 {
 			queryString := path[idx+1:]
 			if params, err := url.ParseQuery(queryString); err == nil {
 				if paramHomeURL := params.Get("home-url"); paramHomeURL != "" {
-					homeURL = paramHomeURL
+					homeURL = safeHomeURL(paramHomeURL, host)
 				}
 				// Check if we need to redirect to clean URL (removing state but keeping home-url)
 				if params.Get("state") != "" {
 					// Remove state parameter but keep home-url
 					cleanParams := url.Values{}
-					if paramHomeURL := params.Get("home-url"); paramHomeURL != "" {
-						cleanParams.Set("home-url", paramHomeURL)
+					if homeURL != "/" {
+						cleanParams.Set("home-url", homeURL)
 					}
 					cleanURL := "/oauth/welcome"
 					if len(cleanParams) > 0 {

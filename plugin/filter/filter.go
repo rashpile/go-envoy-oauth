@@ -654,15 +654,7 @@ func (f *Filter) handleLogin(header api.RequestHeaderMap) api.StatusType {
 	}
 
 	redirectURI := values.Get("redirect_uri")
-	// Reject any redirect_uri that is not a safe relative path. Explicit
-	// second-character check handles browser-normalised bypasses:
-	//   "//evil.com"  → protocol-relative
-	//   "///evil.com" → triple-slash (parsed as path by Go, but browser collapses)
-	//   "/\evil.com"  → backslash-normalised to // by Chromium
-	if parsed, err := url.Parse(redirectURI); err != nil ||
-		parsed.Host != "" || parsed.Scheme != "" ||
-		!strings.HasPrefix(redirectURI, "/") ||
-		(len(redirectURI) > 1 && (redirectURI[1] == '/' || redirectURI[1] == '\\')) {
+	if !isSafeRelativePath(redirectURI) {
 		redirectURI = "/"
 	}
 
