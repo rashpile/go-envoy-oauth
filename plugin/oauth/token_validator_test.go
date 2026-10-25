@@ -11,6 +11,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -112,14 +113,23 @@ func TestValidateAccessTokenRequiresThisClient(t *testing.T) {
 			if tt.ok && err != nil {
 				t.Errorf("ValidateAccessToken: unexpected error %v", err)
 			}
-			if !tt.ok && err == nil {
-				t.Error("ValidateAccessToken accepted a token not issued to this client")
+			if !tt.ok && (err == nil || !strings.Contains(err.Error(), "not issued to client")) {
+				t.Errorf("ValidateAccessToken error = %v, want a not-issued-to-client rejection", err)
 			}
 		})
 	}
 }
 
 func TestIssuedToClient(t *testing.T) {
+	if !issuedToClient("gateway", []string{"account"}, "gateway") {
+		t.Error("azp match must be accepted")
+	}
+	if !issuedToClient("other", []string{"account", "gateway"}, "gateway") {
+		t.Error("aud match must be accepted")
+	}
+	if issuedToClient("other", []string{"account"}, "gateway") {
+		t.Error("neither azp nor aud names the client, must be rejected")
+	}
 	if issuedToClient("", nil, "") {
 		t.Error("empty client ID must never match")
 	}

@@ -1109,27 +1109,23 @@ func TestHandleCallbackRestartsOnMissingPendingAuth(t *testing.T) {
 // another restart redirect (loop guard). Covers both restartOrGuard call sites:
 // missing_state and invalid_or_expired_state.
 func TestHandleCallbackLoopGuardFallsBackTo400(t *testing.T) {
-	// The state cookie for "does-not-exist" lets the request reach the
-	// pending-auth lookup, which then fails because no entry exists.
-	name, value := stateCookieNameValue("does-not-exist")
-	stateCookie := name + "=" + value
-
 	cases := []struct {
 		name     string
 		path     string
 		cookie   string
+		pending  bool // store a pending-auth entry for state "bound-state"
 		wantBody string
 	}{
 		{
 			name:     "invalid_or_expired_state, bare cookie",
 			path:     "/oauth/callback?state=does-not-exist&code=abc",
-			cookie:   "oauth_restart=1; " + stateCookie,
+			cookie:   "oauth_restart=1",
 			wantBody: "Invalid or expired state parameter",
 		},
 		{
 			name:     "invalid_or_expired_state, cookie among others",
 			path:     "/oauth/callback?state=does-not-exist&code=abc",
-			cookie:   "foo=bar; oauth_restart=1; " + stateCookie + "; baz=qux",
+			cookie:   "foo=bar; oauth_restart=1; baz=qux",
 			wantBody: "Invalid or expired state parameter",
 		},
 		{
@@ -1140,8 +1136,9 @@ func TestHandleCallbackLoopGuardFallsBackTo400(t *testing.T) {
 		},
 		{
 			name:     "state_not_bound_to_browser, bare cookie",
-			path:     "/oauth/callback?state=does-not-exist&code=abc",
+			path:     "/oauth/callback?state=bound-state&code=abc",
 			cookie:   "oauth_restart=1",
+			pending:  true,
 			wantBody: "OAuth state does not belong to this browser",
 		},
 	}
@@ -1151,6 +1148,17 @@ func TestHandleCallbackLoopGuardFallsBackTo400(t *testing.T) {
 			dec := &captureDecoderCallbacks{}
 			cbs := &captureCallbacks{decoder: dec}
 			f := buildCallbackFilter(cbs)
+			if tc.pending {
+				if err := session.StorePendingAuth(f.sessionStore, "bound-state", &session.PendingAuth{
+					ProviderName: "kc",
+					OriginalPath: "/",
+					CodeVerifier: "v",
+					BindingHash:  "not-the-hash-of-any-cookie",
+					Expiry:       time.Now().Add(time.Minute),
+				}); err != nil {
+					t.Fatalf("StorePendingAuth: %v", err)
+				}
+			}
 
 			hdr := &capturingHeaderMap{headers: make(map[string]string)}
 			hdr.Set(":path", tc.path)

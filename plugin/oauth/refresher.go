@@ -18,6 +18,7 @@ package oauth
 
 import (
 	"context"
+	"fmt"
 	"math/rand"
 	"time"
 
@@ -59,7 +60,7 @@ func (h *OAuthHandlerImpl) runRefreshLoop(ctx context.Context) {
 		case <-time.After(sleep):
 		}
 
-		if err := h.refreshOnce(); err != nil {
+		if err := h.refreshOnceRecovered(); err != nil {
 			h.jwksFailures++
 			if h.jwksStaleAt.IsZero() {
 				h.jwksStaleAt = time.Now()
@@ -140,4 +141,16 @@ func JitteredBackoff(current time.Duration) time.Duration {
 	// jitter ∈ [0.8, 1.2]
 	jitter := JitterFactorLow + rand.Float64()*JitterFactorRange //nolint:gosec // non-crypto backoff jitter
 	return time.Duration(float64(next) * jitter)
+}
+
+// refreshOnceRecovered runs refreshOnce and turns a panic into an error, so a
+// bad discovery document or JWKS cannot kill the refresh loop or the Envoy
+// process (this goroutine has no request to recover with).
+func (h *OAuthHandlerImpl) refreshOnceRecovered() (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("panic during JWKS refresh: %v", r)
+		}
+	}()
+	return h.refreshOnce()
 }

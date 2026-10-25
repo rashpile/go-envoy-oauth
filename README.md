@@ -173,12 +173,21 @@ http_filters:
             exclude: true
 ```
 
-`skip_auth_header_name` was removed in 0.2.3; the key is ignored with a warning. Use cluster `exclude` or `exclude_paths` for trusted bypass.
+**Changes in 1.1.0**
 
-Since 0.2.4:
+Security fixes from the October 2026 audit (Gitea issues #3, #8, #10–#13). They change behavior operators can see:
+
+- `skip_auth_header_name` was removed; the key is ignored with a warning. Use cluster `exclude` or `exclude_paths` for trusted bypass.
 - `exclude_paths` has no default. Earlier versions excluded `/health` on every cluster; list it explicitly where a backend needs it.
-- Exclusions are prefixes on the path without its query string. A path with `.`/`..` segments, `//`, `;`, `\` or encoded `.`, `/`, `\` never matches an exclusion, and the xDS-generated listener has Envoy normalize paths before the filter runs.
-- Bearer access tokens must be issued to this gateway's client: `azp` or `aud` has to contain `client_id`.
+- Exclusions are plain prefixes on the path without its query string, so `/health` also matches `/healthz`; end an entry with `/` to limit it to a path segment. A path with `.`/`..` segments, `//`, `;`, `\`, `%25` or encoded `.`, `/`, `\`, `;` never matches an exclusion.
+- The xDS-generated listener normalizes paths before routing and before the filter runs: dot-segments are resolved, `//` is merged and `%2F`/`%5C` are unescaped with a redirect. Set `listener.keep_encoded_slashes: true` for backends that need encoded slashes; dot-segments are still resolved, but route matching then sees the raw slashes.
+- Bearer access tokens must be issued to this gateway's client: `azp` or `aud` has to contain `client_id`. Tokens minted for other clients in the realm (including service accounts) are rejected unless an audience mapper adds `client_id`.
+- The welcome page's `home-url` accepts only a same-origin path (an absolute URL on the request's own host is reduced to its path). Anything else falls back to `/`.
+- A login must finish in the browser that started it. `/oauth/login` and `/oauth/offline` set a short-lived `oauth_state_*` cookie (HttpOnly, SameSite=Lax, path `/oauth/callback` or `/oauth/offline-callback`, `Domain` = `session_domain` when set) holding a random secret; the callback requires it. Without it, `/oauth/callback` restarts the login once and then answers `400`; `/oauth/offline-callback` answers `400`. The callback must therefore be served on the host where the login started (or within `session_domain`).
+- The API-key (offline) flow uses PKCE.
+- `X-Forwarded-Host` is ignored. The callback URL, the post-logout URL and the cookie domain come from the request's `:authority`/`Host`. If a proxy in front of Envoy rewrites `Host`, make it keep the original host, or set an absolute `redirect_url` and `session_domain`.
+- WebSocket upgrades revalidate and refresh the session with the identity provider the same way HTTP requests do: when the session's access token is about to expire. A revoked or disabled user therefore loses access, with `401` on the upgrade, within one access-token lifetime (Keycloak's default is 5 minutes).
+- The xDS server listens on `127.0.0.1` by default (`--listen`), and Envoy's admin API moved to `127.0.0.1:9902`; port `9901` serves only `GET /stats/prometheus` and `GET /ready`.
 
 #### Cluster Configuration Options
 

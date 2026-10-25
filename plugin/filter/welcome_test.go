@@ -60,3 +60,25 @@ func TestWelcomeStateRedirectKeepsOnlySafeHomeURL(t *testing.T) {
 		t.Errorf("Location = %v, want [/oauth/welcome]", loc)
 	}
 }
+
+// TestWelcomeStateRedirectKeepsSafeHomeURL verifies that a safe home-url
+// survives the clean-URL redirect after an IdP logout.
+func TestWelcomeStateRedirectKeepsSafeHomeURL(t *testing.T) {
+	for in, want := range map[string]string{
+		"/app":                            "/oauth/welcome?home-url=%2Fapp",
+		"https://app.example.com/app?x=1": "/oauth/welcome?home-url=%2Fapp%3Fx%3D1",
+	} {
+		dec := &captureDecoderCallbacks{}
+		f := buildCallbackFilter(&captureCallbacks{decoder: dec})
+		hdr := &capturingHeaderMap{headers: map[string]string{
+			":path":      "/oauth/welcome?state=s&home-url=" + url.QueryEscape(in),
+			":authority": "app.example.com",
+		}}
+
+		f.handleWelcome(hdr)
+
+		if loc := dec.headers["Location"]; len(loc) != 1 || loc[0] != want {
+			t.Errorf("home-url %q: Location = %v, want [%s]", in, loc, want)
+		}
+	}
+}

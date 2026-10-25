@@ -2,6 +2,7 @@ package filter
 
 import (
 	"fmt"
+	"net/http"
 	"net/url"
 	"strings"
 
@@ -59,12 +60,39 @@ func (f *Filter) handleOfflineRedirect(header api.RequestHeaderMap) api.StatusTy
 	}
 
 	statusCode, body, headers := offlineHandler.HandleOfflineAuthRedirect(header)
-	if locs := headers["Location"]; len(locs) > 0 {
-		if state := stateFromAuthURL(locs[0]); state != "" {
-			headers["Set-Cookie"] = append(headers["Set-Cookie"], f.stateCookie(state, offlineCallback))
-		}
+	if statusCode == http.StatusFound && !f.attachOfflineStateCookie(headers) {
+		return f.handleAuthFailure(500, "Internal Server Error: OAuth state could not be bound to the browser")
 	}
 	return f.recordAndSendLocalReply(statusCode, body, headers, 0, "")
+}
+
+// attachOfflineStateCookie turns the binding secret returned by the offline
+// handler into the state cookie on the redirect response and removes the
+// internal header. It reports false if the redirect has no state or secret.
+func (f *Filter) attachOfflineStateCookie(headers map[string][]string) bool {
+	var state, bindingSecret string
+	if locs := headers["Location"]; len(locs) > 0 {
+		state = stateFromAuthURL(locs[0])
+	}
+	if secrets := headers[oauth.StateBindingHeader]; len(secrets) > 0 {
+		bindingSecret = secrets[0]
+	}
+	delete(headers, oauth.StateBindingHeader)
+	if state == "" || bindingSecret == "" {
+		return false
+	}
+	headers["Set-Cookie"] = append(headers["Set-Cookie"], f.stateSetCookie(state, bindingSecret, offlineCallback, stateCookieMaxAge))
+	return true
+}
+
+// offlineStateBound reports whether the offline callback for state comes from
+// the browser that started it.
+func (f *Filter) offlineStateBound(header api.RequestHeaderMap, state string) bool {
+	bindingHash := ""
+	if stateSession, err := f.sessionStore.Get(state); err == nil && stateSession != nil {
+		bindingHash, _ = stateSession.Claims["binding_hash"].(string)
+	}
+	return stateCookieMatches(header, state, bindingHash)
 }
 
 // handleOfflineCallback processes OAuth callback for API key generation
@@ -83,7 +111,7 @@ func (f *Filter) handleOfflineCallback(header api.RequestHeaderMap, path string)
 	// The API-key login must finish in the browser that started it (issue #11).
 	values, _ := url.ParseQuery(query)
 	state := values.Get("state")
-	if !hasStateCookie(header, state) {
+	if !f.offlineStateBound(header, state) {
 		return f.handleAuthFailure(400, "This sign-in was started in another browser. Start again from /oauth/offline.")
 	}
 
@@ -97,7 +125,7 @@ func (f *Filter) handleOfflineCallback(header api.RequestHeaderMap, path string)
 	if headers == nil {
 		headers = map[string][]string{}
 	}
-	headers["Set-Cookie"] = append(headers["Set-Cookie"], f.clearStateCookie(state, offlineCallback))
+	headers["Set-Cookie"] = append(headers["Set-Cookie"], f.stateSetCookie(state, "", offlineCallback, -1))
 	return f.recordAndSendLocalReply(statusCode, body, headers, 0, "")
 }
 

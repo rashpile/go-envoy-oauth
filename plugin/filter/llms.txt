@@ -75,6 +75,11 @@ session cookie set.
 Response on failure: `302 Found` to `/`. The user is not stranded on the
 callback URL.
 
+The callback must come from the browser that called `/oauth/login`: it
+needs the `oauth_state_*` cookie set there. Without it (for example when
+the URL is opened in another browser) the gateway restarts the login once
+with `302 /oauth/login`, and answers `400` if that happens again.
+
 ### `GET /oauth/logout`
 
 Clears the session cookie and removes the session from the gateway store.
@@ -95,7 +100,7 @@ app.
 
 Query parameters:
 
-- `home-url` (string, optional) — same-origin path for the "Continue to App" button. Other values fall back to `/`.
+- `home-url` (string, optional) — same-origin path for the "Continue to App" button. An absolute URL on the request's own host is reduced to its path; other values fall back to `/`.
 
 Response: `200 text/html`.
 
@@ -138,7 +143,9 @@ clients. Available only when `enable_api_key: true`.
 ### `GET /oauth/offline-callback`
 
 Provider callback for the offline flow. Issues an API key and shows it
-to the user once. Available only when `enable_api_key: true`.
+to the user once. Available only when `enable_api_key: true`. Answers
+`400` if the request lacks the `oauth_state_*` cookie set by
+`/oauth/offline` in the same browser.
 
 ### `GET /oauth/access-denied`
 
@@ -190,8 +197,10 @@ requires auth:
 For API consumers that already hold a JWT issued by the same identity
 provider the gateway is configured for. The token is supplied as
 `Authorization: Bearer <jwt>`. The gateway verifies the signature
-against the provider's JWKS and the standard JWT claims (`iss`, `aud`,
-`exp`).
+against the provider's JWKS and the `iss` and `exp` claims. The token
+must be issued to this gateway's client: its `azp` or `aud` must contain
+the gateway `client_id`. A token minted for a different client in the
+same realm is rejected with `401`.
 
 Bearer auth is enabled by the operator config flag
 `enable_bearer_token` (defaults to enabled).
@@ -476,7 +485,7 @@ upstream-emitted codes):
 | Code | Meaning |
 |---|---|
 | `302` | Redirect — to login, callback, welcome, etc. |
-| `400` | Bad Request — malformed `redirect_uri` or query parameter. |
+| `400` | Bad Request — malformed `redirect_uri` or query parameter, or an OAuth callback without the state cookie of the browser that started the login. |
 | `401` | Unauthorized — no/invalid/expired session, no/invalid bearer, no/invalid API key. |
 | `403` | Forbidden — authenticated but not authorized for this cluster. |
 | `404` | Not Found — unknown `/oauth/*` endpoint or feature disabled. |

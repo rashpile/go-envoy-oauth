@@ -42,7 +42,7 @@ func (f *Filter) handleWelcome(header api.RequestHeaderMap) api.StatusType {
 					f.logger.Debug("Redirecting to clean welcome URL without state param",
 						zap.String("trace_id", traceID),
 						zap.String("clean_url", cleanURL))
-					return f.handleRedirect(cleanURL, "")
+					return f.handleRedirect(cleanURL)
 				}
 			}
 		}

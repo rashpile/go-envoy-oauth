@@ -31,6 +31,9 @@ func TestIsExcludedPath(t *testing.T) {
 		{"/share/..;/private", false},
 		{"/share//..//private", false},
 		{"/share%00/private", false},
+		{"/share/%252e%252e/private", false},
+		{"/share/..%3B/private", false},
+		{"/share/x%3bjsessionid=1", false},
 	}
 	for _, tt := range tests {
 		if got := isExcludedPath(tt.path, excluded); got != tt.want {
@@ -94,7 +97,9 @@ func TestSafeHomeURL(t *testing.T) {
 	}{
 		{"/dashboard?tab=1", "/dashboard?tab=1"},
 		{"https://app.example.com/dashboard?tab=1#x", "/dashboard?tab=1#x"},
-		{"https://APP.example.com", "/"},
+		{"https://APP.example.com/x", "/x"},
+		{"https://app.example.com//other.example.com", "/"},
+		{"https://app.example.com/%2F%2Fother.example.com", "/%2F%2Fother.example.com"},
 		{"http://app.example.com/a", "/a"},
 		{"https://other.example.com/dashboard", "/"},
 		{"https://app.example.com.other.example/", "/"},
@@ -108,6 +113,15 @@ func TestSafeHomeURL(t *testing.T) {
 		if got := safeHomeURL(tt.in, host); got != tt.want {
 			t.Errorf("safeHomeURL(%q) = %q, want %q", tt.in, got, tt.want)
 		}
+	}
+	if got := safeHomeURL("https://app.example.com/page", "app.example.com:443"); got != "/page" {
+		t.Errorf("explicit default port on the request host: got %q, want /page", got)
+	}
+	if got := safeHomeURL("https://app.example.com:443/page", host); got != "/page" {
+		t.Errorf("explicit default port in the URL: got %q, want /page", got)
+	}
+	if got := safeHomeURL("https://app.example.com:8443/page", host); got != "/" {
+		t.Errorf("non-default port must not match: got %q, want /", got)
 	}
 	if got := safeHomeURL("https://app.example.com/a", ""); got != "/" {
 		t.Errorf("safeHomeURL without host = %q, want /", got)

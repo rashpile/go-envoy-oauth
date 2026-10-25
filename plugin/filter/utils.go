@@ -63,7 +63,7 @@ func hasAmbiguousSegments(path string) bool {
 		return true
 	}
 	lower := strings.ToLower(path)
-	for _, enc := range []string{"%2e", "%2f", "%5c", "%00"} {
+	for _, enc := range []string{"%2e", "%2f", "%5c", "%3b", "%00", "%25"} {
 		if strings.Contains(lower, enc) {
 			return true
 		}
@@ -99,7 +99,7 @@ func safeHomeURL(raw, host string) string {
 		return raw
 	}
 	u, err := url.Parse(raw)
-	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || host == "" || !strings.EqualFold(u.Host, host) {
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || host == "" || !strings.EqualFold(withoutDefaultPort(u.Host), withoutDefaultPort(host)) {
 		return "/"
 	}
 	rel := u.EscapedPath()
@@ -116,4 +116,16 @@ func safeHomeURL(raw, host string) string {
 		return "/"
 	}
 	return rel
+}
+
+// withoutDefaultPort drops an explicit :80 or :443 so "app.example.com:443"
+// and "app.example.com" compare equal.
+func withoutDefaultPort(host string) string {
+	if h, ok := strings.CutSuffix(host, ":443"); ok {
+		return h
+	}
+	if h, ok := strings.CutSuffix(host, ":80"); ok {
+		return h
+	}
+	return host
 }

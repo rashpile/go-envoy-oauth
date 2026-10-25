@@ -122,14 +122,29 @@ func MakeListener(config *GatewayConfig) ([]types.Resource, error) {
 	return listeners, nil
 }
 
-// applyPathNormalization makes Envoy normalize the request path before any
-// filter sees it, so the auth filter's path exclusions and the upstream agree
-// on which path is requested (issue #8). It is also applied to HCMs merged from
-// a template, since the template's own settings would otherwise win.
-func applyPathNormalization(m *hcm.HttpConnectionManager) {
+// applyPathNormalization makes Envoy normalize the request path before route
+// selection and before any filter sees it, so routes, the auth filter's path
+// exclusions and the upstream agree on which path is requested (issue #8):
+// dot-segments are resolved, "//" is merged, and escaped slashes are unescaped
+// with a redirect. keepEncodedSlashes leaves "//" and %2F/%5C unchanged for
+// backends that need them; dot-segments are still resolved.
+func applyPathNormalization(m *hcm.HttpConnectionManager, keepEncodedSlashes bool) {
 	m.NormalizePath = wrapperspb.Bool(true)
+	if keepEncodedSlashes {
+		m.MergeSlashes = false
+		m.PathWithEscapedSlashesAction = hcm.HttpConnectionManager_KEEP_UNCHANGED
+		return
+	}
 	m.MergeSlashes = true
 	m.PathWithEscapedSlashesAction = hcm.HttpConnectionManager_UNESCAPE_AND_REDIRECT
+}
+
+// copyPathNormalization applies the gateway's path settings from src to a
+// template HCM, so a template cannot weaken them.
+func copyPathNormalization(dst, src *hcm.HttpConnectionManager) {
+	dst.NormalizePath = src.NormalizePath
+	dst.MergeSlashes = src.MergeSlashes
+	dst.PathWithEscapedSlashesAction = src.PathWithEscapedSlashesAction
 }
 
 // createHTTPConnectionManager creates the shared HTTP connection manager configuration
@@ -337,7 +352,7 @@ func createHTTPConnectionManager(config *GatewayConfig) (*anypb.Any, error) {
 		},
 	}
 
-	applyPathNormalization(manager)
+	applyPathNormalization(manager, config.Listener.KeepEncodedSlashes)
 
 	return anypb.New(manager)
 }

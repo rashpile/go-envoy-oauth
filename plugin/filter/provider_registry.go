@@ -165,7 +165,7 @@ func (r *ProviderRegistry) InitAll(
 			// can honor initCtx cancellation.
 			done := make(chan providerInitResult, 1)
 			go func() {
-				h, err := oauth.NewOAuthHandler(job.cfg, sessionStore, job.cookieManager, r.logger)
+				h, err := newOAuthHandlerRecovered(job.cfg, sessionStore, job.cookieManager, r.logger)
 				done <- providerInitResult{name: job.name, handler: h, err: err}
 			}()
 
@@ -253,7 +253,7 @@ func (r *ProviderRegistry) startDownHandlerRecovery(
 				zap.String("provider", name),
 				zap.Duration("backoff", backoff))
 
-			h, err := oauth.NewOAuthHandler(cfg, sessionStore, cookieManager, r.logger)
+			h, err := newOAuthHandlerRecovered(cfg, sessionStore, cookieManager, r.logger)
 			if err != nil {
 				r.logger.Warn("down-provider recovery attempt failed",
 					zap.String("provider", name),
@@ -275,4 +275,16 @@ func (r *ProviderRegistry) startDownHandlerRecovery(
 			return
 		}
 	}()
+}
+
+// newOAuthHandlerRecovered runs OIDC discovery and turns a panic into an
+// error. Discovery runs in background goroutines with no request to recover
+// with, and an unrecovered panic there would kill the Envoy process.
+func newOAuthHandlerRecovered(cfg *oauth.OIDCConfig, store session.SessionStore, cm *session.CookieManager, logger *zap.Logger) (h oauth.OAuthHandler, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			h, err = nil, fmt.Errorf("panic during OIDC discovery: %v", r)
+		}
+	}()
+	return oauth.NewOAuthHandler(cfg, store, cm, logger)
 }

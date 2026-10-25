@@ -38,7 +38,7 @@ listeners:
     address:
       socket_address:
         address: 0.0.0.0
-        port_value: 9901
+        port_value: 9903  # 9901 is taken by the bootstrap's stats listener
     # ... listener config
 
 # Additional clusters
@@ -67,7 +67,7 @@ endpoints:
 ### Listeners
 - **Different names**: Template listeners are added alongside the OAuth listener
 - **Same name (listener_0)**: Template listener is merged with OAuth listener:
-  - Template listener settings (address, timeouts, etc.) are preserved
+  - Template listener settings (address, timeouts, etc.) are preserved, except the path normalization settings (`normalize_path`, `merge_slashes`, `path_with_escaped_slashes_action`), which always come from the gateway config (`listener.keep_encoded_slashes`) so routes, the OAuth filter and the upstream see the same path
   - OAuth filter is intelligently inserted into the HTTP filter chain
   - OAuth filter is placed before the router filter for proper request interception
   - Additional filter chains from template are preserved
@@ -89,6 +89,7 @@ When the template defines `listener_0` with HTTP filters:
 ### Clusters
 - Template clusters are added alongside gateway-configured clusters
 - Gateway clusters take precedence if names conflict
+- `xds_cluster` and `envoy_admin_loopback` are static clusters in the bootstrap (`envoy-xds.yaml`); don't reuse these names
 
 ### Routes
 - Template routes are merged into the main route configuration
@@ -105,7 +106,7 @@ Both the main configuration and template files are watched for changes. When eit
 ## Example
 
 See `example-template.yaml` for a complete example that adds:
-- Admin listener for stats and health checks
+- An extra listener on port 9903
 - Additional upstream clusters
 - Custom routing rules
 

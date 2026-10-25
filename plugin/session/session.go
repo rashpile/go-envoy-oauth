@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"os"
 	"sync"
 	"time"
 
@@ -24,6 +25,20 @@ type Session struct {
 	Claims         map[string]interface{} // Additional claims from token
 	CreatedAt      time.Time              // When the session was created
 	ExpiresAt      time.Time              // When the session expires
+}
+
+// clone returns a copy of s with its own Claims map, so a caller that changes
+// it (for example a token refresh) never writes to a struct other requests
+// are reading.
+func (s *Session) clone() *Session {
+	c := *s
+	if s.Claims != nil {
+		c.Claims = make(map[string]interface{}, len(s.Claims))
+		for k, v := range s.Claims {
+			c.Claims[k] = v
+		}
+	}
+	return &c
 }
 
 // IsExpired checks if the session has expired
@@ -87,7 +102,8 @@ func (s *InMemorySessionStore) Get(id string) (*Session, error) {
 		return nil, fmt.Errorf("session expired")
 	}
 
-	return session, nil
+	// Each caller gets its own copy; changes take effect only through Store.
+	return session.clone(), nil
 }
 
 // Store stores a new session or updates an existing one
@@ -99,7 +115,7 @@ func (s *InMemorySessionStore) Store(session *Session) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.sessions[session.ID] = session
+	s.sessions[session.ID] = session.clone()
 	return nil
 }
 
@@ -137,8 +153,19 @@ func (s *InMemorySessionStore) cleanupRoutine() {
 	defer ticker.Stop()
 
 	for range ticker.C {
-		s.Cleanup()
+		s.cleanupRecovered()
 	}
+}
+
+// cleanupRecovered runs Cleanup and logs a panic instead of letting it kill
+// the process; the next tick tries again.
+func (s *InMemorySessionStore) cleanupRecovered() {
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintf(os.Stderr, "[session] panic during cleanup: %v\n", r)
+		}
+	}()
+	s.Cleanup()
 }
 
 // NewSession creates a new session with the given parameters

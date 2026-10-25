@@ -79,7 +79,7 @@ func TestAsyncCallbackSurvivesDestroyedStream(t *testing.T) {
 		logger:    zap.NewNop(),
 	}
 
-	if got := f.handleAsyncCallback(&capturingHeaderMap{headers: map[string]string{}}, "state=s&code=c", "trace", &failingCallbackHandler{}); got != api.Running {
+	if got := f.handleAsyncCallback(&capturingHeaderMap{headers: map[string]string{}}, "state=s&code=c", "s", "trace", &failingCallbackHandler{}); got != api.Running {
 		t.Fatalf("handleAsyncCallback = %v, want api.Running", got)
 	}
 	if r := waitRecovered(t, dec); r != "golang filter has been destroyed" {

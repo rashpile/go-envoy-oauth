@@ -75,6 +75,11 @@ func startServer(port string) error {
 
 	// Start server in background goroutine (init() must not block)
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				fmt.Fprintf(os.Stderr, "[metrics] server panic: %v\n", r)
+			}
+		}()
 		fmt.Fprintf(os.Stderr, "[metrics] starting server on :%s\n", port)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			fmt.Fprintf(os.Stderr, "[metrics] server error: %v\n", err)

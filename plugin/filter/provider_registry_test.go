@@ -429,11 +429,11 @@ func (m *mockRegistryHeaderMap) SetMethod(method string) { m.headers[":method"] 
 func (m *mockRegistryHeaderMap) SetHost(host string)     { m.headers[":authority"] = host }
 func (m *mockRegistryHeaderMap) SetPath(path string)     { m.headers[":path"] = path }
 
-// TestPeekPendingAuthProvider tests that PeekPendingAuthProvider reads provider name without deleting.
-func TestPeekPendingAuthProvider(t *testing.T) {
+// TestPeekPendingAuth tests that PeekPendingAuth reads the entry without deleting it.
+func TestPeekPendingAuth(t *testing.T) {
 	store := session.NewInMemorySessionStore()
 
-	t.Run("PeekPendingAuthProvider returns provider name without deleting", func(t *testing.T) {
+	t.Run("PeekPendingAuth returns the entry without deleting", func(t *testing.T) {
 		nonce := "peeknonce"
 		pa := &session.PendingAuth{
 			ProviderName: "google",
@@ -446,13 +446,13 @@ func TestPeekPendingAuthProvider(t *testing.T) {
 			t.Fatalf("StorePendingAuth failed: %v", err)
 		}
 
-		// Peek should return provider name
-		providerName, err := session.PeekPendingAuthProvider(store, nonce)
+		// Peek should return the entry
+		peeked, err := session.PeekPendingAuth(store, nonce)
 		if err != nil {
-			t.Fatalf("PeekPendingAuthProvider failed: %v", err)
+			t.Fatalf("PeekPendingAuth failed: %v", err)
 		}
-		if providerName != "google" {
-			t.Errorf("expected provider %q, got %q", "google", providerName)
+		if peeked.ProviderName != "google" {
+			t.Errorf("expected provider %q, got %q", "google", peeked.ProviderName)
 		}
 
 		// Entry should still exist (peek doesn't delete)
@@ -465,8 +465,8 @@ func TestPeekPendingAuthProvider(t *testing.T) {
 		}
 	})
 
-	t.Run("PeekPendingAuthProvider returns error for non-existent nonce", func(t *testing.T) {
-		_, err := session.PeekPendingAuthProvider(store, "doesnotexist")
+	t.Run("PeekPendingAuth returns error for non-existent nonce", func(t *testing.T) {
+		_, err := session.PeekPendingAuth(store, "doesnotexist")
 		if err == nil {
 			t.Error("expected error for non-existent nonce")
 		}
@@ -737,5 +737,14 @@ func TestGetProviderHandlerDegradedAllowed(t *testing.T) {
 	}
 	if h == nil {
 		t.Fatal("expected non-nil handler for degraded (not down) provider")
+	}
+}
+
+// TestNewOAuthHandlerRecoveredTurnsPanicIntoError verifies that a panic during
+// OIDC discovery in a background goroutine becomes an error.
+func TestNewOAuthHandlerRecoveredTurnsPanicIntoError(t *testing.T) {
+	h, err := newOAuthHandlerRecovered(nil, nil, nil, zap.NewNop())
+	if err == nil || h != nil || !strings.Contains(err.Error(), "panic during OIDC discovery") {
+		t.Errorf("newOAuthHandlerRecovered(nil config) = %v, %v, want nil and an error", h, err)
 	}
 }

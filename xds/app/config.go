@@ -62,6 +62,11 @@ type ListenerConfig struct {
 	Port    uint32 `yaml:"port,omitempty"`     // HTTP listener port
 	TLSPort uint32 `yaml:"tls_port,omitempty"` // HTTPS listener port
 	TLS     bool   `yaml:"tls,omitempty"`      // Deprecated: Enable TLS on listener (use tls_port instead)
+	// KeepEncodedSlashes passes %2F/%5C and "//" through unchanged instead of
+	// unescaping/merging them. Only for backends that need encoded slashes;
+	// route selection (and with it cluster exclude/allowed_users) then sees
+	// the raw path.
+	KeepEncodedSlashes bool `yaml:"keep_encoded_slashes,omitempty"`
 }
 
 type SSLConfig struct {

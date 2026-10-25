@@ -417,7 +417,7 @@ func mergeHttpConnectionManagers(templateFilter, authFilter *listener.Filter) (*
 	}
 
 	templateHcm.HttpFilters = newFilters
-	applyPathNormalization(&templateHcm)
+	copyPathNormalization(&templateHcm, &authHcm)
 
 	// Use auth HCM's route config if template doesn't have one
 	if templateHcm.GetRds() == nil && authHcm.GetRds() != nil {

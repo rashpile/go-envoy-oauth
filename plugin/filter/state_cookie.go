@@ -7,12 +7,17 @@ import (
 	"net/url"
 
 	"github.com/envoyproxy/envoy/contrib/golang/common/go/api"
+	"github.com/rashpile/go-envoy-oauth/plugin/session"
 )
 
 // State cookies bind an OAuth state to the browser that started the login, so
 // a callback URL opened in another browser cannot complete that login there
-// (issue #11). Each login gets its own cookie name, so parallel logins in
-// several tabs do not overwrite each other.
+// (issue #11). The cookie value is a random secret whose hash is stored with
+// the pending login; the state alone is public and is not enough. Each login
+// gets its own cookie name, so parallel logins in several tabs do not collide.
+//
+// The cookie is host-only unless session_domain is set, so the callback must be
+// served on the host where the login started (or within session_domain).
 
 const (
 	stateCookiePrefix = "oauth_state_"
@@ -22,21 +27,20 @@ const (
 	stateCookieMaxAge = 300
 )
 
-func stateCookieNameValue(state string) (string, string) {
+func stateCookieName(state string) string {
 	sum := sha256.Sum256([]byte(state))
-	full := hex.EncodeToString(sum[:])
-	return stateCookiePrefix + full[:16], full
+	return stateCookiePrefix + hex.EncodeToString(sum[:8])
 }
 
-// stateCookie returns the Set-Cookie value that binds state to this browser.
-// path limits the cookie to the callback endpoint of the flow.
-func (f *Filter) stateCookie(state, path string) string {
-	name, value := stateCookieNameValue(state)
+// stateSetCookie returns a Set-Cookie value for the state cookie of state.
+// A negative maxAge removes the cookie.
+func (f *Filter) stateSetCookie(state, value, path string, maxAge int) string {
 	c := &http.Cookie{
-		Name:     name,
+		Name:     stateCookieName(state),
 		Value:    value,
 		Path:     path,
-		MaxAge:   stateCookieMaxAge,
+		Domain:   f.config.SessionDomain,
+		MaxAge:   maxAge,
 		HttpOnly: true,
 		Secure:   f.config.SessionSecure,
 		SameSite: http.SameSiteLaxMode,
@@ -44,31 +48,32 @@ func (f *Filter) stateCookie(state, path string) string {
 	return c.String()
 }
 
-// clearStateCookie returns the Set-Cookie value that removes the state cookie.
-func (f *Filter) clearStateCookie(state, path string) string {
-	name, _ := stateCookieNameValue(state)
-	c := &http.Cookie{
-		Name:     name,
-		Value:    "",
-		Path:     path,
-		MaxAge:   -1,
-		HttpOnly: true,
-		Secure:   f.config.SessionSecure,
-		SameSite: http.SameSiteLaxMode,
-	}
-	return c.String()
-}
-
-// hasStateCookie reports whether the request carries the cookie set for state.
-func hasStateCookie(header api.RequestHeaderMap, state string) bool {
-	raw, _ := header.Get("cookie")
-	if raw == "" || state == "" {
+// stateCookieMatches reports whether the request carries a state cookie for
+// state whose secret hashes to bindingHash. Every cookie with that name is
+// tried, so a second cookie planted under the same name cannot shadow the
+// real one.
+func stateCookieMatches(header api.RequestHeaderMap, state, bindingHash string) bool {
+	if state == "" || bindingHash == "" {
 		return false
 	}
-	name, value := stateCookieNameValue(state)
+	for _, c := range cookiesNamed(header, stateCookieName(state)) {
+		if session.StateBindingMatches(c.Value, bindingHash) {
+			return true
+		}
+	}
+	return false
+}
+
+// cookiesNamed returns every request cookie with the given name. Malformed
+// pairs from other apps on the same host are skipped instead of making the
+// whole header unreadable (http.ParseCookie rejects the header outright).
+func cookiesNamed(header api.RequestHeaderMap, name string) []*http.Cookie {
+	raw, _ := header.Get("cookie")
+	if raw == "" {
+		return nil
+	}
 	req := &http.Request{Header: http.Header{"Cookie": {raw}}}
-	c, err := req.Cookie(name)
-	return err == nil && c.Value == value
+	return req.CookiesNamed(name)
 }
 
 // stateFromAuthURL returns the state query parameter of an authorization URL.

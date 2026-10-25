@@ -408,13 +408,18 @@ func (h *OfflineTokenHandler) HandleOfflineAuthRedirect(header api.RequestHeader
 	// Generate state for offline flow
 	state := generateRandomState() + "|offline"
 	verifier := oauth2.GenerateVerifier()
+	bindingSecret, bindingHash, err := session.NewStateBinding()
+	if err != nil {
+		h.logger.Error("Failed to create state binding", zap.Error(err))
+		return http.StatusInternalServerError, "Failed to initiate OAuth flow", nil
+	}
 
 	// Store state in temporary session
 	stateSession := &session.Session{
 		ID:        state,
 		UserID:    "",
 		Token:     "",
-		Claims:    map[string]interface{}{"type": "offline_token", "code_verifier": verifier},
+		Claims:    map[string]interface{}{"type": "offline_token", "code_verifier": verifier, "binding_hash": bindingHash},
 		CreatedAt: time.Now(),
 		ExpiresAt: time.Now().Add(5 * time.Minute),
 	}
@@ -459,7 +464,8 @@ func (h *OfflineTokenHandler) HandleOfflineAuthRedirect(header api.RequestHeader
 		oauth2.S256ChallengeOption(verifier))
 
 	headers := map[string][]string{
-		"Location": {authURL},
+		"Location":         {authURL},
+		StateBindingHeader: {bindingSecret}, // turned into the state cookie by the filter
 	}
 
 	return http.StatusFound, "", headers

@@ -149,8 +149,8 @@ cp test.key /srv/var/ssl/certificates/.../example.com/example.com.key
 
 4. Verify Envoy receives certificates:
 ```bash
-# Check Envoy admin interface
-curl http://localhost:9901/config_dump | grep -A 10 "secret"
+# Check Envoy admin interface (loopback only; in the standalone image run it via docker exec)
+curl http://127.0.0.1:9902/config_dump | grep -A 10 "secret"
 ```
 
 ## Benefits of SDS

@@ -104,6 +104,7 @@ clients:
 | `address` | No | `0.0.0.0` | Listener address |
 | `port` | No | `8080` | HTTP listener port |
 | `tls_port` | No | - | HTTPS listener port (enables TLS when set) |
+| `keep_encoded_slashes` | No | `false` | Pass `//` and `%2F`/`%5C` through unchanged instead of merging/unescaping them. Only for backends that need encoded slashes |
 
 #### Provider Configuration (Multi-Provider)
 
@@ -145,7 +146,7 @@ Each client in the `clients` array represents a backend service cluster.
 
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
-| `id` | Yes | - | Unique identifier for the Envoy cluster |
+| `id` | Yes | - | Unique identifier for the Envoy cluster. `xds_cluster` and `envoy_admin_loopback` are reserved (static bootstrap clusters) |
 | `description` | No | - | Free-form text describing this client. Operator-facing only — not sent to Envoy or the filter |
 | `enabled` | No | `true` | Set to `false` to keep the client entry in YAML history but skip it during xDS generation (no cluster, no route, no filter config) |
 | `address` | Yes | - | Backend service hostname or IP |
@@ -155,7 +156,7 @@ Each client in the `clients` array represents a backend service cluster.
 | `domain` | No | - | Route requests for specific domain(s). Supports comma-separated multiple domains |
 | `prefix` | No | `/` | URL path prefix for routing |
 | `exclude` | No | `false` | Bypass authentication for all requests to this service |
-| `exclude_paths` | No | `[]` | List of specific paths to exclude from authentication |
+| `exclude_paths` | No | `[]` | Path prefixes excluded from authentication (query string ignored). Paths with dot-segments or encoded separators never match; see the main README |
 | `host_rewrite` | No | - | Rewrite the Host header for upstream requests |
 | `prefix_rewrite` | No | - | Rewrite path prefix for upstream requests (see [Path Rewriting](#path-rewriting)) |
 | `provider` | No | `default_provider` | Named provider to use for this client |
@@ -300,6 +301,13 @@ go build -o xds-server ./app
 
 The server listens on `127.0.0.1` by default. The config it serves contains provider client secrets and TLS private keys, and the gRPC endpoint has no authentication, so only pass `--listen` with a non-loopback address when Envoy runs on another host and the network between them is trusted.
 
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--config` | `xds/gateway-auth.yaml` | Gateway configuration file |
+| `--template` | (none) | Optional Envoy template file |
+| `--port` | `18000` | xDS gRPC port |
+| `--listen` | `127.0.0.1` | xDS listen address |
+
 Or use the provided script:
 ```bash
 ./run.sh
@@ -312,10 +320,14 @@ envoy -c envoy-xds.yaml
 
 Or with Docker:
 ```bash
-docker run -v $(pwd):/app -v $(pwd)/../:/plugin \
+docker run --network host -v $(pwd):/app -v $(pwd)/../:/plugin \
   envoyproxy/envoy:v1.39-latest \
   -c /app/envoy-xds.yaml
 ```
+
+`envoy-xds.yaml` points at the xDS server on `127.0.0.1:18000`, so Envoy needs the host network (or the same container, as in the standalone image). To run the two in separate containers, change the `xds_cluster` address in `envoy-xds.yaml` and start the server with `--listen <addr>` on a private network.
+
+The bootstrap's admin API listens on `127.0.0.1:9902` only. Port `9901` serves only `GET /stats/prometheus` and `GET /ready`.
 
 ## Testing
 

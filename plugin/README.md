@@ -36,13 +36,10 @@ func (f *Filter) DecodeHeaders(header api.RequestHeaderMap, endStream bool) api.
 
     // Launch async processing
     go func() {
-        // CRITICAL: Add panic recovery
-        defer func() {
-            if r := recover(); r != nil {
-                f.logger.Error("Panic in async processing", zap.Any("panic", r))
-                f.callbacks.SendLocalReply(500, "Internal Server Error", nil, 0, "panic")
-            }
-        }()
+        // CRITICAL: recover with the SDK helper. It answers 500 if the request
+        // is still alive and does nothing if the client already went away;
+        // replying from your own recover block would panic again and kill Envoy.
+        defer f.callbacks.DecoderFilterCallbacks().RecoverPanic()
 
         // Perform async work
         result, err := performAsyncOperation()
@@ -64,7 +61,7 @@ func (f *Filter) DecodeHeaders(header api.RequestHeaderMap, endStream bool) api.
 ### Critical Requirements
 
 1. **Always complete the request**: You MUST call either `SendLocalReply()` or `Continue()` to complete request processing
-2. **Panic recovery**: Always use defer/recover in goroutines to prevent crashes
+2. **Panic recovery**: Every goroutine that touches the request defers `DecoderFilterCallbacks().RecoverPanic()`; never send a reply from a recover block. Background goroutines without a request use a plain `recover()` that logs
 3. **Store callbacks**: Keep the `api.FilterCallbackHandler` reference in your filter struct
 4. **No return values in goroutines**: The goroutine's return values are ignored
 
@@ -76,19 +73,13 @@ The OAuth callback handler uses async processing because it:
 - Fetches user information
 
 ```go
-func (f *Filter) handleAsyncCallback(header api.RequestHeaderMap, query string, traceID string) api.StatusType {
+func (f *Filter) handleAsyncCallback(header api.RequestHeaderMap, query, state, traceID string, handler oauth.OAuthHandler) api.StatusType {
+    clearState := f.stateSetCookie(state, "", callbackPath, -1)
     go func() {
-        defer func() {
-            if r := recover(); r != nil {
-                f.logger.Error("Panic in OAuth callback",
-                    zap.String("trace_id", traceID),
-                    zap.Any("panic", r))
-                f.handleAuthFailure(500, "Internal Server Error")
-            }
-        }()
+        defer f.callbacks.DecoderFilterCallbacks().RecoverPanic()
 
         // Exchange code for token (external HTTP call)
-        err := f.oauthHandler.HandleCallback(header, query)
+        err := handler.HandleCallback(header, query)
         if err != nil {
             f.logger.Error("OAuth callback failed",
                 zap.String("trace_id", traceID),
@@ -104,8 +95,8 @@ func (f *Filter) handleAsyncCallback(header api.RequestHeaderMap, query string, 
             redirectURI = "/"
         }
 
-        // Send redirect response with session cookie
-        f.handleRedirect(redirectURI, sessionID)
+        // Send redirect response with the session cookie; remove the state cookie
+        f.handleRedirect(redirectURI, sessionID, clearState)
     }()
 
     return api.Running

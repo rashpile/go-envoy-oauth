@@ -173,6 +173,12 @@ print(r.json())
 
 **Solution**: The OAuth flow timed out (5-minute limit). Start the process again from `/oauth/consent`.
 
+### Started in Another Browser
+
+**Issue**: "This sign-in was started in another browser" (400).
+
+**Solution**: The callback arrived without the state cookie that `/oauth/offline` set. Start again from `/oauth/consent` in the same browser, and make sure cookies are not blocked for the gateway host.
+
 ### Token Copy Not Working
 
 **Issue**: Copy button doesn't work.

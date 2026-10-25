@@ -322,7 +322,7 @@ func (f *Filter) stripUntrustedHeaders(header api.RequestHeaderMap) {
 
 // handleAccessDenied redirects to the access denied page
 func (f *Filter) handleAccessDenied(header api.RequestHeaderMap) api.StatusType {
-	return f.handleRedirect("/oauth/access-denied", "")
+	return f.handleRedirect("/oauth/access-denied")
 }
 
 // handleAccessDeniedPage renders the access denied page
@@ -384,7 +384,7 @@ func (f *Filter) handleUnauthenticatedRequest(header api.RequestHeaderMap, path 
 			providerName = clusterConfig.ProviderName
 		}
 		loginURL := "/oauth/login?redirect_uri=" + url.QueryEscape(path) + "&provider=" + url.QueryEscape(providerName)
-		return f.handleRedirect(loginURL, "")
+		return f.handleRedirect(loginURL)
 	} else {
 		f.logger.Debug(fmt.Sprintf("Unauthenticated API request: %s", context),
 			zap.String("path", sanitizePathForLogging(path)),
@@ -593,7 +593,7 @@ func (f *Filter) handleDecodeHeaders(header api.RequestHeaderMap, path string, t
 
 	if sessionHandler.IsNeedValidateSession(session) {
 		// Perform async validation to avoid blocking
-		return f.handleAsyncValidateSession(header, session, traceID, f.handleAuthSuccess, func(err error) {
+		return f.handleAsyncValidateSession(header, session, traceID, func(err error) {
 			f.handleUnauthenticatedRequest(header, path, traceID, err, "Session validation failed")
 		})
 	}
@@ -714,11 +714,13 @@ func (f *Filter) handleLogin(header api.RequestHeaderMap) api.StatusType {
 		return f.handleAuthFailure(500, "Internal Server Error: No authorization URL generated")
 	}
 	state := stateFromAuthURL(authURL)
-	if state == "" {
-		return f.handleAuthFailure(500, "Internal Server Error: No state in authorization URL")
+	bindingSecret, _ := header.Get(oauth.StateBindingHeader)
+	header.Del(oauth.StateBindingHeader)
+	if state == "" || bindingSecret == "" {
+		return f.handleAuthFailure(500, "Internal Server Error: OAuth state could not be bound to the browser")
 	}
 
-	return f.handleRedirect(authURL, f.stateCookie(state, callbackPath))
+	return f.handleRedirect(authURL, f.stateSetCookie(state, bindingSecret, callbackPath, stateCookieMaxAge))
 }
 
 // oauthRestartCookie is the Set-Cookie string used by the single-bounce restart guard.
@@ -743,12 +745,8 @@ const oauthRestartCookie = "oauth_restart=1; Path=/; Max-Age=10; HttpOnly; SameS
 // single-bounce restart marker. Plaintext, no CookieManager — this cookie holds
 // no secret, only a marker to break a potential redirect loop.
 func hasOAuthRestartCookie(header api.RequestHeaderMap) bool {
-	raw, _ := header.Get("cookie")
-	if raw == "" {
-		return false
-	}
-	for _, part := range strings.Split(raw, ";") {
-		if strings.TrimSpace(part) == "oauth_restart=1" {
+	for _, c := range cookiesNamed(header, "oauth_restart") {
+		if c.Value == "1" {
 			return true
 		}
 	}
@@ -794,28 +792,28 @@ func (f *Filter) handleCallback(header api.RequestHeaderMap) api.StatusType {
 	}
 
 	// Resolve the provider from the nonce stored in the pending-auth entry.
-	// This uses PeekPendingAuthProvider so the entry is NOT consumed here —
-	// HandleCallback will consume it via GetPendingAuth.
+	// PeekPendingAuth does NOT consume the entry — HandleCallback consumes it
+	// via GetPendingAuth after the browser binding below has been checked.
 	values, _ := url.ParseQuery(query)
 	nonce := values.Get("state")
 	if nonce == "" {
 		return f.restartOrGuard(header, traceID, "missing_state",
 			"Missing state parameter in OAuth callback")
 	}
-	// The login must finish in the browser that started it (issue #11).
-	if !hasStateCookie(header, nonce) {
-		return f.restartOrGuard(header, traceID, "state_not_bound_to_browser",
-			"OAuth state does not belong to this browser")
-	}
-	providerName, err := session.PeekPendingAuthProvider(f.sessionStore, nonce)
-	if err != nil {
+	pending, err := session.PeekPendingAuth(f.sessionStore, nonce)
+	if err != nil || pending.ProviderName == "" {
 		f.logger.Warn("Failed to peek pending-auth provider from nonce",
 			zap.String("trace_id", traceID),
-			zap.String("nonce", nonce),
 			zap.Error(err))
 		return f.restartOrGuard(header, traceID, "invalid_or_expired_state",
 			"Invalid or expired state parameter")
 	}
+	// The login must finish in the browser that started it (issue #11).
+	if !stateCookieMatches(header, nonce, pending.BindingHash) {
+		return f.restartOrGuard(header, traceID, "state_not_bound_to_browser",
+			"OAuth state does not belong to this browser")
+	}
+	providerName := pending.ProviderName
 
 	callbackHandler, err := f.providerRegistry.GetHandler(providerName)
 	if err != nil {
@@ -835,7 +833,7 @@ func (f *Filter) handleCallback(header api.RequestHeaderMap) api.StatusType {
 			createAuthErrorHeaders(), -1, "provider_unavailable")
 	}
 
-	return f.handleAsyncCallback(header, query, traceID, callbackHandler)
+	return f.handleAsyncCallback(header, query, nonce, traceID, callbackHandler)
 }
 
 // handleLogout processes user logout
@@ -861,7 +859,7 @@ func (f *Filter) handleLogout(header api.RequestHeaderMap) api.StatusType {
 		return f.handleAuthFailure(500, "Internal Server Error: Failed to process logout")
 	}
 
-	return f.handleRedirect(logoutURL, "")
+	return f.handleRedirect(logoutURL)
 }
 
 func (f *Filter) isPathExcluded(path, cluster string) bool {

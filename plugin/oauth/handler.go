@@ -21,6 +21,7 @@ import (
 	"github.com/rashpile/go-envoy-oauth/plugin/session"
 	"go.uber.org/zap"
 	"golang.org/x/oauth2"
+	"golang.org/x/sync/singleflight"
 )
 
 // normalizeIssuer strips trailing slashes and lowercases an issuer URL for
@@ -115,8 +116,11 @@ type OAuthHandlerImpl struct {
 	tokenValidator    *TokenValidator
 	refreshTokenCache map[string]*tokenCacheEntry // maps refresh token hash -> access token
 	cacheMu           sync.RWMutex
-	mu                sync.RWMutex
-	logger            *zap.Logger
+	// sessionRefresh makes concurrent refreshes of one session share a single
+	// token request, so a rotating refresh token is not sent twice.
+	sessionRefresh singleflight.Group
+	mu             sync.RWMutex
+	logger         *zap.Logger
 	// Phase 5 (HLTH-02): health state machine. Writes are refresher-only (D-06).
 	healthState  atomic.Int32 // holds ProviderState; default 0 == StateReady
 	jwksFailures int          // consecutive refresh failure count; written by refresher goroutine only
@@ -232,6 +236,12 @@ func (h *OAuthHandlerImpl) GetOAuthConfig(header api.RequestHeaderMap) *oauth2.C
 	}
 }
 
+// StateBindingHeader carries the browser-binding secret from the OAuth handler
+// to the filter, which turns it into the state cookie. Like "location" and
+// "set-cookie", it is written to the request header map and never forwarded:
+// the login and offline redirects end in a local reply.
+const StateBindingHeader = "x-oauth-state-binding"
+
 func (h *OAuthHandlerImpl) HandleAuthRedirect(header api.RequestHeaderMap, redirectURI string) error {
 	// Generate a pure random nonce as the OAuth state parameter (D-01).
 	// All context (provider, path, PKCE verifier) is stored server-side.
@@ -240,11 +250,18 @@ func (h *OAuthHandlerImpl) HandleAuthRedirect(header api.RequestHeaderMap, redir
 	// Generate PKCE code verifier and compute S256 challenge (D-04, D-05).
 	verifier := oauth2.GenerateVerifier()
 
+	// Browser-binding secret for the state cookie; only its hash is stored (issue #11).
+	bindingSecret, bindingHash, err := session.NewStateBinding()
+	if err != nil {
+		return err
+	}
+
 	// Store server-side pending-auth entry mapping nonce -> {provider, path, verifier} (D-01, D-02, D-05).
 	pa := &session.PendingAuth{
 		ProviderName: h.providerName,
 		OriginalPath: redirectURI,
 		CodeVerifier: verifier,
+		BindingHash:  bindingHash,
 		Expiry:       time.Now().Add(5 * time.Minute),
 	}
 	if err := session.StorePendingAuth(h.sessionStore, nonce, pa); err != nil {
@@ -255,6 +272,7 @@ func (h *OAuthHandlerImpl) HandleAuthRedirect(header api.RequestHeaderMap, redir
 	oauth2Config := h.GetOAuthConfig(header)
 	authURL := oauth2Config.AuthCodeURL(nonce, oauth2.S256ChallengeOption(verifier))
 	header.Set("location", authURL)
+	header.Set(StateBindingHeader, bindingSecret)
 	return nil
 }
 
@@ -653,44 +671,82 @@ func (h *OAuthHandlerImpl) GetPostLogoutRedirectURI(header api.RequestHeaderMap)
 }
 
 // RefreshToken attempts to refresh an expired access token
-func (h *OAuthHandlerImpl) RefreshToken(session *session.Session) error {
-	if session.RefreshToken == "" {
-		return fmt.Errorf("no refresh token available")
+// tokenRefreshTimeout bounds a session token refresh (same as the userinfo client).
+var tokenRefreshTimeout = 10 * time.Second
+
+// RefreshToken refreshes the session's access token. Concurrent calls for the
+// same session share one token request; a call that finds the stored session
+// already refreshed by another request reuses that result.
+func (h *OAuthHandlerImpl) RefreshToken(sess *session.Session) error {
+	if sess.ID == "" {
+		_, err := h.refreshAndStore(sess)
+		return err
+	}
+	v, err, _ := h.sessionRefresh.Do(sess.ID, func() (interface{}, error) {
+		current := sess
+		if stored, getErr := h.sessionStore.Get(sess.ID); getErr == nil {
+			if !h.IsNeedValidateSession(stored) {
+				return stored, nil // refreshed meanwhile
+			}
+			current = stored
+		}
+		return h.refreshAndStore(current)
+	})
+	if err != nil {
+		return err
+	}
+	fresh := v.(*session.Session)
+	sess.Token = fresh.Token
+	sess.TokenExpiresAt = fresh.TokenExpiresAt
+	sess.RefreshToken = fresh.RefreshToken
+	return nil
+}
+
+// refreshAndStore exchanges the refresh token of a copy of sess, stores the
+// copy and returns it.
+func (h *OAuthHandlerImpl) refreshAndStore(sess *session.Session) (*session.Session, error) {
+	if sess.RefreshToken == "" {
+		return nil, fmt.Errorf("no refresh token available")
 	}
 
 	// Extract IDP name for metrics
 	idp := h.providerName
 
 	h.logger.Debug("Refreshing access token",
-		zap.String("session_id", session.ID),
-		zap.Time("token_expires_at", session.TokenExpiresAt))
+		zap.String("session_id", sess.ID),
+		zap.Time("token_expires_at", sess.TokenExpiresAt))
 
-	// Get new token using refresh token
-	token, err := h.getOAuth2Config().TokenSource(context.Background(), &oauth2.Token{
-		RefreshToken: session.RefreshToken,
+	// Get new token using refresh token. The deadline matters: concurrent
+	// requests for this session wait on this call (singleflight).
+	ctx, cancel := context.WithTimeout(context.Background(), tokenRefreshTimeout)
+	defer cancel()
+	token, err := h.getOAuth2Config().TokenSource(ctx, &oauth2.Token{
+		RefreshToken: sess.RefreshToken,
 	}).Token()
 	if err != nil {
 		h.logger.Error("Failed to refresh access token", zap.Error(err))
 		metrics.RecordTokenRefresh(idp, "failure")
-		return fmt.Errorf("failed to refresh token: %v", err)
+		return nil, fmt.Errorf("failed to refresh token: %v", err)
 	}
 
-	// Update session with new token and expiry
-	session.Token = token.AccessToken
-	session.TokenExpiresAt = token.Expiry
+	updated := *sess
+	updated.Token = token.AccessToken
+	updated.TokenExpiresAt = token.Expiry
 	// Update refresh token if a new one was issued
 	if token.RefreshToken != "" {
-		session.RefreshToken = token.RefreshToken
+		updated.RefreshToken = token.RefreshToken
 	}
 
 	h.logger.Debug("Access token refreshed successfully",
-		zap.String("session_id", session.ID),
+		zap.String("session_id", updated.ID),
 		zap.Time("new_expiry", token.Expiry))
 
 	metrics.RecordTokenRefresh(idp, "success")
 
-	// Store updated session
-	return h.sessionStore.Store(session)
+	if err := h.sessionStore.Store(&updated); err != nil {
+		return nil, err
+	}
+	return &updated, nil
 }
 
 // GetSessionStore returns the session store

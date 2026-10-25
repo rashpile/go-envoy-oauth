@@ -1,6 +1,11 @@
 package session
 
 import (
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"time"
 )
@@ -20,7 +25,33 @@ type PendingAuth struct {
 	ProviderName string    // Name of the provider that initiated the flow
 	OriginalPath string    // Original request path to redirect to after auth
 	CodeVerifier string    // PKCE S256 code verifier (stored for callback exchange)
+	BindingHash  string    // SHA-256 of the browser-binding secret sent as the state cookie
 	Expiry       time.Time // When this pending-auth entry expires
+}
+
+// NewStateBinding returns a random secret for the browser-binding state cookie
+// and the hash to store server-side. The state itself is public (it travels in
+// URLs), so the cookie must carry a value that cannot be derived from it.
+func NewStateBinding() (secret, hash string, err error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", "", fmt.Errorf("generate state binding: %w", err)
+	}
+	secret = base64.RawURLEncoding.EncodeToString(b)
+	return secret, hashStateBinding(secret), nil
+}
+
+// StateBindingMatches reports whether secret hashes to hash, in constant time.
+func StateBindingMatches(secret, hash string) bool {
+	if secret == "" || hash == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(hashStateBinding(secret)), []byte(hash)) == 1
+}
+
+func hashStateBinding(secret string) string {
+	sum := sha256.Sum256([]byte(secret))
+	return hex.EncodeToString(sum[:])
 }
 
 // StorePendingAuth encodes pa into a Session and stores it in the session store keyed
@@ -34,6 +65,7 @@ func StorePendingAuth(store SessionStore, nonce string, pa *PendingAuth) error {
 			"provider":      pa.ProviderName,
 			"original_path": pa.OriginalPath,
 			"code_verifier": pa.CodeVerifier,
+			"binding_hash":  pa.BindingHash,
 		},
 		CreatedAt: time.Now(),
 		ExpiresAt: pa.Expiry,
@@ -73,26 +105,24 @@ func GetPendingAuth(store SessionStore, nonce string) (*PendingAuth, error) {
 	return pa, nil
 }
 
-// PeekPendingAuthProvider returns the provider name from the pending-auth entry for the
-// given nonce without deleting it. This allows handleCallback (Plan 02-02) to resolve
-// the provider handler before delegating to HandleCallback, which will consume the entry
-// via GetPendingAuth.
-func PeekPendingAuthProvider(store SessionStore, nonce string) (string, error) {
+// PeekPendingAuth returns the pending-auth entry for nonce without deleting it,
+// so the callback can check the browser binding before the entry is consumed.
+func PeekPendingAuth(store SessionStore, nonce string) (*PendingAuth, error) {
 	sess, err := store.Get(PendingAuthPrefix + nonce)
 	if err != nil {
-		return "", fmt.Errorf("pending-auth not found for nonce: %w", err)
+		return nil, fmt.Errorf("pending-auth not found for nonce: %w", err)
 	}
-
 	if sess.UserID != PendingAuthUserID {
-		return "", fmt.Errorf("invalid pending-auth entry: unexpected UserID %q", sess.UserID)
+		return nil, fmt.Errorf("invalid pending-auth entry: unexpected UserID %q", sess.UserID)
 	}
-
-	provider, ok := sess.Claims["provider"].(string)
-	if !ok || provider == "" {
-		return "", fmt.Errorf("pending-auth entry missing provider name")
+	pa, err := decodePendingAuth(sess)
+	if err != nil {
+		return nil, err
 	}
-
-	return provider, nil
+	if time.Now().After(pa.Expiry) {
+		return nil, fmt.Errorf("pending-auth entry expired for nonce")
+	}
+	return pa, nil
 }
 
 // decodePendingAuth extracts PendingAuth fields from a Session's Claims map.
@@ -109,10 +139,12 @@ func decodePendingAuth(sess *Session) (*PendingAuth, error) {
 	if !ok {
 		return nil, fmt.Errorf("pending-auth: missing or invalid 'code_verifier' claim")
 	}
+	bindingHash, _ := sess.Claims["binding_hash"].(string)
 	return &PendingAuth{
 		ProviderName: provider,
 		OriginalPath: originalPath,
 		CodeVerifier: codeVerifier,
+		BindingHash:  bindingHash,
 		Expiry:       sess.ExpiresAt,
 	}, nil
 }

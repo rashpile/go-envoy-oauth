@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/rashpile/go-envoy-oauth/plugin/session"
 	"go.uber.org/zap"
@@ -67,6 +69,15 @@ func TestOfflineFlowUsesPKCE(t *testing.T) {
 	if q.Get("code_challenge_method") != "S256" || q.Get("code_challenge") == "" {
 		t.Fatalf("auth URL lacks an S256 code challenge: %s", authURL)
 	}
+	secrets := headers[StateBindingHeader]
+	stateSession, err := h.sessionStore.Get(q.Get("state"))
+	if err != nil {
+		t.Fatalf("state session not stored: %v", err)
+	}
+	hash, _ := stateSession.Claims["binding_hash"].(string)
+	if len(secrets) != 1 || !session.StateBindingMatches(secrets[0], hash) {
+		t.Errorf("offline redirect binding secret %v does not match the stored hash", secrets)
+	}
 
 	status, _, _ = oh.HandleOfflineCallback(hdr, url.Values{"state": {q.Get("state")}, "code": {"c"}}.Encode())
 	if status != http.StatusOK {
@@ -75,5 +86,52 @@ func TestOfflineFlowUsesPKCE(t *testing.T) {
 	sum := sha256.Sum256([]byte(gotVerifier))
 	if gotVerifier == "" || base64.RawURLEncoding.EncodeToString(sum[:]) != q.Get("code_challenge") {
 		t.Errorf("token request code_verifier %q does not match the code challenge", gotVerifier)
+	}
+}
+
+// TestOfflineCallbackRequiresStoredVerifier verifies that a state session
+// without a PKCE verifier (for example one created before the upgrade) is
+// refused without calling the token endpoint.
+func TestOfflineCallbackRequiresStoredVerifier(t *testing.T) {
+	var called atomic.Bool
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		called.Store(true)
+		http.Error(w, "unexpected", http.StatusInternalServerError)
+	}))
+	defer tokenSrv.Close()
+
+	store := session.NewInMemorySessionStore()
+	h := &OAuthHandlerImpl{
+		config:       &OIDCConfig{ClientID: "gateway", ProviderName: "keycloak"},
+		providerName: "keycloak",
+		oauth2Config: &oauth2.Config{
+			ClientID:    "gateway",
+			RedirectURL: "/oauth/callback",
+			Endpoint:    oauth2.Endpoint{TokenURL: tokenSrv.URL, AuthStyle: oauth2.AuthStyleInParams},
+		},
+		sessionStore:      store,
+		refreshTokenCache: make(map[string]*tokenCacheEntry),
+		logger:            zap.NewNop(),
+	}
+	oh, err := NewOfflineTokenHandler(h, zap.NewNop())
+	if err != nil {
+		t.Fatalf("NewOfflineTokenHandler: %v", err)
+	}
+	if err := store.Store(&session.Session{
+		ID:        "old|offline",
+		Claims:    map[string]interface{}{"type": "offline_token"},
+		ExpiresAt: time.Now().Add(time.Minute),
+	}); err != nil {
+		t.Fatalf("store state session: %v", err)
+	}
+	hdr := newMockHeaderMap()
+	hdr.headers[":authority"] = "app.example.com"
+
+	status, _, _ := oh.HandleOfflineCallback(hdr, url.Values{"state": {"old|offline"}, "code": {"c"}}.Encode())
+	if status != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", status)
+	}
+	if called.Load() {
+		t.Error("token endpoint was called without a stored verifier")
 	}
 }

@@ -2,7 +2,6 @@ package filter
 
 import (
 	"context"
-	"net/url"
 	"time"
 
 	"github.com/envoyproxy/envoy/contrib/golang/common/go/api"
@@ -57,13 +56,11 @@ func (f *Filter) handleAsyncDecodeHeaders(
 }
 
 // handleAsyncValidateSession validates (and if needed refreshes) the session
-// with the IdP off the request thread. callback runs on success; onInvalid
-// sends the reply when the session is no longer valid.
+// with the IdP off the request thread, then grants access via handleAuthSuccess.
+// onInvalid sends the reply when the session is no longer valid.
 func (f *Filter) handleAsyncValidateSession(
 	header api.RequestHeaderMap, session *session.Session,
-	traceID string,
-	callback func(header api.RequestHeaderMap, session *session.Session) api.StatusType,
-	onInvalid func(err error)) api.StatusType {
+	traceID string, onInvalid func(err error)) api.StatusType {
 
 	go func() {
 		defer f.callbacks.DecoderFilterCallbacks().RecoverPanic()
@@ -80,7 +77,7 @@ func (f *Filter) handleAsyncValidateSession(
 			onInvalid(err)
 			return
 		}
-		status := callback(header, session)
+		status := f.handleAuthSuccess(header, session)
 		switch status {
 		case api.LocalReply:
 			// Local reply was sent successfully
@@ -96,9 +93,8 @@ func (f *Filter) handleAsyncValidateSession(
 	return api.Running
 }
 
-func (f *Filter) handleAsyncCallback(header api.RequestHeaderMap, query string, traceID string, handler oauth.OAuthHandler) api.StatusType {
-	values, _ := url.ParseQuery(query)
-	clearState := f.clearStateCookie(values.Get("state"), callbackPath)
+func (f *Filter) handleAsyncCallback(header api.RequestHeaderMap, query, state, traceID string, handler oauth.OAuthHandler) api.StatusType {
+	clearState := f.stateSetCookie(state, "", callbackPath, -1)
 	go func() {
 		defer f.callbacks.DecoderFilterCallbacks().RecoverPanic()
 		err := handler.HandleCallback(header, query)
@@ -107,7 +103,7 @@ func (f *Filter) handleAsyncCallback(header api.RequestHeaderMap, query string, 
 				zap.String("trace_id", traceID),
 				zap.Error(err))
 			// Redirect to home instead of showing error page (e.g. expired session/state)
-			f.handleRedirect("/", "")
+			f.handleRedirect("/", clearState)
 			return
 		}
 
@@ -118,7 +114,7 @@ func (f *Filter) handleAsyncCallback(header api.RequestHeaderMap, query string, 
 				zap.String("trace_id", traceID),
 				zap.Error(err))
 			// Redirect to home instead of showing error page
-			f.handleRedirect("/", "")
+			f.handleRedirect("/", clearState)
 			return
 		}
 

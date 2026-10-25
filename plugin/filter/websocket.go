@@ -120,7 +120,7 @@ func (f *Filter) handleWebSocketAuth(header api.RequestHeaderMap, path string, t
 	// disabled user loses WebSocket access too (issue #13). Handshakes cannot
 	// follow a login redirect, so an invalid session gets 401.
 	if wsSessionHandler.IsNeedValidateSession(session) {
-		return f.handleAsyncValidateSession(header, session, traceID, f.handleAuthSuccess, func(err error) {
+		return f.handleAsyncValidateSession(header, session, traceID, func(err error) {
 			f.logger.Debug("WebSocket: Session revalidation failed",
 				zap.String("session_id", session.ID),
 				zap.String("trace_id", traceID),

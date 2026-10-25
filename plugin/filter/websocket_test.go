@@ -108,3 +108,75 @@ func TestWebSocketValidSessionContinuesAfterRevalidation(t *testing.T) {
 		t.Fatal("request was neither continued nor answered")
 	}
 }
+
+// TestHTTPRevokedSessionIsRefused verifies the HTTP path's failure reply for a
+// session the IdP no longer accepts: no Continue, an auth failure instead.
+func TestHTTPRevokedSessionIsRefused(t *testing.T) {
+	f, dec, h := newWebSocketTestFilter(t, errors.New("session revoked"))
+	hdr := &capturingHeaderMap{headers: map[string]string{":path": "/app"}}
+
+	f.handleDecodeHeaders(hdr, "/app", "trace")
+
+	select {
+	case <-h.validateCalls:
+	case <-time.After(2 * time.Second):
+		t.Fatal("ValidateSession was not called")
+	}
+	select {
+	case code := <-dec.replied:
+		if code != 401 {
+			t.Errorf("reply status = %d, want 401 for a non-browser request", code)
+		}
+	case <-dec.continued:
+		t.Error("revoked session was let through on HTTP")
+	case <-time.After(2 * time.Second):
+		t.Fatal("no reply after failed revalidation")
+	}
+}
+
+// TestHTTPValidSessionContinuesAfterRevalidation is the success counterpart.
+func TestHTTPValidSessionContinuesAfterRevalidation(t *testing.T) {
+	f, dec, h := newWebSocketTestFilter(t, nil)
+	hdr := &capturingHeaderMap{headers: map[string]string{":path": "/app"}}
+
+	f.handleDecodeHeaders(hdr, "/app", "trace")
+
+	select {
+	case <-h.validateCalls:
+	case <-time.After(2 * time.Second):
+		t.Fatal("ValidateSession was not called")
+	}
+	select {
+	case <-dec.continued:
+	case code := <-dec.replied:
+		t.Errorf("valid session got local reply %d, want Continue", code)
+	case <-time.After(2 * time.Second):
+		t.Fatal("request was neither continued nor answered")
+	}
+}
+
+// TestClusterExclusionsRejectAmbiguousPaths verifies that per-cluster
+// exclusion lists use the same safe matching as the global ones (issue #8).
+func TestClusterExclusionsRejectAmbiguousPaths(t *testing.T) {
+	f := &Filter{config: &OAuthConfig{Clusters: map[string]ClusterConfig{
+		"c1": {ExcludePaths: []string{"/share"}, WebSocketExcludePaths: []string{"/ws"}},
+	}}}
+	for _, tt := range []struct {
+		path     string
+		http, ws bool
+	}{
+		{"/share/x", true, false},
+		{"/ws/live", false, true},
+		{"/share/../private", false, false},
+		{"/share%2f..%2fprivate", false, false},
+		{"/ws/..;/admin", false, false},
+		{"/private", false, false},
+	} {
+		if got := f.isPathExcluded(tt.path, "c1"); got != tt.http {
+			t.Errorf("isPathExcluded(%q) = %v, want %v", tt.path, got, tt.http)
+		}
+		if got := f.isWebSocketPathExcluded(tt.path, "c1"); got != tt.ws {
+			t.Errorf("isWebSocketPathExcluded(%q) = %v, want %v", tt.path, got, tt.ws)
+		}
+	}
+}

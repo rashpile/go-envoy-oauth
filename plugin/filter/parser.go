@@ -479,7 +479,7 @@ func (p *Parser) Parse(any *anypb.Any, callbacks api.ConfigCallbackHandler) (int
 			Scopes:       conf.Scopes,
 			ProviderName: "default",
 		}
-		handler, err := oauth.NewOAuthHandler(cfg, conf.SessionStore, defaultCM, logger)
+		handler, err := newOAuthHandlerRecovered(cfg, conf.SessionStore, defaultCM, logger)
 		if err != nil {
 			logger.Warn("default provider init failed, registering as down (Phase 5 D-04)",
 				zap.String("provider", "default"),

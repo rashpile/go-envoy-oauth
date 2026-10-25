@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -184,5 +185,14 @@ func TestRefreshOnceFailsWithUnreachableHost(t *testing.T) {
 	err := h.refreshOnce()
 	if err == nil {
 		t.Fatal("expected error from refreshOnce with unreachable host, got nil")
+	}
+}
+
+// TestRefreshOnceRecoveredTurnsPanicIntoError verifies that a panic during a
+// JWKS refresh becomes an error instead of killing the refresh goroutine.
+func TestRefreshOnceRecoveredTurnsPanicIntoError(t *testing.T) {
+	h := &OAuthHandlerImpl{logger: zap.NewNop()} // nil config makes refreshOnce panic
+	if err := h.refreshOnceRecovered(); err == nil || !strings.Contains(err.Error(), "panic") {
+		t.Errorf("refreshOnceRecovered = %v, want a panic error", err)
 	}
 }

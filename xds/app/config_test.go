@@ -1667,26 +1667,51 @@ clients:
 // name of a static bootstrap cluster, which would send its traffic to that
 // cluster (for example the loopback Envoy admin API).
 func TestLoadConfigRejectsReservedClientIDs(t *testing.T) {
-	for name := range reservedClusterNames {
-		t.Run(name, func(t *testing.T) {
-			configPath := filepath.Join(t.TempDir(), "gateway-auth.yaml")
-			content := `plugin:
+	load := func(t *testing.T, id string) error {
+		t.Helper()
+		configPath := filepath.Join(t.TempDir(), "gateway-auth.yaml")
+		content := `plugin:
   library_path: /app/filter.so
 oauth:
   issuer_url: "https://issuer.example.com"
   client_id: "cid"
   client_secret: "secret"
 clients:
-  - id: ` + name + `
+  - id: ` + id + `
     address: backend.example.com
     port: 8080
 `
-			if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
-				t.Fatalf("write config: %v", err)
-			}
-			if _, err := LoadConfig(configPath); err == nil {
-				t.Errorf("LoadConfig accepted reserved client id %q", name)
-			}
-		})
+		if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
+			t.Fatalf("write config: %v", err)
+		}
+		_, err := LoadConfig(configPath)
+		return err
+	}
+	// Every static cluster of the bootstrap must be reserved.
+	raw, err := os.ReadFile("../envoy-xds.yaml")
+	if err != nil {
+		t.Fatalf("read bootstrap: %v", err)
+	}
+	var bootstrap struct {
+		StaticResources struct {
+			Clusters []struct {
+				Name string `yaml:"name"`
+			} `yaml:"clusters"`
+		} `yaml:"static_resources"`
+	}
+	if err := yaml.Unmarshal(raw, &bootstrap); err != nil {
+		t.Fatalf("parse bootstrap: %v", err)
+	}
+	if len(bootstrap.StaticResources.Clusters) == 0 {
+		t.Fatal("bootstrap has no static clusters")
+	}
+	for _, c := range bootstrap.StaticResources.Clusters {
+		name := c.Name
+		if err := load(t, name); err == nil || !strings.Contains(err.Error(), "reserved") {
+			t.Errorf("client id %q: LoadConfig error = %v, want a reserved-id error", name, err)
+		}
+	}
+	if err := load(t, "backend"); err != nil {
+		t.Errorf("non-reserved client id rejected: %v", err)
 	}
 }

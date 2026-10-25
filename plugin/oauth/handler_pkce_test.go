@@ -342,6 +342,17 @@ func TestPKCEPendingAuthStored(t *testing.T) {
 	if pa.CodeVerifier == "" {
 		t.Error("PendingAuth.CodeVerifier should not be empty")
 	}
+	// The browser-binding secret goes to the filter; only its hash is stored (issue #11).
+	secret, _ := header.Get(StateBindingHeader)
+	if secret == "" {
+		t.Fatal("HandleAuthRedirect did not provide a state binding secret")
+	}
+	if !session.StateBindingMatches(secret, pa.BindingHash) {
+		t.Error("stored BindingHash does not match the binding secret")
+	}
+	if pa.BindingHash == secret {
+		t.Error("the binding secret must not be stored in plain text")
+	}
 }
 
 // TestPKCECallback verifies HandleCallback retrieves PendingAuth and sets location.
@@ -746,5 +757,14 @@ func TestRedirectURLsIgnoreXForwardedHost(t *testing.T) {
 	hdr.headers[":path"] = "/oauth/logout"
 	if got := h.GetPostLogoutRedirectURI(hdr); strings.Contains(got, "other.example.net") || !strings.HasPrefix(got, "https://app.example.com/") {
 		t.Errorf("GetPostLogoutRedirectURI (default) = %q, want a URL on app.example.com", got)
+	}
+}
+
+func TestRequestHostFallsBackToHostHeader(t *testing.T) {
+	hdr := newMockHeaderMap()
+	hdr.headers["host"] = "app.example.com"
+	hdr.headers["x-forwarded-host"] = "other.example.net"
+	if got := requestHost(hdr); got != "app.example.com" {
+		t.Errorf("requestHost = %q, want app.example.com", got)
 	}
 }
