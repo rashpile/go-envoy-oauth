@@ -42,7 +42,6 @@ Thumbs.db
 **/node_modules/
 **/.codex
 **/.claude
-.planning/
 .workspaces/
 docs/superpowers/
 docs/plans/
