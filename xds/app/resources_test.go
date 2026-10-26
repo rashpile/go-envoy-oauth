@@ -724,3 +724,44 @@ func TestHTTPConnectionManagerNormalizesPaths(t *testing.T) {
 		assertPathNormalization(t, &mm, keep)
 	}
 }
+
+// TestClientMCPSerialization verifies that the client mcp block reaches the
+// plugin config under clusters.<id>.mcp, and only for enabled clients that set it.
+func TestClientMCPSerialization(t *testing.T) {
+	disabled := false
+	cfg := &GatewayConfig{
+		Plugin:          PluginConfig{LibraryPath: "/app/filter.so"},
+		DefaultProvider: "kc",
+		Providers: map[string]ProviderConfig{
+			"kc": {IssuerURL: "https://issuer.example.com", ClientID: "cid", ClientSecret: "secret"},
+		},
+		Listener: ListenerConfig{Address: "0.0.0.0", Port: 8080},
+		Clients: []ClientConfig{
+			{ID: "pack", Address: "a", Port: 1, Prefix: "/", MCP: &MCPConfig{Path: "/mcp", Resource: "https://romanian.example/mcp"}},
+			{ID: "plain", Address: "b", Port: 1, Prefix: "/"},
+			{ID: "off", Address: "c", Port: 1, Prefix: "/", Enabled: &disabled, MCP: &MCPConfig{Path: "/mcp", Resource: "https://off.example/mcp"}},
+		},
+	}
+	managerAny, err := createHTTPConnectionManager(cfg)
+	if err != nil {
+		t.Fatalf("createHTTPConnectionManager: %v", err)
+	}
+	clusters := extractPluginTypedStruct(t, managerAny).Fields["clusters"].GetStructValue().Fields
+
+	mcp := clusters["pack"].GetStructValue().Fields["mcp"].GetStructValue()
+	if mcp == nil {
+		t.Fatal("clusters.pack missing mcp")
+	}
+	if got := mcp.Fields["path"].GetStringValue(); got != "/mcp" {
+		t.Errorf("mcp.path = %q, want /mcp", got)
+	}
+	if got := mcp.Fields["resource"].GetStringValue(); got != "https://romanian.example/mcp" {
+		t.Errorf("mcp.resource = %q", got)
+	}
+	if _, ok := clusters["plain"].GetStructValue().Fields["mcp"]; ok {
+		t.Error("clusters.plain must not carry mcp")
+	}
+	if _, ok := clusters["off"]; ok {
+		t.Error("disabled client must not be emitted")
+	}
+}

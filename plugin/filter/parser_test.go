@@ -785,3 +785,115 @@ func TestParseNoSkipAuthWarnWhenAbsentEmptyOrNonString(t *testing.T) {
 		})
 	}
 }
+
+// mcpClusterConfig returns a legacy config with one cluster carrying the given mcp block.
+func mcpClusterConfig(mcp map[string]interface{}) map[string]interface{} {
+	cfg := baseConfig()
+	cfg["clusters"] = map[string]interface{}{
+		"pack": map[string]interface{}{"mcp": mcp},
+	}
+	return cfg
+}
+
+// TestParseClusterMCP verifies parsing and validation of the cluster mcp block (issue #7).
+func TestParseClusterMCP(t *testing.T) {
+	p := &Parser{}
+
+	t.Run("valid block derives metadata path and URL", func(t *testing.T) {
+		conf, err := p.parseRawConfig(buildAny(t, mcpClusterConfig(map[string]interface{}{
+			"path":     "/mcp/",
+			"resource": "https://romanian.example/mcp",
+		})))
+		if err != nil {
+			t.Fatalf("parseRawConfig: %v", err)
+		}
+		got := conf.Clusters["pack"].MCP
+		want := &MCPConfig{
+			Path:         "/mcp",
+			Resource:     "https://romanian.example/mcp",
+			MetadataPath: "/.well-known/oauth-protected-resource/mcp",
+			MetadataURL:  "https://romanian.example/.well-known/oauth-protected-resource/mcp",
+		}
+		if got == nil || *got != *want {
+			t.Errorf("MCP = %+v, want %+v", got, want)
+		}
+	})
+
+	t.Run("cluster without mcp", func(t *testing.T) {
+		cfg := baseConfig()
+		cfg["clusters"] = map[string]interface{}{"plain": map[string]interface{}{"exclude": false}}
+		conf, err := p.parseRawConfig(buildAny(t, cfg))
+		if err != nil {
+			t.Fatalf("parseRawConfig: %v", err)
+		}
+		if conf.Clusters["plain"].MCP != nil {
+			t.Errorf("MCP = %+v, want nil", conf.Clusters["plain"].MCP)
+		}
+	})
+
+	invalid := []struct {
+		name string
+		mcp  map[string]interface{}
+	}{
+		{"missing path", map[string]interface{}{"resource": "https://romanian.example/mcp"}},
+		{"relative path", map[string]interface{}{"path": "mcp", "resource": "https://romanian.example/mcp"}},
+		{"root path", map[string]interface{}{"path": "/", "resource": "https://romanian.example/"}},
+		{"path differs from resource path", map[string]interface{}{"path": "/api/mcp", "resource": "https://romanian.example/mcp"}},
+		{"missing resource", map[string]interface{}{"path": "/mcp"}},
+		{"http resource", map[string]interface{}{"path": "/mcp", "resource": "http://romanian.example/mcp"}},
+		{"unparsable resource", map[string]interface{}{"path": "/mcp", "resource": "https://%zz/mcp"}},
+		{"resource without host", map[string]interface{}{"path": "/mcp", "resource": "https:///mcp"}},
+		{"resource without path", map[string]interface{}{"path": "/mcp", "resource": "https://romanian.example"}},
+		{"resource with query", map[string]interface{}{"path": "/mcp", "resource": "https://romanian.example/mcp?x=1"}},
+		{"resource with fragment", map[string]interface{}{"path": "/mcp", "resource": "https://romanian.example/mcp#x"}},
+		// The guard compares raw request paths, so a resource path that needs
+		// escaping could never match and would silently fall back to cookie auth.
+		// Envoy normalizes these before the filter runs, so the guard could never match them.
+		{"resource path with //", map[string]interface{}{"path": "/api//mcp", "resource": "https://romanian.example/api//mcp"}},
+		{"resource path with dot-segment", map[string]interface{}{"path": "/a/../mcp", "resource": "https://romanian.example/a/../mcp"}},
+		{"resource path with ;", map[string]interface{}{"path": "/mcp;v1", "resource": "https://romanian.example/mcp;v1"}},
+		{"percent-encoded resource path", map[string]interface{}{"path": "/a b/mcp", "resource": "https://romanian.example/a%20b/mcp"}},
+		{"percent-encoded resource path, escaped config path", map[string]interface{}{"path": "/a%20b/mcp", "resource": "https://romanian.example/a%20b/mcp"}},
+	}
+	for _, tt := range invalid {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := p.parseRawConfig(buildAny(t, mcpClusterConfig(tt.mcp))); err == nil {
+				t.Error("parseRawConfig: expected an error")
+			}
+		})
+	}
+}
+
+// TestMergeClusterMCP verifies that all three Merge copy sites carry the mcp block.
+func TestMergeClusterMCP(t *testing.T) {
+	p := &Parser{}
+	parse := func(cfg map[string]interface{}) *OAuthConfig {
+		t.Helper()
+		conf, err := p.parseRawConfig(buildAny(t, cfg))
+		if err != nil {
+			t.Fatalf("parseRawConfig: %v", err)
+		}
+		return conf
+	}
+	romanian := map[string]interface{}{"path": "/mcp", "resource": "https://romanian.example/mcp"}
+	english := map[string]interface{}{"path": "/mcp", "resource": "https://english.example/mcp"}
+
+	parent := parse(mcpClusterConfig(romanian))
+
+	merged := p.Merge(parent, parse(baseConfig())).(*OAuthConfig)
+	if mcp := merged.Clusters["pack"].MCP; mcp == nil || mcp.Resource != "https://romanian.example/mcp" {
+		t.Errorf("parent only: MCP = %+v, want the parent block", mcp)
+	}
+
+	merged = p.Merge(parent, parse(mcpClusterConfig(english))).(*OAuthConfig)
+	if mcp := merged.Clusters["pack"].MCP; mcp == nil || mcp.Resource != "https://english.example/mcp" {
+		t.Errorf("child override: MCP = %+v, want the child block", mcp)
+	}
+
+	childOnly := baseConfig()
+	childOnly["clusters"] = map[string]interface{}{"other": map[string]interface{}{"mcp": english}}
+	merged = p.Merge(parse(baseConfig()), parse(childOnly)).(*OAuthConfig)
+	if mcp := merged.Clusters["other"].MCP; mcp == nil || mcp.Resource != "https://english.example/mcp" {
+		t.Errorf("child-only cluster: MCP = %+v, want the child block", mcp)
+	}
+}

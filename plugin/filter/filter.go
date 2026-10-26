@@ -181,10 +181,7 @@ func (f *Filter) handleAuthFailureWithCookie(statusCode int, message, deleteCook
 		zap.Int("status_code", statusCode),
 		zap.String("message", message))
 
-	// Record cluster auth failure metric
-	clusterLabel := metrics.GetClusterLabel(f.cluster, f.knownClusterNames())
-	realm := metrics.GetRealm(f.config.IssuerURL)
-	metrics.RecordClusterAuth(clusterLabel, realm, "failure")
+	f.recordClusterAuthFailure()
 
 	headers := createAuthErrorHeaders()
 	if deleteCookieStr != "" {
@@ -192,6 +189,13 @@ func (f *Filter) handleAuthFailureWithCookie(statusCode int, message, deleteCook
 	}
 
 	return f.recordAndSendLocalReply(statusCode, message, headers, -1, "auth_failure")
+}
+
+// recordClusterAuthFailure records a failed authentication for the current cluster.
+func (f *Filter) recordClusterAuthFailure() {
+	clusterLabel := metrics.GetClusterLabel(f.cluster, f.knownClusterNames())
+	realm := metrics.GetRealm(f.config.IssuerURL)
+	metrics.RecordClusterAuth(clusterLabel, realm, "failure")
 }
 
 // handleAuthSuccess processes a successful authentication

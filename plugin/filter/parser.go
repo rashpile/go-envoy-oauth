@@ -3,6 +3,7 @@ package filter
 import (
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -42,6 +43,66 @@ type ClusterConfig struct {
 	WebSocketExcludePaths []string
 	AllowedUsers          []string // Per-client allowed users (normalized to lowercase)
 	ProviderName          string   // Resolved provider name for this cluster
+	MCP                   *MCPConfig
+}
+
+// mcpMetadataPrefix is the RFC 9728 well-known prefix for protected resource metadata.
+const mcpMetadataPrefix = "/.well-known/oauth-protected-resource"
+
+// MCPConfig marks a cluster path as an OAuth protected resource (RFC 9728):
+// bearer-only access with a token whose aud contains Resource (issue #7).
+type MCPConfig struct {
+	Path         string // guarded path, e.g. "/mcp"
+	Resource     string // resource identifier, e.g. "https://romanian.example/mcp"
+	MetadataPath string // mcpMetadataPrefix + resource URL path, served without auth
+	MetadataURL  string // absolute metadata URL advertised in WWW-Authenticate
+}
+
+// parseMCPConfig reads and validates a cluster mcp block. The metadata URL is
+// derived from the configured resource, never from request headers.
+func parseMCPConfig(raw map[string]interface{}) (*MCPConfig, error) {
+	path, _ := raw["path"].(string)
+	resource, _ := raw["resource"].(string)
+
+	u, err := url.Parse(resource)
+	if err != nil {
+		return nil, fmt.Errorf("mcp.resource %q: %v", resource, err)
+	}
+	if u.Scheme != "https" || u.Host == "" {
+		return nil, fmt.Errorf("mcp.resource %q must be an absolute https URL", resource)
+	}
+	if u.Path == "" || u.Path == "/" {
+		return nil, fmt.Errorf("mcp.resource %q must have a path", resource)
+	}
+	if u.RawQuery != "" || u.Fragment != "" || u.ForceQuery {
+		return nil, fmt.Errorf("mcp.resource %q must not have a query or fragment", resource)
+	}
+	// The guard compares raw request paths with mcp.path, so a path that
+	// needs percent-encoding would never match and the guard would not apply.
+	if u.EscapedPath() != u.Path {
+		return nil, fmt.Errorf("mcp.resource %q path must not need percent-encoding", resource)
+	}
+	// Envoy normalizes "//" and dot-segments before the filter runs and the
+	// guard refuses ";" paths, so such a resource path could never be served.
+	if hasAmbiguousSegments(u.Path) {
+		return nil, fmt.Errorf("mcp.resource %q path must not contain //, ;, \\ or dot-segments", resource)
+	}
+
+	path = strings.TrimRight(path, "/")
+	if !strings.HasPrefix(path, "/") {
+		return nil, fmt.Errorf("mcp.path %q must be an absolute path other than /", path)
+	}
+	if path != strings.TrimRight(u.Path, "/") {
+		return nil, fmt.Errorf("mcp.path %q must equal the path of mcp.resource %q", path, resource)
+	}
+
+	metadataPath := mcpMetadataPrefix + strings.TrimRight(u.EscapedPath(), "/")
+	return &MCPConfig{
+		Path:         path,
+		Resource:     resource,
+		MetadataPath: metadataPath,
+		MetadataURL:  u.Scheme + "://" + u.Host + metadataPath,
+	}, nil
 }
 
 // OAuthConfig represents the OAuth filter configuration
@@ -396,6 +457,13 @@ func (p *Parser) populateConfig(conf *OAuthConfig, m map[string]interface{}) err
 				if providerName, ok := config["provider"].(string); ok {
 					clusterConf.ProviderName = providerName
 				}
+				if rawMCP, ok := config["mcp"].(map[string]interface{}); ok {
+					mcp, err := parseMCPConfig(rawMCP)
+					if err != nil {
+						return fmt.Errorf("cluster %q: %v", clusterName, err)
+					}
+					clusterConf.MCP = mcp
+				}
 				conf.Clusters[clusterName] = clusterConf
 			}
 		}
@@ -661,6 +729,7 @@ func (p *Parser) Merge(parent interface{}, child interface{}) interface{} {
 			TokenInclude:          parentClusterConfig.TokenInclude,
 			WebSocketExcludePaths: slices.Clone(parentClusterConfig.WebSocketExcludePaths),
 			ProviderName:          parentClusterConfig.ProviderName,
+			MCP:                   parentClusterConfig.MCP,
 		}
 		newConfig.Clusters[clusterName] = newClusterConfig
 	}
@@ -694,6 +763,9 @@ func (p *Parser) Merge(parent interface{}, child interface{}) interface{} {
 			if childClusterConfig.ProviderName != "" {
 				parentClusterConfig.ProviderName = childClusterConfig.ProviderName
 			}
+			if childClusterConfig.MCP != nil {
+				parentClusterConfig.MCP = childClusterConfig.MCP
+			}
 			newConfig.Clusters[clusterName] = parentClusterConfig
 		} else {
 			// Add new cluster config
@@ -707,6 +779,7 @@ func (p *Parser) Merge(parent interface{}, child interface{}) interface{} {
 				TokenInclude:          childClusterConfig.TokenInclude,
 				WebSocketExcludePaths: slices.Clone(childClusterConfig.WebSocketExcludePaths),
 				ProviderName:          childClusterConfig.ProviderName,
+				MCP:                   childClusterConfig.MCP,
 			}
 			newConfig.Clusters[clusterName] = newClusterConfig
 		}

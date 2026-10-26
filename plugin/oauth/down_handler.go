@@ -49,6 +49,10 @@ func (d *DownHandler) ValidateBearerToken(_ context.Context, _ string) (*session
 	return nil, d.unavailableErr()
 }
 
+func (d *DownHandler) ValidateBearerTokenForResource(_ context.Context, _, _ string) (*session.Session, error) {
+	return nil, d.unavailableErr()
+}
+
 func (d *DownHandler) ExchangeRefreshToken(_ context.Context, _ string) (string, error) {
 	return "", d.unavailableErr()
 }

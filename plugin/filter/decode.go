@@ -50,6 +50,24 @@ func (f *Filter) DecodeHeaders(header api.RequestHeaderMap, endStream bool) api.
 
 	f.logger.Debug(fmt.Sprintf("path: %s, cluster: %s, trace_id: %s", sanitizePathForLogging(path), cluster, traceID))
 
+	// MCP protected resource (issue #7): handled before exclusions so
+	// exclude_paths cannot open the guarded path.
+	if mcp := f.clusterMCP(cluster); mcp != nil {
+		if stripQuery(path) == mcp.MetadataPath {
+			return f.handleMCPMetadata(header, mcp)
+		}
+		if isAmbiguousMCPPath(path, mcp) {
+			f.logger.Debug("Rejecting ambiguous path under the MCP path",
+				zap.String("path", sanitizePathForLogging(path)),
+				zap.String("trace_id", traceID))
+			return f.recordAndSendLocalReply(400, "Bad Request",
+				map[string][]string{"content-type": {"text/plain"}}, -1, "mcp_ambiguous_path")
+		}
+		if matchesMCPPath(path, mcp) {
+			return f.handleMCPAuth(header, mcp, traceID)
+		}
+	}
+
 	// Check if the path should be excluded
 	if !strings.HasPrefix(path, "/oauth/") && f.isPathExcluded(path, cluster) {
 		f.logger.Debug("Path is excluded from authentication",

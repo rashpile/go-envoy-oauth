@@ -137,3 +137,70 @@ func TestIssuedToClient(t *testing.T) {
 		t.Error("empty client ID must never match an empty aud entry")
 	}
 }
+
+// TestValidateTokenForAudience verifies that a protected resource accepts a
+// token issued to any client of the realm as long as aud names the resource,
+// and nothing else (issue #7).
+func TestValidateTokenForAudience(t *testing.T) {
+	ti := newTestIssuer(t)
+	v, err := NewTokenValidator(ti.srv.URL, "gateway", zap.NewNop())
+	if err != nil {
+		t.Fatalf("NewTokenValidator: %v", err)
+	}
+	const resource = "https://romanian.example/mcp"
+
+	base := func(extra map[string]interface{}) map[string]interface{} {
+		c := map[string]interface{}{
+			"iss":                ti.srv.URL,
+			"sub":                "user-1",
+			"preferred_username": "alice",
+			"azp":                "mcp-romanian",
+			"aud":                []string{resource},
+			"exp":                time.Now().Add(5 * time.Minute).Unix(),
+			"iat":                time.Now().Unix(),
+		}
+		for k, val := range extra {
+			if val == nil {
+				delete(c, k)
+				continue
+			}
+			c[k] = val
+		}
+		return c
+	}
+
+	tests := []struct {
+		name     string
+		claims   map[string]interface{}
+		audience string
+		ok       bool
+	}{
+		{"aud names the resource, foreign azp", base(nil), resource, true},
+		{"aud names the resource among others", base(map[string]interface{}{"aud": []string{"account", resource}}), resource, true},
+		// Keycloak emits a single audience as a JSON string, not an array.
+		{"aud is a single string", base(map[string]interface{}{"aud": resource}), resource, true},
+		{"aud names another pack", base(map[string]interface{}{"aud": []string{"https://english.example/mcp"}}), resource, false},
+		{"aud names only the gateway client", base(map[string]interface{}{"aud": []string{"gateway"}, "azp": "gateway"}), resource, false},
+		{"expired", base(map[string]interface{}{"exp": time.Now().Add(-time.Minute).Unix()}), resource, false},
+		{"wrong issuer", base(map[string]interface{}{"iss": "https://evil.example/realms/pl"}), resource, false},
+		{"no subject", base(map[string]interface{}{"sub": nil}), resource, false},
+		{"empty audience never matches", base(map[string]interface{}{"aud": []string{""}}), "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			claims, err := v.ValidateTokenForAudience(context.Background(), ti.sign(t, tt.claims), tt.audience)
+			if tt.ok {
+				if err != nil {
+					t.Fatalf("ValidateTokenForAudience: unexpected error %v", err)
+				}
+				if claims.Subject != "user-1" || claims.PreferredUsername != "alice" || claims.AuthorizedParty != "mcp-romanian" {
+					t.Errorf("claims = %+v, want sub, preferred_username and azp from the token", claims)
+				}
+				return
+			}
+			if err == nil {
+				t.Error("ValidateTokenForAudience: expected rejection, got nil error")
+			}
+		})
+	}
+}

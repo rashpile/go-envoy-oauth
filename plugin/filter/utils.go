@@ -42,9 +42,7 @@ func removeQueryParam(path string, paramToRemove string) string {
 // backslashes, ";" or "//" never matches: an upstream may resolve it to a
 // different, protected path than the prefix suggests (issue #8).
 func isExcludedPath(path string, excluded []string) bool {
-	if idx := strings.IndexByte(path, '?'); idx >= 0 {
-		path = path[:idx]
-	}
+	path = stripQuery(path)
 	if hasAmbiguousSegments(path) {
 		return false
 	}
@@ -54,6 +52,14 @@ func isExcludedPath(path string, excluded []string) bool {
 		}
 	}
 	return false
+}
+
+// stripQuery returns path without its query string.
+func stripQuery(path string) string {
+	if idx := strings.IndexByte(path, '?'); idx >= 0 {
+		return path[:idx]
+	}
+	return path
 }
 
 // hasAmbiguousSegments reports whether path contains anything that upstreams

@@ -33,7 +33,7 @@ type TokenClaims struct {
 	PreferredUsername string                 `json:"preferred_username"`
 	GivenName         string                 `json:"given_name"`
 	FamilyName        string                 `json:"family_name"`
-	Audience          []string               `json:"aud"`
+	Audience          []string               `json:"-"` // from idToken.Audience: aud may be a JSON string or array
 	Issuer            string                 `json:"iss"`
 	IssuedAt          int64                  `json:"iat"`
 	ExpiresAt         int64                  `json:"exp"`
@@ -180,6 +180,51 @@ func (v *TokenValidator) ValidateAccessToken(ctx context.Context, token string) 
 		zap.String("subject", claims.Subject),
 		zap.String("issuer", claims.Issuer),
 		zap.Int64("expires_at", claims.ExpiresAt))
+
+	return claims, nil
+}
+
+// ValidateTokenForAudience verifies signature, issuer and expiry, and
+// requires aud to contain audience. Used for OAuth protected resources
+// (RFC 9728) whose tokens are issued to other clients of the realm, so the
+// gateway's own client ID is not checked.
+func (v *TokenValidator) ValidateTokenForAudience(ctx context.Context, token, audience string) (*TokenClaims, error) {
+	if audience == "" {
+		return nil, fmt.Errorf("no audience configured")
+	}
+
+	v.checkRefresh(ctx)
+
+	v.mu.RLock()
+	provider := v.provider
+	v.mu.RUnlock()
+
+	// go-oidc rejects the token unless aud contains ClientID.
+	idToken, err := provider.Verifier(&oidc.Config{ClientID: audience}).Verify(ctx, token)
+	if err != nil {
+		v.logger.Debug("Resource token verification failed",
+			zap.String("audience", audience),
+			zap.Error(err))
+		return nil, fmt.Errorf("token verification failed: %v", err)
+	}
+
+	claims := &TokenClaims{
+		Extra: make(map[string]interface{}),
+	}
+	if err := idToken.Claims(claims); err != nil {
+		return nil, fmt.Errorf("failed to parse token claims: %v", err)
+	}
+	if idToken.Subject == "" {
+		return nil, fmt.Errorf("token does not contain subject claim")
+	}
+
+	claims.Subject = idToken.Subject
+	claims.Issuer = idToken.Issuer
+	claims.Audience = idToken.Audience
+	if !idToken.IssuedAt.IsZero() {
+		claims.IssuedAt = idToken.IssuedAt.Unix()
+	}
+	claims.ExpiresAt = idToken.Expiry.Unix()
 
 	return claims, nil
 }

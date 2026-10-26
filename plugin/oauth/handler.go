@@ -91,6 +91,8 @@ type OAuthHandler interface {
 	ValidateSession(session *session.Session) error
 	IsNeedValidateSession(session *session.Session) bool
 	ValidateBearerToken(ctx context.Context, token string) (*session.Session, error)
+	// ValidateBearerTokenForResource validates a token whose aud must contain resource.
+	ValidateBearerTokenForResource(ctx context.Context, token, resource string) (*session.Session, error)
 	ExchangeRefreshToken(ctx context.Context, refreshToken string) (string, error)
 	GetSessionCookie(header api.RequestHeaderMap) (string, error)
 	DeleteSessionCookie(header api.RequestHeaderMap)
@@ -779,6 +781,31 @@ func (h *OAuthHandlerImpl) ValidateBearerToken(ctx context.Context, token string
 	// Token validated successfully
 	metrics.RecordTokenValidation(idp, "valid")
 
+	return h.sessionFromClaims(claims, token), nil
+}
+
+// ValidateBearerTokenForResource validates a bearer token for an OAuth
+// protected resource: aud must contain resource, and the token may be issued
+// to any client of the realm (issue #7).
+func (h *OAuthHandlerImpl) ValidateBearerTokenForResource(ctx context.Context, token, resource string) (*session.Session, error) {
+	tv := h.getTokenValidator()
+	if tv == nil {
+		// Configuration issue - don't record metrics
+		return nil, fmt.Errorf("bearer token validation not available")
+	}
+
+	claims, err := tv.ValidateTokenForAudience(ctx, token, resource)
+	if err != nil {
+		metrics.RecordTokenValidation(h.providerName, "invalid")
+		return nil, fmt.Errorf("token validation failed: %v", err)
+	}
+	metrics.RecordTokenValidation(h.providerName, "valid")
+
+	return h.sessionFromClaims(claims, token), nil
+}
+
+// sessionFromClaims builds a request-scoped session from validated token claims.
+func (h *OAuthHandlerImpl) sessionFromClaims(claims *TokenClaims, token string) *session.Session {
 	// Create a session from the token claims
 	sess := &session.Session{
 		ID:             generateRandomState(), // Generate a unique session ID
@@ -810,7 +837,7 @@ func (h *OAuthHandlerImpl) ValidateBearerToken(ctx context.Context, token string
 		}
 	}
 
-	return sess, nil
+	return sess
 }
 
 // refreshTokenCacheKey hashes the whole refresh token. A prefix is not enough:

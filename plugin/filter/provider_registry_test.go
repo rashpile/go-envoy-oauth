@@ -3,6 +3,7 @@ package filter
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -27,6 +28,12 @@ func (m *mockOAuthHandler) ValidateSession(_ *session.Session) error            
 func (m *mockOAuthHandler) IsNeedValidateSession(_ *session.Session) bool             { return false }
 func (m *mockOAuthHandler) ValidateBearerToken(_ context.Context, _ string) (*session.Session, error) {
 	return nil, nil
+}
+
+// ValidateBearerTokenForResource refuses by default so stubs that embed
+// mockOAuthHandler never hand a nil session to the filter.
+func (m *mockOAuthHandler) ValidateBearerTokenForResource(_ context.Context, _, _ string) (*session.Session, error) {
+	return nil, errors.New("mock: resource token refused")
 }
 func (m *mockOAuthHandler) ExchangeRefreshToken(_ context.Context, _ string) (string, error) {
 	return "", nil

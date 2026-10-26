@@ -200,6 +200,39 @@ The `clusters` section maps Envoy cluster names to per-cluster auth settings.
 | `exclude_paths` | string[] | [] | Paths to exclude from authentication within this cluster |
 | `add_token` | boolean | false | Add `Authorization: Bearer <token>` header to upstream requests |
 | `allowed_users` | string[] | [] | Usernames permitted to access this cluster (matched against `preferred_username` claim, case-insensitive). Use `["*"]` to allow any authenticated user. If empty, the user must match the resolved provider's `allowed_users` to be permitted, otherwise access is denied. |
+| `mcp` | object | - | Guard `mcp.path` as an OAuth protected resource for MCP clients; see [MCP resource server](#mcp-resource-server) |
+
+#### MCP resource server
+
+A cluster with an `mcp` block acts as an OAuth 2.0 resource server for an MCP (Model Context Protocol) endpoint. MCP clients such as Claude Code, claude.ai and ChatGPT discover the authorization server from the gateway and sign in with it directly.
+
+```yaml
+clusters:
+  romanian_pack:
+    provider: keycloak
+    allowed_users: ["*"]
+    mcp:
+      path: /mcp
+      resource: https://romanian.example.com/mcp
+```
+
+- `resource` must be an absolute `https` URL with a canonical path (no percent-encoding, `//`, `;`, `\` or dot-segments) and no query; `path` must equal that path.
+- `GET /.well-known/oauth-protected-resource/mcp` (the RFC 9728 path built from `resource`) answers without authentication with `{"resource", "authorization_servers": [<provider issuer_url>], "bearer_methods_supported": ["header"]}`.
+- A path that starts with `path` but has `;`, `//`, `\`, dot-segments or encoded separators (for example `/mcp/..;/admin`) is answered `400` and never forwarded.
+- On `path` and below, only `Authorization: Bearer` is accepted. Session cookies and API keys are not consulted, and the gateway never redirects. `exclude_paths` cannot open this path.
+- The token must be signed by the cluster's provider, unexpired, and its `aud` must contain `resource`. Its `azp` may be any client of the realm, so one public client per resource with an audience mapper is enough.
+- `allowed_users` applies as usual and defaults to deny, so set it (for example `["*"]`). The token needs a `preferred_username` claim.
+
+| Case | Status | `WWW-Authenticate` |
+|---|---|---|
+| ambiguous path under `path` | 400 | none |
+| no bearer token | 401 | `Bearer resource_metadata="https://<host>/.well-known/oauth-protected-resource/mcp"` |
+| invalid, expired or wrong `aud` | 401 | the same plus `, error="invalid_token"` |
+| user not in `allowed_users` | 403 | none |
+| provider down | 503 | none |
+| valid | forwarded with the usual identity headers | - |
+
+The metadata URL is built from `resource`, never from request headers. With the xDS server, the client must use `prefix: /` (the default) so the well-known path routes to it, and the host of `resource` must be one of the entries in the client's `domain` list (ports ignored, `*` and `*.suffix` match).
 
 ### Provider Health
 

@@ -171,9 +171,23 @@ May be disabled by the operator (`enable_llms_txt: false`). When
 disabled, returns `404 Not Found: Unknown OAuth endpoint` —
 indistinguishable from any other unknown OAuth path.
 
+### `GET /.well-known/oauth-protected-resource<path>`
+
+Served only on clusters with an `mcp` block (see 3.4). OAuth 2.0
+protected resource metadata (RFC 9728), no authentication:
+
+```json
+{"resource": "https://<host>/mcp",
+ "authorization_servers": ["<issuer_url>"],
+ "bearer_methods_supported": ["header"]}
+```
+
+`200 application/json`, `Cache-Control: public, max-age=3600`. Methods
+other than `GET` return `405` with `Allow: GET`.
+
 ## 3. Auth modes
 
-A request gets authorized in one of three ways. The gateway tries them
+A request gets authorized in one of three ways (MCP paths, 3.4, use bearer only). The gateway tries them
 in order and accepts the first that succeeds.
 
 ### 3.1 Session cookie
@@ -219,6 +233,26 @@ key once via `/oauth/consent` → `/oauth/offline` →
 
 API-key auth is enabled by the operator config flag `enable_api_key`
 (defaults to disabled for security).
+
+### 3.4 MCP resource (bearer only)
+
+On a cluster with an `mcp` block, requests to `mcp.path` and below
+skip the three modes above. Only `Authorization: Bearer <jwt>` counts;
+cookies and API keys are ignored and the gateway never redirects. The
+token must be signed by the cluster's provider and unexpired, and its
+`aud` must contain `mcp.resource`; it may be issued to any client of
+the realm.
+
+- Path under `mcp.path` with `;`, `//`, dot-segments or encoded
+  separators: `400`, never forwarded.
+- No token: `401` with
+  `WWW-Authenticate: Bearer resource_metadata="<metadata URL>"`.
+  Fetch the metadata, sign in at its `authorization_servers` entry
+  (authorization code + PKCE, requesting the resource), retry with the
+  token.
+- Token rejected: `401` with the same header plus `error="invalid_token"`.
+- User not permitted by `allowed_users`: `403`, no challenge.
+- Success: forwarded with the identity headers from section 6.
 
 ## 4. Session lifecycle
 
@@ -541,6 +575,7 @@ set.
 | `add_token` | bool | `false` | Forward the access token to the upstream as `X-Auth-Token` |
 | `provider` | string | (`default_provider`) | Provider this cluster authenticates against |
 | `allowed_users` | string[] | empty | Usernames permitted on this cluster (matched against preferred_username, case-insensitive). Use `["*"]` to allow any authenticated user. If empty, the user must match the resolved provider's `allowed_users`; otherwise access is denied. |
+| `mcp` | object | (none) | `{path, resource}`: bearer-only OAuth protected resource on `path`, token `aud` must contain `resource` (section 3.4) |
 
 Operators may set `enabled: false` on a client in the gateway YAML; such clients are filtered out at the xDS layer and never appear in the `clusters` map below.
 

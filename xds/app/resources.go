@@ -241,6 +241,12 @@ func createHTTPConnectionManager(config *GatewayConfig) (*anypb.Any, error) {
 			providerName = config.DefaultProvider
 		}
 		clientConfig["provider"] = providerName
+		if client.MCP != nil {
+			clientConfig["mcp"] = map[string]interface{}{
+				"path":     client.MCP.Path,
+				"resource": client.MCP.Resource,
+			}
+		}
 		clusters[client.ID] = clientConfig
 	}
 	pluginConfig["clusters"] = clusters

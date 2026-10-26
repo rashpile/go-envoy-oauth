@@ -45,3 +45,7 @@ Thumbs.db
 .workspaces/
 docs/superpowers/
 docs/plans/
+
+# revmux review archive; keep only the project review profile
+.revmux/*
+!.revmux/profile.md

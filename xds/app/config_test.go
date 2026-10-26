@@ -1715,3 +1715,190 @@ clients:
 		t.Errorf("non-reserved client id rejected: %v", err)
 	}
 }
+
+// TestLoadConfigMCP verifies loading and validation of the client mcp block (issue #7).
+func TestLoadConfigMCP(t *testing.T) {
+	tmpDir := t.TempDir()
+	load := func(t *testing.T, client string) (*GatewayConfig, error) {
+		t.Helper()
+		os.Clearenv()
+		path := filepath.Join(tmpDir, strings.ReplaceAll(t.Name(), "/", "_")+".yaml")
+		content := `
+plugin:
+  library_path: /app/filter.so
+providers:
+  keycloak:
+    issuer_url: https://sso.example/realms/pl
+    client_id: gateway
+    client_secret: secret
+default_provider: keycloak
+clients:
+` + client
+		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+			t.Fatalf("write config: %v", err)
+		}
+		return LoadConfig(path)
+	}
+
+	t.Run("valid block loads", func(t *testing.T) {
+		cfg, err := load(t, `
+  - id: pack
+    domain: romanian.example
+    address: app.internal
+    port: 8080
+    mcp:
+      path: /mcp
+      resource: https://romanian.example/mcp
+`)
+		if err != nil {
+			t.Fatalf("LoadConfig: %v", err)
+		}
+		mcp := cfg.Clients[0].MCP
+		if mcp == nil || mcp.Path != "/mcp" || mcp.Resource != "https://romanian.example/mcp" {
+			t.Errorf("MCP = %+v", mcp)
+		}
+	})
+
+	for _, tc := range []struct{ name, domain, resource string }{
+		{"domain list contains the resource host", "www.romanian.example, romanian.example", "https://romanian.example/mcp"},
+		{"domain with port", "romanian.example:8443", "https://romanian.example:8443/mcp"},
+		{"domain with port, resource on default port", "romanian.example:443", "https://romanian.example/mcp"},
+		{"domain case differs", "Romanian.Example", "https://romanian.example/mcp"},
+		{"wildcard domain", "*", "https://romanian.example/mcp"},
+		{"suffix wildcard domain", "*.example", "https://romanian.example/mcp"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := load(t, `
+  - id: pack
+    domain: "`+tc.domain+`"
+    address: app.internal
+    port: 8080
+    mcp: {path: /mcp, resource: "`+tc.resource+`"}
+`); err != nil {
+				t.Errorf("LoadConfig: %v", err)
+			}
+		})
+	}
+
+	t.Run("disabled client with invalid mcp is skipped", func(t *testing.T) {
+		if _, err := load(t, `
+  - id: pack
+    enabled: false
+    address: app.internal
+    port: 8080
+    mcp:
+      path: /other
+      resource: http://romanian.example/mcp
+`); err != nil {
+			t.Errorf("LoadConfig: %v, want disabled client skipped", err)
+		}
+	})
+
+	invalid := []struct {
+		name   string
+		client string
+	}{
+		{"exclude with mcp", `
+  - id: pack
+    address: app.internal
+    port: 8080
+    exclude: true
+    mcp: {path: /mcp, resource: "https://romanian.example/mcp"}
+`},
+		{"prefix other than /", `
+  - id: pack
+    address: app.internal
+    port: 8080
+    prefix: /api
+    mcp: {path: /mcp, resource: "https://romanian.example/mcp"}
+`},
+		{"resource host differs from domain", `
+  - id: pack
+    domain: english.example
+    address: app.internal
+    port: 8080
+    mcp: {path: /mcp, resource: "https://romanian.example/mcp"}
+`},
+		{"resource host missing from domain list", `
+  - id: pack
+    domain: "english.example,www.english.example"
+    address: app.internal
+    port: 8080
+    mcp: {path: /mcp, resource: "https://romanian.example/mcp"}
+`},
+		{"suffix wildcard does not cover the host", `
+  - id: pack
+    domain: "*.english.example"
+    address: app.internal
+    port: 8080
+    mcp: {path: /mcp, resource: "https://romanian.example/mcp"}
+`},
+		{"empty path", `
+  - id: pack
+    address: app.internal
+    port: 8080
+    mcp: {resource: "https://romanian.example/mcp"}
+`},
+		{"root path", `
+  - id: pack
+    address: app.internal
+    port: 8080
+    mcp: {path: /, resource: "https://romanian.example/"}
+`},
+		{"relative path", `
+  - id: pack
+    address: app.internal
+    port: 8080
+    mcp: {path: mcp, resource: "https://romanian.example/mcp"}
+`},
+		{"path differs from resource path", `
+  - id: pack
+    address: app.internal
+    port: 8080
+    mcp: {path: /api/mcp, resource: "https://romanian.example/mcp"}
+`},
+		{"non-https resource", `
+  - id: pack
+    address: app.internal
+    port: 8080
+    mcp: {path: /mcp, resource: "http://romanian.example/mcp"}
+`},
+		{"resource path with //", `
+  - id: pack
+    address: app.internal
+    port: 8080
+    mcp: {path: /api//mcp, resource: "https://romanian.example/api//mcp"}
+`},
+		{"resource path with dot-segment", `
+  - id: pack
+    address: app.internal
+    port: 8080
+    mcp: {path: /a/../mcp, resource: "https://romanian.example/a/../mcp"}
+`},
+		{"resource path with ;", `
+  - id: pack
+    address: app.internal
+    port: 8080
+    mcp: {path: "/mcp;v1", resource: "https://romanian.example/mcp;v1"}
+`},
+		{"percent-encoded resource path", `
+  - id: pack
+    address: app.internal
+    port: 8080
+    mcp: {path: "/a b/mcp", resource: "https://romanian.example/a%20b/mcp"}
+`},
+		{"resource with query", `
+  - id: pack
+    address: app.internal
+    port: 8080
+    mcp: {path: /mcp, resource: "https://romanian.example/mcp?x=1"}
+`},
+	}
+	for _, tt := range invalid {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := load(t, tt.client); err == nil {
+				t.Error("LoadConfig: expected an error")
+			}
+		})
+	}
+}

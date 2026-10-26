@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"log"
+	"net"
+	"net/url"
 	"os"
 	"regexp"
 	"strconv"
@@ -80,27 +82,123 @@ type SSLConfig struct {
 type ClientConfig struct {
 	ID string `yaml:"id"`
 	// Description is operator-only metadata (not propagated to Envoy or filter).
-	Description           string   `yaml:"description,omitempty"`
-	Domain                string   `yaml:"domain,omitempty"`
-	HostRewrite           string   `yaml:"host_rewrite,omitempty"`
-	Address               string   `yaml:"address"`
-	Port                  uint32   `yaml:"port"`
-	SSL                   bool     `yaml:"ssl"`           // Upstream uses SSL/TLS
-	TLS                   bool     `yaml:"tls,omitempty"` // Request certificate for this domain
-	Exclude               bool     `yaml:"exclude"`
-	Enabled               *bool    `yaml:"enabled,omitempty"` // Default: true. Set to false to skip this client at xDS generation.
-	Prefix                string   `yaml:"prefix"`
-	PrefixRewrite         string   `yaml:"prefix_rewrite,omitempty"`
-	ExcludePaths          []string `yaml:"exclude_paths,omitempty"`
-	WebSocketExcludePaths []string `yaml:"websocket_exclude_paths,omitempty"` // WebSocket paths that skip auth
-	SsoInjection          bool     `yaml:"sso_injection,omitempty"`
-	SsoAppURL             string   `yaml:"sso_appurl,omitempty"`
-	SsoAppName            string   `yaml:"sso_appname,omitempty"`
-	AddToken              bool     `yaml:"add_token,omitempty"`
-	ClusterIdleTimeout    string   `yaml:"cluster_idle_timeout,omitempty"`
-	RouteTimeout          string   `yaml:"route_timeout,omitempty"`
-	AllowedUsers          []string `yaml:"allowed_users,omitempty"` // Per-client allowed users
-	Provider              string   `yaml:"provider,omitempty"`      // Named provider reference; empty means use default_provider
+	Description           string     `yaml:"description,omitempty"`
+	Domain                string     `yaml:"domain,omitempty"`
+	HostRewrite           string     `yaml:"host_rewrite,omitempty"`
+	Address               string     `yaml:"address"`
+	Port                  uint32     `yaml:"port"`
+	SSL                   bool       `yaml:"ssl"`           // Upstream uses SSL/TLS
+	TLS                   bool       `yaml:"tls,omitempty"` // Request certificate for this domain
+	Exclude               bool       `yaml:"exclude"`
+	Enabled               *bool      `yaml:"enabled,omitempty"` // Default: true. Set to false to skip this client at xDS generation.
+	Prefix                string     `yaml:"prefix"`
+	PrefixRewrite         string     `yaml:"prefix_rewrite,omitempty"`
+	ExcludePaths          []string   `yaml:"exclude_paths,omitempty"`
+	WebSocketExcludePaths []string   `yaml:"websocket_exclude_paths,omitempty"` // WebSocket paths that skip auth
+	SsoInjection          bool       `yaml:"sso_injection,omitempty"`
+	SsoAppURL             string     `yaml:"sso_appurl,omitempty"`
+	SsoAppName            string     `yaml:"sso_appname,omitempty"`
+	AddToken              bool       `yaml:"add_token,omitempty"`
+	ClusterIdleTimeout    string     `yaml:"cluster_idle_timeout,omitempty"`
+	RouteTimeout          string     `yaml:"route_timeout,omitempty"`
+	AllowedUsers          []string   `yaml:"allowed_users,omitempty"` // Per-client allowed users
+	Provider              string     `yaml:"provider,omitempty"`      // Named provider reference; empty means use default_provider
+	MCP                   *MCPConfig `yaml:"mcp,omitempty"`           // OAuth protected resource (RFC 9728) on this client
+}
+
+// MCPConfig marks a client path as an OAuth protected resource: the filter
+// serves RFC 9728 metadata and accepts only bearer tokens whose aud contains
+// Resource on Path (issue #7). Mirrors the filter-side MCPConfig; the two
+// modules do not import each other.
+type MCPConfig struct {
+	Path     string `yaml:"path"`
+	Resource string `yaml:"resource"`
+}
+
+// domainsCoverHost reports whether host is routed by one of the entries of a
+// comma-separated client domain list, as MakeRoutes splits it. Ports are
+// ignored; "*" and "*.suffix" match like Envoy virtual host domains.
+func domainsCoverHost(domainList, host string) bool {
+	host = strings.ToLower(host)
+	for _, entry := range strings.Split(domainList, ",") {
+		entry = strings.ToLower(strings.TrimSpace(entry))
+		if h, _, err := net.SplitHostPort(entry); err == nil {
+			entry = h
+		}
+		switch {
+		case entry == "*" || entry == host:
+			return true
+		case strings.HasPrefix(entry, "*.") && strings.HasSuffix(host, entry[1:]):
+			return true
+		}
+	}
+	return false
+}
+
+// isNonCanonicalPath mirrors the filter's hasAmbiguousSegments for decoded
+// paths: "//", ";", "\\" or a "." / ".." segment.
+func isNonCanonicalPath(p string) bool {
+	if strings.Contains(p, "//") || strings.ContainsAny(p, `\;`) {
+		return true
+	}
+	for _, seg := range strings.Split(p, "/") {
+		if seg == "." || seg == ".." {
+			return true
+		}
+	}
+	return false
+}
+
+// validateClientMCP checks a client's mcp block. The metadata endpoint lives
+// at /.well-known/oauth-protected-resource<path>, which reaches this client's
+// cluster only when the client owns the whole domain (prefix "/").
+func validateClientMCP(client ClientConfig) error {
+	mcp := client.MCP
+	if mcp == nil {
+		return nil
+	}
+	if client.Exclude {
+		return fmt.Errorf("client %q: mcp cannot be combined with exclude", client.ID)
+	}
+	if client.Prefix != "/" {
+		return fmt.Errorf("client %q: mcp requires prefix \"/\" so the metadata endpoint routes to this client", client.ID)
+	}
+
+	u, err := url.Parse(mcp.Resource)
+	if err != nil {
+		return fmt.Errorf("client %q: mcp.resource %q: %v", client.ID, mcp.Resource, err)
+	}
+	if u.Scheme != "https" || u.Host == "" {
+		return fmt.Errorf("client %q: mcp.resource %q must be an absolute https URL", client.ID, mcp.Resource)
+	}
+	if u.Path == "" || u.Path == "/" {
+		return fmt.Errorf("client %q: mcp.resource %q must have a path", client.ID, mcp.Resource)
+	}
+	if u.RawQuery != "" || u.Fragment != "" || u.ForceQuery {
+		return fmt.Errorf("client %q: mcp.resource %q must not have a query or fragment", client.ID, mcp.Resource)
+	}
+	// The filter compares raw request paths with mcp.path, so a path that
+	// needs percent-encoding would never match and the guard would not apply.
+	if u.EscapedPath() != u.Path {
+		return fmt.Errorf("client %q: mcp.resource %q path must not need percent-encoding", client.ID, mcp.Resource)
+	}
+	// The listener normalizes "//" and dot-segments before the filter runs and
+	// the filter refuses ";" paths, so such a resource path could never be served.
+	if isNonCanonicalPath(u.Path) {
+		return fmt.Errorf("client %q: mcp.resource %q path must not contain //, ;, \\ or dot-segments", client.ID, mcp.Resource)
+	}
+	if client.Domain != "" && !domainsCoverHost(client.Domain, u.Hostname()) {
+		return fmt.Errorf("client %q: mcp.resource host %q is not one of domain %q", client.ID, u.Hostname(), client.Domain)
+	}
+
+	path := strings.TrimRight(mcp.Path, "/")
+	if !strings.HasPrefix(path, "/") {
+		return fmt.Errorf("client %q: mcp.path %q must be an absolute path other than /", client.ID, mcp.Path)
+	}
+	if path != strings.TrimRight(u.Path, "/") {
+		return fmt.Errorf("client %q: mcp.path %q must equal the path of mcp.resource %q", client.ID, mcp.Path, mcp.Resource)
+	}
+	return nil
 }
 
 // IsEnabled reports whether this client should be served by Envoy.
@@ -390,6 +488,9 @@ func LoadConfig(path string) (*GatewayConfig, error) {
 		}
 		if client.Address == "" {
 			return nil, fmt.Errorf("client.address is required for client %s", client.ID)
+		}
+		if err := validateClientMCP(client); err != nil {
+			return nil, err
 		}
 	}
 
