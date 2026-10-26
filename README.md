@@ -214,10 +214,13 @@ clusters:
     mcp:
       path: /mcp
       resource: https://romanian.example.com/mcp
+      scopes: [openid, profile]   # optional
 ```
 
 - `resource` must be an absolute `https` URL with a canonical path (no percent-encoding, `//`, `;`, `\` or dot-segments) and no query; `path` must equal that path.
-- `GET /.well-known/oauth-protected-resource/mcp` (the RFC 9728 path built from `resource`) answers without authentication with `{"resource", "authorization_servers": [<provider issuer_url>], "bearer_methods_supported": ["header"]}`.
+- `GET /.well-known/oauth-protected-resource/mcp` (the RFC 9728 path built from `resource`) answers without authentication with `{"resource", "authorization_servers": [<provider issuer_url>], "bearer_methods_supported": ["header"]}`, plus `"scopes_supported": [...]` in config order when `scopes` is set.
+- `scopes` (optional) tells MCP clients which scopes to request: it is published as `scopes_supported` and as `scope="openid profile"` in both `401` challenges. Without it, clients such as claude.ai request every scope the authorization server lists, and Keycloak refuses the whole request with `Invalid scopes` unless each one is assigned to the client. The gateway does not check the token's `scope` claim; the list is only a hint. Each entry must be an RFC 6749 scope token, without duplicates.
+- On Keycloak, every listed scope must be assigned to the MCP client (Default or Optional), or Keycloak answers `Invalid scopes`. Use `openid profile`: `profile` gives `preferred_username`, and `sub` comes from the client's Default `basic` scope without a request. Do not list `offline_access`: the MCP authorization spec says resource servers SHOULD NOT, because a refresh token is not a resource requirement. Clients add it themselves when the authorization server lists it (Claude does with Keycloak), so keep it assigned to the client as an Optional scope.
 - A path that starts with `path` but has `;`, `//`, `\`, dot-segments or encoded separators (for example `/mcp/..;/admin`) is answered `400` and never forwarded.
 - On `path` and below, only `Authorization: Bearer` is accepted. Session cookies and API keys are not consulted, and the gateway never redirects. `exclude_paths` cannot open this path.
 - The token must be signed by the cluster's provider, unexpired, and its `aud` must contain `resource`. Its `azp` may be any client of the realm, so one public client per resource with an audience mapper is enough.
@@ -227,7 +230,7 @@ clusters:
 | Case | Status | `WWW-Authenticate` |
 |---|---|---|
 | ambiguous path under `path` | 400 | none |
-| no bearer token | 401 | `Bearer resource_metadata="https://<host>/.well-known/oauth-protected-resource/mcp"` |
+| no bearer token | 401 | `Bearer resource_metadata="https://<host>/.well-known/oauth-protected-resource/mcp"`, plus `, scope="<scopes>"` when `scopes` is set |
 | invalid, expired or wrong `aud`, no `sub` | 401 | the same plus `, error="invalid_token", error_description="<reason>"` |
 | user not in `allowed_users` | 403 | none |
 | provider down | 503 | none |

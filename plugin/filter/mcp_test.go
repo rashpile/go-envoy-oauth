@@ -205,8 +205,8 @@ func newMCPGuardFilter(t *testing.T, h oauth.OAuthHandler) (*Filter, *captureDec
 }
 
 func TestMCPChallengeHeaders(t *testing.T) {
-	const url = "https://romanian.example/.well-known/oauth-protected-resource/mcp"
-	base := `Bearer resource_metadata="` + url + `"`
+	mcp := testMCPConfig(t)
+	base := `Bearer resource_metadata="` + mcp.MetadataURL + `"`
 	cases := map[string]string{
 		"":                       base,
 		oauth.ReasonVerifyFailed: base + `, error="invalid_token", error_description="token verification failed"`,
@@ -214,10 +214,21 @@ func TestMCPChallengeHeaders(t *testing.T) {
 		oauth.ReasonNoSubject:    base + `, error="invalid_token", error_description="token has no sub claim"`,
 	}
 	for reason, want := range cases {
-		got := mcpChallengeHeaders(url, reason)["www-authenticate"]
+		got := mcpChallengeHeaders(mcp, reason)["www-authenticate"]
 		if len(got) != 1 || got[0] != want {
 			t.Errorf("reason %q: www-authenticate = %v, want %q", reason, got, want)
 		}
+	}
+
+	// With scopes: scope follows resource_metadata, before error.
+	mcp.Scopes = []string{"openid", "profile", "offline_access"}
+	scoped := base + `, scope="openid profile offline_access"`
+	if got := mcpChallengeHeaders(mcp, "")["www-authenticate"]; len(got) != 1 || got[0] != scoped {
+		t.Errorf("no token, scopes: www-authenticate = %v, want %q", got, scoped)
+	}
+	want := scoped + `, error="invalid_token", error_description="token has no sub claim"`
+	if got := mcpChallengeHeaders(mcp, oauth.ReasonNoSubject)["www-authenticate"]; len(got) != 1 || got[0] != want {
+		t.Errorf("invalid token, scopes: www-authenticate = %v, want %q", got, want)
 	}
 }
 
@@ -638,6 +649,78 @@ func TestDecodeHeadersMCPRejectionLog(t *testing.T) {
 				if _, ok := fields[forbidden]; ok {
 					t.Errorf("rejection line carries claim field %q", forbidden)
 				}
+			}
+		})
+	}
+}
+
+func TestMCPMetadataReplyScopes(t *testing.T) {
+	mcp := testMCPConfig(t)
+
+	// Without scopes the document is today's, byte for byte.
+	_, body, _ := mcpMetadataReply("GET", mcp, "https://sso.example/realms/pl")
+	want := `{"resource":"https://romanian.example/mcp","authorization_servers":["https://sso.example/realms/pl"],"bearer_methods_supported":["header"]}`
+	if body != want {
+		t.Errorf("no scopes: body = %s, want %s", body, want)
+	}
+
+	mcp.Scopes = []string{"openid", "profile", "offline_access"}
+	_, body, _ = mcpMetadataReply("GET", mcp, "https://sso.example/realms/pl")
+	want = `{"resource":"https://romanian.example/mcp","authorization_servers":["https://sso.example/realms/pl"],"bearer_methods_supported":["header"],"scopes_supported":["openid","profile","offline_access"]}`
+	if body != want {
+		t.Errorf("scopes: body = %s, want %s", body, want)
+	}
+}
+
+// TestDecodeHeadersMCPScopeOnlyOn401 verifies that the scope hint reaches both
+// 401 challenges and no other MCP reply.
+func TestDecodeHeadersMCPScopeOnlyOn401(t *testing.T) {
+	const scopeParam = `scope="openid profile offline_access"`
+	cases := []struct {
+		name      string
+		path      string
+		auth      string
+		handler   oauth.OAuthHandler
+		configure func(f *Filter)
+		status    int
+		wantScope bool
+	}{
+		{name: "no token", handler: &mcpStubHandler{}, status: 401, wantScope: true},
+		{name: "invalid token", auth: "Bearer bad", handler: &mcpStubHandler{err: errors.New("bad")}, status: 401, wantScope: true},
+		{name: "user not allowed", auth: "Bearer ok", handler: &mcpStubHandler{sess: aliceSession()}, status: 403,
+			configure: func(f *Filter) {
+				cc := f.config.Clusters["pack"]
+				cc.AllowedUsers = []string{"bob"}
+				f.config.Clusters["pack"] = cc
+			}},
+		{name: "ambiguous path", path: "/mcp;x", auth: "Bearer ok", handler: &mcpStubHandler{}, status: 400},
+		{name: "provider down", auth: "Bearer ok", handler: &oauth.DownHandler{ProviderName: "keycloak"}, status: 503},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f, dec := newMCPGuardFilter(t, tc.handler)
+			cc := f.config.Clusters["pack"]
+			cc.MCP.Scopes = []string{"openid", "profile", "offline_access"}
+			f.config.Clusters["pack"] = cc
+			if tc.configure != nil {
+				tc.configure(f)
+			}
+			path := tc.path
+			if path == "" {
+				path = "/mcp"
+			}
+			hdr := &capturingHeaderMap{headers: map[string]string{":path": path}}
+			if tc.auth != "" {
+				hdr.headers["authorization"] = tc.auth
+			}
+
+			f.DecodeHeaders(hdr, true)
+			if dec.statusCode != tc.status {
+				t.Fatalf("status = %d, want %d", dec.statusCode, tc.status)
+			}
+			got := strings.Join(dec.headers["www-authenticate"], "\n")
+			if strings.Contains(got, scopeParam) != tc.wantScope {
+				t.Errorf("www-authenticate = %q, want scope present = %v", got, tc.wantScope)
 			}
 		})
 	}

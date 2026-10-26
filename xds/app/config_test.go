@@ -1902,3 +1902,70 @@ clients:
 		})
 	}
 }
+
+// TestLoadConfigMCPScopes verifies the optional mcp.scopes list.
+func TestLoadConfigMCPScopes(t *testing.T) {
+	tmpDir := t.TempDir()
+	load := func(t *testing.T, scopes string) (*GatewayConfig, error) {
+		t.Helper()
+		os.Clearenv()
+		path := filepath.Join(tmpDir, strings.ReplaceAll(t.Name(), "/", "_")+".yaml")
+		content := `
+plugin:
+  library_path: /app/filter.so
+providers:
+  keycloak:
+    issuer_url: https://sso.example/realms/pl
+    client_id: gateway
+    client_secret: secret
+default_provider: keycloak
+clients:
+  - id: pack
+    domain: romanian.example
+    address: app.internal
+    port: 8080
+    mcp:
+      path: /mcp
+      resource: https://romanian.example/mcp
+` + scopes
+		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+			t.Fatalf("write config: %v", err)
+		}
+		return LoadConfig(path)
+	}
+
+	t.Run("scopes kept in order", func(t *testing.T) {
+		cfg, err := load(t, "      scopes: [openid, profile, offline_access]\n")
+		if err != nil {
+			t.Fatalf("LoadConfig: %v", err)
+		}
+		if got := cfg.Clients[0].MCP.Scopes; strings.Join(got, " ") != "openid profile offline_access" {
+			t.Errorf("Scopes = %v", got)
+		}
+	})
+
+	t.Run("absent", func(t *testing.T) {
+		cfg, err := load(t, "")
+		if err != nil {
+			t.Fatalf("LoadConfig: %v", err)
+		}
+		if got := cfg.Clients[0].MCP.Scopes; len(got) != 0 {
+			t.Errorf("Scopes = %v, want none", got)
+		}
+	})
+
+	for name, scopes := range map[string]string{
+		"space":        `      scopes: ["open id"]`,
+		"double quote": `      scopes: ['open"id']`,
+		"backslash":    `      scopes: ['open\id']`,
+		"empty entry":  `      scopes: [openid, ""]`,
+		"non-ascii":    `      scopes: [profilé]`,
+		"duplicate":    `      scopes: [openid, profile, openid]`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := load(t, scopes+"\n"); err == nil {
+				t.Errorf("scopes %s: expected an error", scopes)
+			}
+		})
+	}
+}

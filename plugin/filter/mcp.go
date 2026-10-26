@@ -43,10 +43,12 @@ func mcpMetadataReply(method string, mcp *MCPConfig, issuer string) (int, string
 		Resource               string   `json:"resource"`
 		AuthorizationServers   []string `json:"authorization_servers"`
 		BearerMethodsSupported []string `json:"bearer_methods_supported"`
+		ScopesSupported        []string `json:"scopes_supported,omitempty"`
 	}{
 		Resource:               mcp.Resource,
 		AuthorizationServers:   []string{issuer},
 		BearerMethodsSupported: []string{"header"},
+		ScopesSupported:        mcp.Scopes,
 	})
 	return 200, string(body), map[string][]string{
 		"content-type":  {"application/json"},
@@ -103,10 +105,14 @@ var mcpErrorDescriptions = map[string]string{
 }
 
 // mcpChallengeHeaders builds the RFC 9728 401 challenge pointing MCP clients
-// at the protected resource metadata. reason is empty when no token was sent,
-// otherwise the class the token was rejected with.
-func mcpChallengeHeaders(metadataURL, reason string) map[string][]string {
-	challenge := `Bearer resource_metadata="` + metadataURL + `"`
+// at the protected resource metadata, plus the scopes to request when the
+// cluster lists them. reason is empty when no token was sent, otherwise the
+// class the token was rejected with.
+func mcpChallengeHeaders(mcp *MCPConfig, reason string) map[string][]string {
+	challenge := `Bearer resource_metadata="` + mcp.MetadataURL + `"`
+	if len(mcp.Scopes) > 0 {
+		challenge += `, scope="` + strings.Join(mcp.Scopes, " ") + `"`
+	}
 	if reason != "" {
 		desc, ok := mcpErrorDescriptions[reason]
 		if !ok {
@@ -183,7 +189,7 @@ func (f *Filter) handleMCPAuth(header api.RequestHeaderMap, mcp *MCPConfig, trac
 		f.logMCPRejection(header, mcpRejection{status: 401, reason: mcpReasonNoToken}, traceID)
 		f.recordClusterAuthFailure()
 		return f.recordAndSendLocalReply(401, "Unauthorized",
-			mcpChallengeHeaders(mcp.MetadataURL, ""), -1, "mcp_unauthorized")
+			mcpChallengeHeaders(mcp, ""), -1, "mcp_unauthorized")
 	}
 
 	h, err := f.getProviderHandler()
@@ -200,7 +206,7 @@ func (f *Filter) handleMCPAuth(header api.RequestHeaderMap, mcp *MCPConfig, trac
 		f.logMCPRejection(header, r, traceID)
 		f.recordClusterAuthFailure()
 		return f.recordAndSendLocalReply(401, "Unauthorized",
-			mcpChallengeHeaders(mcp.MetadataURL, r.reason), -1, "mcp_invalid_token")
+			mcpChallengeHeaders(mcp, r.reason), -1, "mcp_invalid_token")
 	}
 
 	if !f.isUserPermitted(sess) {

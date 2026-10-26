@@ -113,6 +113,23 @@ type ClientConfig struct {
 type MCPConfig struct {
 	Path     string `yaml:"path"`
 	Resource string `yaml:"resource"`
+	// Scopes tell MCP clients what to request; the filter does not check them.
+	Scopes []string `yaml:"scopes,omitempty"`
+}
+
+// isScopeToken reports whether s is an RFC 6749 scope-token:
+// 1*( %x21 / %x23-5B / %x5D-7E ). Mirrors the filter-side check.
+func isScopeToken(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c < 0x21 || c > 0x7e || c == '"' || c == '\\' {
+			return false
+		}
+	}
+	return true
 }
 
 // domainsCoverHost reports whether host is routed by one of the entries of a
@@ -189,6 +206,17 @@ func validateClientMCP(client ClientConfig) error {
 	}
 	if client.Domain != "" && !domainsCoverHost(client.Domain, u.Hostname()) {
 		return fmt.Errorf("client %q: mcp.resource host %q is not one of domain %q", client.ID, u.Hostname(), client.Domain)
+	}
+
+	seen := make(map[string]bool, len(mcp.Scopes))
+	for _, scope := range mcp.Scopes {
+		if !isScopeToken(scope) {
+			return fmt.Errorf("client %q: mcp.scopes entry %q is not a valid OAuth scope", client.ID, scope)
+		}
+		if seen[scope] {
+			return fmt.Errorf("client %q: mcp.scopes lists %q twice", client.ID, scope)
+		}
+		seen[scope] = true
 	}
 
 	path := strings.TrimRight(mcp.Path, "/")

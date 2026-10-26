@@ -242,10 +242,18 @@ func createHTTPConnectionManager(config *GatewayConfig) (*anypb.Any, error) {
 		}
 		clientConfig["provider"] = providerName
 		if client.MCP != nil {
-			clientConfig["mcp"] = map[string]interface{}{
+			mcp := map[string]interface{}{
 				"path":     client.MCP.Path,
 				"resource": client.MCP.Resource,
 			}
+			if len(client.MCP.Scopes) > 0 {
+				scopes := make([]interface{}, len(client.MCP.Scopes))
+				for i, scope := range client.MCP.Scopes {
+					scopes[i] = scope
+				}
+				mcp["scopes"] = scopes
+			}
+			clientConfig["mcp"] = mcp
 		}
 		clusters[client.ID] = clientConfig
 	}

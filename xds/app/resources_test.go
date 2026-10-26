@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	xdstype "github.com/cncf/xds/go/xds/type/v3"
@@ -737,7 +738,8 @@ func TestClientMCPSerialization(t *testing.T) {
 		},
 		Listener: ListenerConfig{Address: "0.0.0.0", Port: 8080},
 		Clients: []ClientConfig{
-			{ID: "pack", Address: "a", Port: 1, Prefix: "/", MCP: &MCPConfig{Path: "/mcp", Resource: "https://romanian.example/mcp"}},
+			{ID: "pack", Address: "a", Port: 1, Prefix: "/", MCP: &MCPConfig{Path: "/mcp", Resource: "https://romanian.example/mcp", Scopes: []string{"openid", "profile"}}},
+			{ID: "noscopes", Address: "d", Port: 1, Prefix: "/", MCP: &MCPConfig{Path: "/mcp", Resource: "https://english.example/mcp"}},
 			{ID: "plain", Address: "b", Port: 1, Prefix: "/"},
 			{ID: "off", Address: "c", Port: 1, Prefix: "/", Enabled: &disabled, MCP: &MCPConfig{Path: "/mcp", Resource: "https://off.example/mcp"}},
 		},
@@ -757,6 +759,16 @@ func TestClientMCPSerialization(t *testing.T) {
 	}
 	if got := mcp.Fields["resource"].GetStringValue(); got != "https://romanian.example/mcp" {
 		t.Errorf("mcp.resource = %q", got)
+	}
+	var scopes []string
+	for _, v := range mcp.Fields["scopes"].GetListValue().GetValues() {
+		scopes = append(scopes, v.GetStringValue())
+	}
+	if strings.Join(scopes, " ") != "openid profile" {
+		t.Errorf("mcp.scopes = %v, want [openid profile]", scopes)
+	}
+	if _, ok := clusters["noscopes"].GetStructValue().Fields["mcp"].GetStructValue().Fields["scopes"]; ok {
+		t.Error("clusters.noscopes.mcp must not carry scopes")
 	}
 	if _, ok := clusters["plain"].GetStructValue().Fields["mcp"]; ok {
 		t.Error("clusters.plain must not carry mcp")

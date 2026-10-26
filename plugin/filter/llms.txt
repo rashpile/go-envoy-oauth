@@ -179,8 +179,12 @@ protected resource metadata (RFC 9728), no authentication:
 ```json
 {"resource": "https://<host>/mcp",
  "authorization_servers": ["<issuer_url>"],
- "bearer_methods_supported": ["header"]}
+ "bearer_methods_supported": ["header"],
+ "scopes_supported": ["openid", "profile"]}
 ```
+
+`scopes_supported` is present only when the operator lists `mcp.scopes`.
+Request exactly those scopes; the gateway does not check them.
 
 `200 application/json`, `Cache-Control: public, max-age=3600`. Methods
 other than `GET` return `405` with `Allow: GET`.
@@ -246,7 +250,8 @@ the realm.
 - Path under `mcp.path` with `;`, `//`, dot-segments or encoded
   separators: `400`, never forwarded.
 - No token: `401` with
-  `WWW-Authenticate: Bearer resource_metadata="<metadata URL>"`.
+  `WWW-Authenticate: Bearer resource_metadata="<metadata URL>"`, plus
+  `scope="<space-separated scopes>"` when the operator lists them.
   Fetch the metadata, sign in at its `authorization_servers` entry
   (authorization code + PKCE, requesting the resource), retry with the
   token.
@@ -579,7 +584,7 @@ set.
 | `add_token` | bool | `false` | Forward the access token to the upstream as `X-Auth-Token` |
 | `provider` | string | (`default_provider`) | Provider this cluster authenticates against |
 | `allowed_users` | string[] | empty | Usernames permitted on this cluster (matched against preferred_username, case-insensitive). Use `["*"]` to allow any authenticated user. If empty, the user must match the resolved provider's `allowed_users`; otherwise access is denied. |
-| `mcp` | object | (none) | `{path, resource}`: bearer-only OAuth protected resource on `path`, token `aud` must contain `resource` (section 3.4) |
+| `mcp` | object | (none) | `{path, resource, scopes}`: bearer-only OAuth protected resource on `path`, token `aud` must contain `resource`; optional `scopes` are advertised, not enforced (section 3.4) |
 
 Operators may set `enabled: false` on a client in the gateway YAML; such clients are filtered out at the xDS layer and never appear in the `clusters` map below.
 

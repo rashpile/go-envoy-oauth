@@ -56,6 +56,47 @@ type MCPConfig struct {
 	Resource     string // resource identifier, e.g. "https://romanian.example/mcp"
 	MetadataPath string // mcpMetadataPrefix + resource URL path, served without auth
 	MetadataURL  string // absolute metadata URL advertised in WWW-Authenticate
+	// Scopes tell MCP clients what to request (scopes_supported and the 401
+	// scope parameter). The gateway does not check the token's scope claim.
+	Scopes []string
+}
+
+// isScopeToken reports whether s is an RFC 6749 scope-token:
+// 1*( %x21 / %x23-5B / %x5D-7E ).
+func isScopeToken(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c < 0x21 || c > 0x7e || c == '"' || c == '\\' {
+			return false
+		}
+	}
+	return true
+}
+
+// parseMCPScopes reads the optional scopes list. Absent or empty means none.
+func parseMCPScopes(raw interface{}) ([]string, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	list, ok := raw.([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("mcp.scopes must be a list")
+	}
+	var scopes []string
+	for _, item := range list {
+		scope, ok := item.(string)
+		if !ok || !isScopeToken(scope) {
+			return nil, fmt.Errorf("mcp.scopes entry %v is not a valid OAuth scope", item)
+		}
+		if slices.Contains(scopes, scope) {
+			return nil, fmt.Errorf("mcp.scopes lists %q twice", scope)
+		}
+		scopes = append(scopes, scope)
+	}
+	return scopes, nil
 }
 
 // parseMCPConfig reads and validates a cluster mcp block. The metadata URL is
@@ -96,8 +137,14 @@ func parseMCPConfig(raw map[string]interface{}) (*MCPConfig, error) {
 		return nil, fmt.Errorf("mcp.path %q must equal the path of mcp.resource %q", path, resource)
 	}
 
+	scopes, err := parseMCPScopes(raw["scopes"])
+	if err != nil {
+		return nil, err
+	}
+
 	metadataPath := mcpMetadataPrefix + strings.TrimRight(u.EscapedPath(), "/")
 	return &MCPConfig{
+		Scopes:       scopes,
 		Path:         path,
 		Resource:     resource,
 		MetadataPath: metadataPath,

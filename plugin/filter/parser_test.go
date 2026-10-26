@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -814,7 +815,7 @@ func TestParseClusterMCP(t *testing.T) {
 			MetadataPath: "/.well-known/oauth-protected-resource/mcp",
 			MetadataURL:  "https://romanian.example/.well-known/oauth-protected-resource/mcp",
 		}
-		if got == nil || *got != *want {
+		if !reflect.DeepEqual(got, want) {
 			t.Errorf("MCP = %+v, want %+v", got, want)
 		}
 	})
@@ -875,14 +876,14 @@ func TestMergeClusterMCP(t *testing.T) {
 		}
 		return conf
 	}
-	romanian := map[string]interface{}{"path": "/mcp", "resource": "https://romanian.example/mcp"}
+	romanian := map[string]interface{}{"path": "/mcp", "resource": "https://romanian.example/mcp", "scopes": []interface{}{"openid", "profile"}}
 	english := map[string]interface{}{"path": "/mcp", "resource": "https://english.example/mcp"}
 
 	parent := parse(mcpClusterConfig(romanian))
 
 	merged := p.Merge(parent, parse(baseConfig())).(*OAuthConfig)
-	if mcp := merged.Clusters["pack"].MCP; mcp == nil || mcp.Resource != "https://romanian.example/mcp" {
-		t.Errorf("parent only: MCP = %+v, want the parent block", mcp)
+	if mcp := merged.Clusters["pack"].MCP; mcp == nil || mcp.Resource != "https://romanian.example/mcp" || !slices.Equal(mcp.Scopes, []string{"openid", "profile"}) {
+		t.Errorf("parent only: MCP = %+v, want the parent block with its scopes", mcp)
 	}
 
 	merged = p.Merge(parent, parse(mcpClusterConfig(english))).(*OAuthConfig)
@@ -895,5 +896,59 @@ func TestMergeClusterMCP(t *testing.T) {
 	merged = p.Merge(parse(baseConfig()), parse(childOnly)).(*OAuthConfig)
 	if mcp := merged.Clusters["other"].MCP; mcp == nil || mcp.Resource != "https://english.example/mcp" {
 		t.Errorf("child-only cluster: MCP = %+v, want the child block", mcp)
+	}
+}
+
+// TestParseClusterMCPScopes verifies the optional scopes list of the mcp block.
+func TestParseClusterMCPScopes(t *testing.T) {
+	p := &Parser{}
+	block := func(scopes interface{}) map[string]interface{} {
+		m := map[string]interface{}{"path": "/mcp", "resource": "https://romanian.example/mcp"}
+		if scopes != nil {
+			m["scopes"] = scopes
+		}
+		return m
+	}
+
+	t.Run("scopes kept in config order", func(t *testing.T) {
+		conf, err := p.parseRawConfig(buildAny(t, mcpClusterConfig(block([]interface{}{"openid", "profile", "offline_access"}))))
+		if err != nil {
+			t.Fatalf("parseRawConfig: %v", err)
+		}
+		got := conf.Clusters["pack"].MCP.Scopes
+		if !slices.Equal(got, []string{"openid", "profile", "offline_access"}) {
+			t.Errorf("Scopes = %v", got)
+		}
+	})
+
+	t.Run("absent and empty mean no scopes", func(t *testing.T) {
+		for _, scopes := range []interface{}{nil, []interface{}{}} {
+			conf, err := p.parseRawConfig(buildAny(t, mcpClusterConfig(block(scopes))))
+			if err != nil {
+				t.Fatalf("parseRawConfig(%v): %v", scopes, err)
+			}
+			if got := conf.Clusters["pack"].MCP.Scopes; got != nil {
+				t.Errorf("Scopes(%v) = %v, want nil", scopes, got)
+			}
+		}
+	})
+
+	invalid := map[string]interface{}{
+		"empty entry":  []interface{}{"openid", ""},
+		"space":        []interface{}{"open id"},
+		"double quote": []interface{}{`open"id`},
+		"backslash":    []interface{}{`open\id`},
+		"non-ascii":    []interface{}{"profilé"},
+		"control char": []interface{}{"open\tid"},
+		"duplicate":    []interface{}{"openid", "profile", "openid"},
+		"non-string":   []interface{}{"openid", 7.0},
+		"not a list":   "openid profile",
+	}
+	for name, scopes := range invalid {
+		t.Run(name, func(t *testing.T) {
+			if _, err := p.parseRawConfig(buildAny(t, mcpClusterConfig(block(scopes)))); err == nil {
+				t.Errorf("scopes %#v: expected an error", scopes)
+			}
+		})
 	}
 }
