@@ -10,11 +10,17 @@ import (
 	"go.uber.org/zap"
 )
 
-const asyncOperationTimeout = 30 * time.Second
+// asyncOperationTimeout bounds an async decode. The callback gets a context
+// that is cancelled at this deadline; a reply it sends after the 504 is dropped
+// by the filter's reply gate.
+var asyncOperationTimeout = 30 * time.Second
+
+// asyncDecodeFunc is the work handleAsyncDecodeHeaders runs off the request
+// thread. ctx is cancelled when the async timeout fires.
+type asyncDecodeFunc func(ctx context.Context, header api.RequestHeaderMap, path string, traceID string) api.StatusType
 
 func (f *Filter) handleAsyncDecodeHeaders(
-	header api.RequestHeaderMap, path string, traceID string,
-	callback func(header api.RequestHeaderMap, path string, traceID string) api.StatusType) api.StatusType {
+	header api.RequestHeaderMap, path string, traceID string, callback asyncDecodeFunc) api.StatusType {
 	ctx, cancel := context.WithTimeout(context.Background(), asyncOperationTimeout)
 	go func() {
 		defer cancel()
@@ -26,7 +32,7 @@ func (f *Filter) handleAsyncDecodeHeaders(
 			// releases the outer goroutine instead of leaving it on the timeout.
 			defer close(done)
 			defer f.callbacks.DecoderFilterCallbacks().RecoverPanic()
-			done <- callback(header, path, traceID)
+			done <- callback(ctx, header, path, traceID)
 		}()
 
 		select {

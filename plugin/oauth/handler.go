@@ -319,7 +319,7 @@ func (h *OAuthHandlerImpl) HandleCallback(header api.RequestHeaderMap, query str
 
 	// Exchange code with PKCE verifier (D-04, D-05).
 	oauth2Config := h.GetOAuthConfig(header)
-	token, err := oauth2Config.Exchange(context.Background(), code, oauth2.VerifierOption(pa.CodeVerifier))
+	token, err := oauth2Config.Exchange(withIssuerHTTPClient(context.Background()), code, oauth2.VerifierOption(pa.CodeVerifier))
 	if err != nil {
 		metrics.RecordLogin(idp, "failure", metrics.ClassifyLoginError(err))
 		metrics.RecordCallbackDuration(idp, time.Since(startTime).Seconds())
@@ -579,7 +579,7 @@ func fetchOIDCConfig(issuerURL string) (*OIDCProvider, error) {
 
 	// Create HTTP client with timeout
 	client := &http.Client{
-		Timeout: 10 * time.Second,
+		Timeout: oidcHTTPTimeout,
 	}
 
 	// Fetch configuration
@@ -722,7 +722,7 @@ func (h *OAuthHandlerImpl) refreshAndStore(sess *session.Session) (*session.Sess
 	// requests for this session wait on this call (singleflight).
 	ctx, cancel := context.WithTimeout(context.Background(), tokenRefreshTimeout)
 	defer cancel()
-	token, err := h.getOAuth2Config().TokenSource(ctx, &oauth2.Token{
+	token, err := h.getOAuth2Config().TokenSource(withIssuerHTTPClient(ctx), &oauth2.Token{
 		RefreshToken: sess.RefreshToken,
 	}).Token()
 	if err != nil {
@@ -869,7 +869,7 @@ func (h *OAuthHandlerImpl) ExchangeRefreshToken(ctx context.Context, refreshToke
 	idp := h.providerName
 
 	// Use OAuth2 token endpoint to exchange refresh token
-	tokenSource := h.getOAuth2Config().TokenSource(ctx, &oauth2.Token{
+	tokenSource := h.getOAuth2Config().TokenSource(withIssuerHTTPClient(ctx), &oauth2.Token{
 		RefreshToken: refreshToken,
 	})
 

@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -21,9 +22,11 @@ import (
 
 // testIssuer is a minimal OIDC issuer: discovery document, JWKS, and RS256 signing.
 type testIssuer struct {
-	srv       *httptest.Server
-	key       *rsa.PrivateKey
-	jwksDelay time.Duration // set before the first validation to stall /jwks
+	srv           *httptest.Server
+	key           *rsa.PrivateKey
+	jwksDelay     time.Duration // set before the first validation to stall /jwks
+	discoveryFail atomic.Bool   // answer discovery with 500
+	discoveryHits atomic.Int32  // discovery requests served
 }
 
 func newTestIssuer(t *testing.T) *testIssuer {
@@ -35,6 +38,11 @@ func newTestIssuer(t *testing.T) *testIssuer {
 	ti := &testIssuer{key: key}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, _ *http.Request) {
+		ti.discoveryHits.Add(1)
+		if ti.discoveryFail.Load() {
+			http.Error(w, "down", http.StatusInternalServerError)
+			return
+		}
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"issuer":                                ti.srv.URL,
 			"authorization_endpoint":                ti.srv.URL + "/auth",
@@ -341,5 +349,32 @@ func TestValidateTokenForAudienceTimesOutOnStalledIssuer(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("validation still blocked after 5s: the JWKS fetch has no timeout")
+	}
+}
+
+// TestCheckRefreshBacksOffAfterFailure verifies that a failed provider refresh
+// is retried after refreshRetryDelay, not on every token validation.
+func TestCheckRefreshBacksOffAfterFailure(t *testing.T) {
+	ti := newTestIssuer(t)
+	v, err := NewTokenValidator(ti.srv.URL, "gateway", zap.NewNop())
+	if err != nil {
+		t.Fatalf("NewTokenValidator: %v", err)
+	}
+	ti.discoveryFail.Store(true)
+	start := ti.discoveryHits.Load()
+
+	v.mu.Lock()
+	v.lastRefresh = time.Now().Add(-2 * v.refreshAfter)
+	v.mu.Unlock()
+
+	v.checkRefresh(context.Background())
+	v.checkRefresh(context.Background())
+	v.checkRefresh(context.Background())
+
+	if got := ti.discoveryHits.Load() - start; got != 1 {
+		t.Errorf("discovery requests after a failed refresh = %d, want 1 (retry is delayed)", got)
+	}
+	if provider, verifier := v.current(); provider == nil || verifier == nil {
+		t.Error("a failed refresh must keep the current provider and verifier")
 	}
 }

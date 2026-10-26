@@ -916,6 +916,7 @@ type captureDecoderCallbacks struct {
 	details    string
 	called     bool
 	continued  bool
+	replies    int
 	panicked   interface{}
 	// done, when set, is signalled after a reply, a Continue or a recovered
 	// panic, so tests can wait for handlers that run off the request thread.
@@ -943,6 +944,7 @@ func (c *captureDecoderCallbacks) RecoverPanic() {
 func (c *captureDecoderCallbacks) SendLocalReply(code int, body string,
 	headers map[string][]string, grpcStatus int64, details string) {
 	c.called = true
+	c.replies++
 	c.statusCode = code
 	c.body = body
 	c.headers = headers

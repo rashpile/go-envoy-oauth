@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/envoyproxy/envoy/contrib/golang/common/go/api"
@@ -41,6 +42,27 @@ type Filter struct {
 	// SSO script injection
 	shouldInjectSSO bool
 	currentSession  *session.Session
+	// replies lets one local reply through per stream (see replyGate)
+	replies replyGate
+}
+
+// replyGate lets only the first local reply on a stream through. An async
+// handler and its timeout can both try to answer the same request; the one
+// that comes second is dropped instead of answering a finished stream.
+type replyGate struct {
+	mu      sync.Mutex
+	replied bool
+}
+
+// claim reports whether the caller may send the reply.
+func (g *replyGate) claim() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.replied {
+		return false
+	}
+	g.replied = true
+	return true
 }
 
 // NewFilter creates a new filter instance
@@ -74,6 +96,8 @@ func NewFilter(config *OAuthConfig, callbacks api.FilterCallbackHandler) (*Filte
 			filter.requestStart = time.Time{}
 		}
 	})
+
+	filter.errorHandler.claim = filter.replies.claim
 
 	return filter, nil
 }
@@ -129,6 +153,13 @@ func (f *Filter) verifySessionProvider(sess *session.Session) (bool, string) {
 // properly tracked in metrics, closing the gap where SendLocalReply bypasses EncodeHeaders.
 func (f *Filter) recordAndSendLocalReply(statusCode int, bodyText string,
 	headers map[string][]string, grpcStatus int64, details string) api.StatusType {
+
+	if !f.replies.claim() {
+		f.logger.Debug("Dropping a second local reply on an answered stream",
+			zap.Int("status_code", statusCode),
+			zap.String("details", details))
+		return api.LocalReply
+	}
 
 	// Record metrics and access log if request tracking is active
 	if !f.requestStart.IsZero() {
@@ -398,7 +429,7 @@ func (f *Filter) handleUnauthenticatedRequest(header api.RequestHeaderMap, path 
 	}
 }
 
-func (f *Filter) handleDecodeHeaders(header api.RequestHeaderMap, path string, traceID string) api.StatusType {
+func (f *Filter) handleDecodeHeaders(ctx context.Context, header api.RequestHeaderMap, path string, traceID string) api.StatusType {
 
 	// Handle OAuth endpoints
 	if strings.HasPrefix(path, "/oauth/") {
@@ -426,7 +457,7 @@ func (f *Filter) handleDecodeHeaders(header api.RequestHeaderMap, path string, t
 			}
 
 			// Exchange refresh token for access token
-			accessToken, err := apiHandler.ExchangeRefreshToken(context.Background(), apiToken)
+			accessToken, err := apiHandler.ExchangeRefreshToken(ctx, apiToken)
 			if err != nil {
 				// Record API key authentication failure with classified reason
 				reason := metrics.ClassifyAPIKeyError(err)
@@ -447,7 +478,7 @@ func (f *Filter) handleDecodeHeaders(header api.RequestHeaderMap, path string, t
 				// If API token came from query parameter, create session and redirect
 				if f.isAPITokenFromQuery(header) {
 					// Validate the access token to get user info
-					sess, err := apiHandler.ValidateBearerToken(context.Background(), accessToken)
+					sess, err := apiHandler.ValidateBearerToken(ctx, accessToken)
 					if err != nil {
 						f.logger.Error("Failed to validate access token for session creation",
 							zap.String("trace_id", traceID),
@@ -524,7 +555,7 @@ func (f *Filter) handleDecodeHeaders(header api.RequestHeaderMap, path string, t
 				zap.String("trace_id", traceID))
 
 			// Validate the bearer token
-			session, err := bearerHandler.ValidateBearerToken(context.Background(), token)
+			session, err := bearerHandler.ValidateBearerToken(ctx, token)
 			if err != nil {
 				f.logger.Debug("Bearer token validation failed",
 					zap.String("trace_id", traceID),

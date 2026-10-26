@@ -183,7 +183,7 @@ func (f *Filter) logMCPRejection(header api.RequestHeaderMap, r mcpRejection, tr
 // whose aud contains the configured resource. Cookies and API keys are not
 // consulted and the client is never redirected: MCP clients follow the
 // WWW-Authenticate challenge instead.
-func (f *Filter) handleMCPAuth(header api.RequestHeaderMap, mcp *MCPConfig, traceID string) api.StatusType {
+func (f *Filter) handleMCPAuth(ctx context.Context, header api.RequestHeaderMap, mcp *MCPConfig, traceID string) api.StatusType {
 	token := f.extractBearerToken(header)
 	if token == "" {
 		f.logMCPRejection(header, mcpRejection{status: 401, reason: mcpReasonNoToken}, traceID)
@@ -200,7 +200,7 @@ func (f *Filter) handleMCPAuth(header api.RequestHeaderMap, mcp *MCPConfig, trac
 			map[string][]string{"content-type": {"text/plain"}}, -1, "provider_unavailable")
 	}
 
-	sess, err := h.ValidateBearerTokenForResource(context.Background(), token, mcp.Resource)
+	sess, err := h.ValidateBearerTokenForResource(ctx, token, mcp.Resource)
 	if err != nil {
 		r := tokenRejection(err)
 		f.logMCPRejection(header, r, traceID)

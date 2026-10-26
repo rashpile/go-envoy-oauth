@@ -1,6 +1,7 @@
 package oauth
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -134,4 +135,72 @@ func TestOfflineCallbackRequiresStoredVerifier(t *testing.T) {
 	if called.Load() {
 		t.Error("token endpoint was called without a stored verifier")
 	}
+}
+
+// TestTokenEndpointCallsAreBounded verifies that a token endpoint that never
+// answers fails the code exchange and the refresh-token exchange after the
+// issuer HTTP timeout instead of blocking forever.
+func TestTokenEndpointCallsAreBounded(t *testing.T) {
+	old := oidcHTTPTimeout
+	oidcHTTPTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { oidcHTTPTimeout = old })
+
+	stop := make(chan struct{})
+	stalled := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-stop:
+		case <-r.Context().Done():
+		}
+	}))
+	defer stalled.Close()
+	defer close(stop) // runs first: release handlers so Close does not wait
+
+	h := &OAuthHandlerImpl{
+		config:       &OIDCConfig{ClientID: "gateway", ProviderName: "keycloak"},
+		providerName: "keycloak",
+		oauth2Config: &oauth2.Config{
+			ClientID:    "gateway",
+			RedirectURL: "/oauth/callback",
+			Endpoint: oauth2.Endpoint{
+				AuthURL:   "https://idp.example.com/auth",
+				TokenURL:  stalled.URL,
+				AuthStyle: oauth2.AuthStyleInParams,
+			},
+		},
+		sessionStore:      session.NewInMemorySessionStore(),
+		refreshTokenCache: make(map[string]*tokenCacheEntry),
+		logger:            zap.NewNop(),
+	}
+	oh, err := NewOfflineTokenHandler(h, zap.NewNop())
+	if err != nil {
+		t.Fatalf("NewOfflineTokenHandler: %v", err)
+	}
+
+	within := func(name string, call func() bool) {
+		t.Helper()
+		done := make(chan bool, 1)
+		go func() { done <- call() }()
+		select {
+		case failed := <-done:
+			if !failed {
+				t.Errorf("%s: succeeded against a stalled token endpoint", name)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s: still blocked after 5s, the token endpoint call has no timeout", name)
+		}
+	}
+
+	within("refresh-token exchange", func() bool {
+		_, err := h.ExchangeRefreshToken(context.Background(), "rt")
+		return err != nil
+	})
+
+	hdr := newMockHeaderMap()
+	hdr.headers[":authority"] = "app.example.com"
+	_, _, headers := oh.HandleOfflineAuthRedirect(hdr)
+	authURL, _ := url.Parse(headers["Location"][0])
+	within("offline code exchange", func() bool {
+		status, _, _ := oh.HandleOfflineCallback(hdr, url.Values{"state": {authURL.Query().Get("state")}, "code": {"c"}}.Encode())
+		return status != http.StatusOK
+	})
 }

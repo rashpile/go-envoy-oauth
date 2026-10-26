@@ -39,7 +39,7 @@ func (f *Filter) isWebSocketPathExcluded(path, cluster string) bool {
 // handleWebSocketAuth authenticates WebSocket upgrade requests
 // Unlike regular HTTP requests, WebSocket handshakes cannot follow redirects,
 // so we return 401 Unauthorized instead of redirecting to login
-func (f *Filter) handleWebSocketAuth(header api.RequestHeaderMap, path string, traceID string) api.StatusType {
+func (f *Filter) handleWebSocketAuth(ctx context.Context, header api.RequestHeaderMap, path string, traceID string) api.StatusType {
 	// Check for bearer token authentication first (common for WebSocket)
 	if f.config.EnableBearerToken {
 		token := f.extractBearerToken(header)
@@ -55,7 +55,7 @@ func (f *Filter) handleWebSocketAuth(header api.RequestHeaderMap, path string, t
 				return f.handleAuthFailure(503, "Service Unavailable: Authentication service temporarily unavailable")
 			}
 
-			session, err := wsHandler.ValidateBearerToken(context.Background(), token)
+			session, err := wsHandler.ValidateBearerToken(ctx, token)
 			if err != nil {
 				f.logger.Debug("WebSocket: Bearer token validation failed",
 					zap.String("trace_id", traceID),

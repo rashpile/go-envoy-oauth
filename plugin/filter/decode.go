@@ -1,6 +1,7 @@
 package filter
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -64,11 +65,11 @@ func (f *Filter) DecodeHeaders(header api.RequestHeaderMap, endStream bool) api.
 		if matchesMCPPath(path, mcp) {
 			if f.extractBearerToken(header) != "" {
 				return f.handleAsyncDecodeHeaders(header, path, traceID,
-					func(h api.RequestHeaderMap, _ string, t string) api.StatusType {
-						return f.handleMCPAuth(h, mcp, t)
+					func(ctx context.Context, h api.RequestHeaderMap, _ string, t string) api.StatusType {
+						return f.handleMCPAuth(ctx, h, mcp, t)
 					})
 			}
-			return f.handleMCPAuth(header, mcp, traceID)
+			return f.handleMCPAuth(context.Background(), header, mcp, traceID)
 		}
 	}
 
@@ -101,7 +102,7 @@ func (f *Filter) DecodeHeaders(header api.RequestHeaderMap, endStream bool) api.
 		if f.hasBearerToken(header) {
 			return f.handleAsyncDecodeHeaders(header, path, traceID, f.handleWebSocketAuth)
 		}
-		return f.handleWebSocketAuth(header, path, traceID)
+		return f.handleWebSocketAuth(context.Background(), header, path, traceID)
 	}
 
 	// Safety check: registry must be non-nil (guaranteed if Parse() succeeded)
@@ -114,7 +115,7 @@ func (f *Filter) DecodeHeaders(header api.RequestHeaderMap, endStream bool) api.
 	if f.hasBearerToken(header) || (f.config.EnableAPIKey && f.config.EnableBearerToken && f.extractAPIToken(header) != "") {
 		return f.handleAsyncDecodeHeaders(header, path, traceID, f.handleDecodeHeaders)
 	}
-	return f.handleDecodeHeaders(header, path, traceID)
+	return f.handleDecodeHeaders(context.Background(), header, path, traceID)
 }
 
 // hasBearerToken reports whether the request carries a bearer token the

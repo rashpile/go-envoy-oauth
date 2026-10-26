@@ -13,14 +13,24 @@ import (
 	"golang.org/x/oauth2"
 )
 
-// oidcHTTPTimeout bounds every request to the issuer (discovery, JWKS,
-// userinfo). Without it a stalled issuer blocks token validation forever.
+// oidcHTTPTimeout bounds each request to the issuer: discovery and JWKS (via
+// oidcClientContext), userinfo, and the token endpoint (code exchange, refresh)
+// via withIssuerHTTPClient. Without it a stalled issuer blocks the caller forever.
 var oidcHTTPTimeout = 10 * time.Second
+
+// refreshRetryDelay is how long checkRefresh waits after a failed refresh.
+var refreshRetryDelay = 5 * time.Minute
+
+// withIssuerHTTPClient returns ctx carrying the bounded HTTP client. go-oidc
+// and golang.org/x/oauth2 both read it (oauth2.HTTPClient key).
+func withIssuerHTTPClient(ctx context.Context) context.Context {
+	return oidc.ClientContext(ctx, &http.Client{Timeout: oidcHTTPTimeout})
+}
 
 // oidcClientContext carries the bounded HTTP client to go-oidc. The provider
 // keeps it for its remote key set, so JWKS fetches use it too.
 func oidcClientContext() context.Context {
-	return oidc.ClientContext(context.Background(), &http.Client{Timeout: oidcHTTPTimeout})
+	return withIssuerHTTPClient(context.Background())
 }
 
 // TokenValidator validates JWT bearer tokens using OIDC discovery
@@ -33,6 +43,15 @@ type TokenValidator struct {
 	mu           sync.RWMutex
 	lastRefresh  time.Time
 	refreshAfter time.Duration
+	refreshing   bool // a refresh is in flight; guarded by mu
+}
+
+// current returns the provider and verifier under the read lock: checkRefresh
+// replaces both.
+func (v *TokenValidator) current() (*oidc.Provider, *oidc.IDTokenVerifier) {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	return v.provider, v.verifier
 }
 
 // TokenClaims represents the claims extracted from a validated token
@@ -90,7 +109,8 @@ func (v *TokenValidator) ValidateToken(ctx context.Context, token string) (*Toke
 	v.checkRefresh(ctx)
 
 	// Verify the token
-	idToken, err := v.verifier.Verify(ctx, token)
+	_, verifier := v.current()
+	idToken, err := verifier.Verify(ctx, token)
 	if err != nil {
 		v.logger.Debug("Token verification failed", zap.Error(err))
 		return nil, fmt.Errorf("token verification failed: %v", err)
@@ -139,7 +159,8 @@ func (v *TokenValidator) ValidateAccessToken(ctx context.Context, token string) 
 	// Create a verifier that skips some checks for access tokens.
 	// Keycloak access tokens carry aud=account, so the aud check is done below
 	// against azp as well.
-	accessTokenVerifier := v.provider.Verifier(&oidc.Config{
+	provider, _ := v.current()
+	accessTokenVerifier := provider.Verifier(&oidc.Config{
 		ClientID:          v.clientID,
 		SkipClientIDCheck: true,
 		SkipExpiryCheck:   false,
@@ -228,9 +249,7 @@ func (v *TokenValidator) ValidateTokenForAudience(ctx context.Context, token, au
 
 	v.checkRefresh(ctx)
 
-	v.mu.RLock()
-	provider := v.provider
-	v.mu.RUnlock()
+	provider, _ := v.current()
 
 	// go-oidc rejects the token unless aud contains ClientID.
 	idToken, err := provider.Verifier(&oidc.Config{ClientID: audience}).Verify(ctx, token)
@@ -273,26 +292,25 @@ func issuedToClient(azp string, aud []string, clientID string) bool {
 }
 
 // checkRefresh checks if the provider needs to be refreshed for key rotation
-func (v *TokenValidator) checkRefresh(ctx context.Context) {
-	v.mu.RLock()
-	needsRefresh := time.Since(v.lastRefresh) > v.refreshAfter
-	v.mu.RUnlock()
-
-	if !needsRefresh {
+func (v *TokenValidator) checkRefresh(_ context.Context) {
+	v.mu.Lock()
+	if v.refreshing || time.Since(v.lastRefresh) <= v.refreshAfter {
+		v.mu.Unlock()
 		return
 	}
+	v.refreshing = true
+	v.mu.Unlock()
+
+	// Discovery runs without the lock so validations keep using the current
+	// provider while the issuer is slow.
+	provider, err := oidc.NewProvider(oidcClientContext(), v.issuerURL)
 
 	v.mu.Lock()
 	defer v.mu.Unlock()
-
-	// Double-check after acquiring write lock
-	if time.Since(v.lastRefresh) <= v.refreshAfter {
-		return
-	}
-
-	// Try to refresh the provider (this will refresh JWKS)
-	provider, err := oidc.NewProvider(oidcClientContext(), v.issuerURL)
+	v.refreshing = false
 	if err != nil {
+		// Retry after refreshRetryDelay, not on every validation.
+		v.lastRefresh = time.Now().Add(refreshRetryDelay - v.refreshAfter)
 		v.logger.Error("Failed to refresh OIDC provider", zap.Error(err))
 		return
 	}
@@ -309,7 +327,8 @@ func (v *TokenValidator) checkRefresh(ctx context.Context) {
 
 // GetUserInfo fetches additional user information using the access token
 func (v *TokenValidator) GetUserInfo(ctx context.Context, accessToken string) (map[string]interface{}, error) {
-	userInfo, err := v.provider.UserInfo(ctx, oauth2StaticTokenSource(accessToken))
+	provider, _ := v.current()
+	userInfo, err := provider.UserInfo(withIssuerHTTPClient(ctx), oauth2StaticTokenSource(accessToken))
 	if err != nil {
 		return nil, fmt.Errorf("failed to get user info: %v", err)
 	}

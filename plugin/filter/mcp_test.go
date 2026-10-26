@@ -771,18 +771,22 @@ func (h *blockingHandler) ValidateBearerToken(_ context.Context, _ string) (*ses
 // it must not run on the worker thread that calls DecodeHeaders. DecodeHeaders
 // has to return api.Running while validation is still waiting.
 func TestDecodeHeadersValidatesTokensOffTheRequestThread(t *testing.T) {
+	noMCP := func(f *Filter) {
+		f.config.EnableBearerToken = true
+		cc := f.config.Clusters["pack"]
+		cc.MCP = nil
+		f.config.Clusters["pack"] = cc
+	}
 	cases := []struct {
 		name      string
 		path      string
+		headers   map[string]string
 		configure func(f *Filter)
 	}{
 		{name: "mcp path", path: "/mcp"},
-		{name: "plain bearer path", path: "/lessons", configure: func(f *Filter) {
-			f.config.EnableBearerToken = true
-			cc := f.config.Clusters["pack"]
-			cc.MCP = nil
-			f.config.Clusters["pack"] = cc
-		}},
+		{name: "plain bearer path", path: "/lessons", configure: noMCP},
+		{name: "websocket upgrade with bearer", path: "/ws", configure: noMCP,
+			headers: map[string]string{"connection": "Upgrade", "upgrade": "websocket"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -792,6 +796,9 @@ func TestDecodeHeadersValidatesTokensOffTheRequestThread(t *testing.T) {
 				tc.configure(f)
 			}
 			hdr := &capturingHeaderMap{headers: map[string]string{":path": tc.path, "authorization": "Bearer ok"}}
+			for k, v := range tc.headers {
+				hdr.headers[k] = v
+			}
 
 			returned := make(chan api.StatusType, 1)
 			go func() { returned <- f.DecodeHeaders(hdr, true) }()

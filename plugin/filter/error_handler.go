@@ -14,6 +14,12 @@ type ErrorHandler struct {
 	logger        *zap.Logger
 	callbacks     api.FilterCallbackHandler
 	recordMetrics func(statusCode int) // callback to record metrics before sending reply
+	claim         func() bool          // optional; false means the stream was already answered
+}
+
+// mayReply reports whether this handler may answer the stream.
+func (eh *ErrorHandler) mayReply() bool {
+	return eh.claim == nil || eh.claim()
 }
 
 // NewErrorHandler creates a new error handler
@@ -27,6 +33,9 @@ func NewErrorHandler(logger *zap.Logger, callbacks api.FilterCallbackHandler, re
 
 // HandleIDPUnavailable returns a user-friendly error page when IDP is unavailable
 func (eh *ErrorHandler) HandleIDPUnavailable() api.StatusType {
+	if !eh.mayReply() {
+		return api.LocalReply
+	}
 	eh.logger.Warn("Identity Provider is temporarily unavailable")
 
 	// Record metrics before sending reply
@@ -121,6 +130,9 @@ func (eh *ErrorHandler) HandleIDPUnavailable() api.StatusType {
 
 // HandleAuthFailure creates appropriate response for authentication failures
 func (eh *ErrorHandler) HandleAuthFailure(statusCode int, message string) api.StatusType {
+	if !eh.mayReply() {
+		return api.LocalReply
+	}
 	eh.logger.Debug("Authentication failure",
 		zap.Int("status_code", statusCode),
 		zap.String("message", message))
@@ -148,6 +160,9 @@ func (eh *ErrorHandler) HandleAuthFailure(statusCode int, message string) api.St
 
 // HandleAccessDenied returns the access denied page
 func (eh *ErrorHandler) HandleAccessDenied() api.StatusType {
+	if !eh.mayReply() {
+		return api.LocalReply
+	}
 	eh.logger.Info("Rendering access denied page")
 
 	// Record metrics before sending reply

@@ -539,7 +539,7 @@ func (h *OfflineTokenHandler) HandleOfflineCallback(header api.RequestHeaderMap,
 		oauth2Config.Scopes = append(oauth2Config.Scopes, "offline_access")
 	}
 
-	token, err := oauth2Config.Exchange(context.Background(), code, oauth2.AccessTypeOffline, oauth2.VerifierOption(verifier))
+	token, err := oauth2Config.Exchange(withIssuerHTTPClient(context.Background()), code, oauth2.AccessTypeOffline, oauth2.VerifierOption(verifier))
 	if err != nil {
 		h.logger.Error("Failed to exchange code for token", zap.Error(err))
 		return http.StatusInternalServerError, "Failed to obtain token", nil

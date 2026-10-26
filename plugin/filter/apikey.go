@@ -121,12 +121,19 @@ func (f *Filter) handleOfflineCallback(header api.RequestHeaderMap, path string)
 		return f.errorHandler.HandleIDPUnavailable()
 	}
 
-	statusCode, body, headers := offlineHandler.HandleOfflineCallback(header, query)
-	if headers == nil {
-		headers = map[string][]string{}
-	}
-	headers["Set-Cookie"] = append(headers["Set-Cookie"], f.stateSetCookie(state, "", offlineCallback, -1))
-	return f.recordAndSendLocalReply(statusCode, body, headers, 0, "")
+	// The code exchange calls the IdP, which may be served through this same
+	// Envoy: run it off the worker thread, like handleAsyncCallback.
+	clearState := f.stateSetCookie(state, "", offlineCallback, -1)
+	go func() {
+		defer f.callbacks.DecoderFilterCallbacks().RecoverPanic()
+		statusCode, body, headers := offlineHandler.HandleOfflineCallback(header, query)
+		if headers == nil {
+			headers = map[string][]string{}
+		}
+		headers["Set-Cookie"] = append(headers["Set-Cookie"], clearState)
+		f.recordAndSendLocalReply(statusCode, body, headers, 0, "")
+	}()
+	return api.Running
 }
 
 func (f *Filter) extractAPIToken(header api.RequestHeaderMap) string {

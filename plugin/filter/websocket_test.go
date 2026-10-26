@@ -1,6 +1,7 @@
 package filter
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -69,7 +70,7 @@ func wsUpgradeHeaders() *capturingHeaderMap {
 func TestWebSocketRevokedSessionGets401(t *testing.T) {
 	f, dec, h := newWebSocketTestFilter(t, errors.New("session revoked"))
 
-	f.handleWebSocketAuth(wsUpgradeHeaders(), "/ws", "trace")
+	f.handleWebSocketAuth(context.Background(), wsUpgradeHeaders(), "/ws", "trace")
 
 	select {
 	case <-h.validateCalls:
@@ -93,7 +94,7 @@ func TestWebSocketRevokedSessionGets401(t *testing.T) {
 func TestWebSocketValidSessionContinuesAfterRevalidation(t *testing.T) {
 	f, dec, h := newWebSocketTestFilter(t, nil)
 
-	f.handleWebSocketAuth(wsUpgradeHeaders(), "/ws", "trace")
+	f.handleWebSocketAuth(context.Background(), wsUpgradeHeaders(), "/ws", "trace")
 
 	select {
 	case <-h.validateCalls:
@@ -115,7 +116,7 @@ func TestHTTPRevokedSessionIsRefused(t *testing.T) {
 	f, dec, h := newWebSocketTestFilter(t, errors.New("session revoked"))
 	hdr := &capturingHeaderMap{headers: map[string]string{":path": "/app"}}
 
-	f.handleDecodeHeaders(hdr, "/app", "trace")
+	f.handleDecodeHeaders(context.Background(), hdr, "/app", "trace")
 
 	select {
 	case <-h.validateCalls:
@@ -139,7 +140,7 @@ func TestHTTPValidSessionContinuesAfterRevalidation(t *testing.T) {
 	f, dec, h := newWebSocketTestFilter(t, nil)
 	hdr := &capturingHeaderMap{headers: map[string]string{":path": "/app"}}
 
-	f.handleDecodeHeaders(hdr, "/app", "trace")
+	f.handleDecodeHeaders(context.Background(), hdr, "/app", "trace")
 
 	select {
 	case <-h.validateCalls:

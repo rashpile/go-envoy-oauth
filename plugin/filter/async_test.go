@@ -1,6 +1,7 @@
 package filter
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -100,7 +101,7 @@ func TestAsyncDecodeHeadersRecoversCallbackPanic(t *testing.T) {
 	}
 
 	got := f.handleAsyncDecodeHeaders(&capturingHeaderMap{headers: map[string]string{}}, "/private", "trace",
-		func(api.RequestHeaderMap, string, string) api.StatusType {
+		func(context.Context, api.RequestHeaderMap, string, string) api.StatusType {
 			var s []byte
 			_ = s[:32] // same failure shape as the old API-key cache key
 			return api.Continue
@@ -114,5 +115,73 @@ func TestAsyncDecodeHeadersRecoversCallbackPanic(t *testing.T) {
 	case code := <-dec.replied:
 		t.Errorf("unexpected local reply %d after recovered panic", code)
 	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+// TestAsyncTimeoutReplyIsTheOnlyReply verifies that when the async timeout
+// answers 504, the callback's context is cancelled and its late reply is
+// dropped instead of answering the stream a second time.
+func TestAsyncTimeoutReplyIsTheOnlyReply(t *testing.T) {
+	old := asyncOperationTimeout
+	asyncOperationTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { asyncOperationTimeout = old })
+
+	dec := &captureDecoderCallbacks{done: make(chan struct{}, 4)}
+	f := buildCallbackFilter(&captureCallbacks{decoder: dec})
+	release := make(chan struct{})
+	cancelled := make(chan struct{})
+
+	got := f.handleAsyncDecodeHeaders(&capturingHeaderMap{headers: map[string]string{}}, "/private", "trace",
+		func(ctx context.Context, _ api.RequestHeaderMap, _ string, _ string) api.StatusType {
+			<-ctx.Done()
+			close(cancelled)
+			<-release
+			return f.recordAndSendLocalReply(401, "late", nil, -1, "late")
+		})
+	if got != api.Running {
+		t.Fatalf("handleAsyncDecodeHeaders = %v, want api.Running", got)
+	}
+
+	select {
+	case <-dec.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("no timeout reply within 2s")
+	}
+	if dec.statusCode != 504 {
+		t.Fatalf("status = %d, want 504", dec.statusCode)
+	}
+	select {
+	case <-cancelled:
+	case <-time.After(time.Second):
+		t.Fatal("callback context was not cancelled by the timeout")
+	}
+
+	close(release)
+	select {
+	case <-dec.done:
+		t.Errorf("a second reply reached the stream (status %d)", dec.statusCode)
+	case <-time.After(200 * time.Millisecond):
+	}
+	if dec.replies != 1 {
+		t.Errorf("SendLocalReply calls = %d, want 1", dec.replies)
+	}
+}
+
+// TestErrorHandlerRespectsReplyGate verifies that the error pages share the
+// filter's one-reply-per-stream gate.
+func TestErrorHandlerRespectsReplyGate(t *testing.T) {
+	dec := &captureDecoderCallbacks{}
+	f, err := NewFilter(&OAuthConfig{Clusters: map[string]ClusterConfig{}}, &captureCallbacks{decoder: dec})
+	if err != nil {
+		t.Fatalf("NewFilter: %v", err)
+	}
+
+	f.recordAndSendLocalReply(401, "first", nil, -1, "first")
+	f.errorHandler.HandleAuthFailure(500, "second")
+	f.errorHandler.HandleIDPUnavailable()
+	f.errorHandler.HandleAccessDenied()
+
+	if dec.replies != 1 || dec.statusCode != 401 {
+		t.Errorf("replies = %d, last status = %d; want only the first 401", dec.replies, dec.statusCode)
 	}
 }
