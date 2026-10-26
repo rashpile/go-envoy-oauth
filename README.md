@@ -222,15 +222,20 @@ clusters:
 - On `path` and below, only `Authorization: Bearer` is accepted. Session cookies and API keys are not consulted, and the gateway never redirects. `exclude_paths` cannot open this path.
 - The token must be signed by the cluster's provider, unexpired, and its `aud` must contain `resource`. Its `azp` may be any client of the realm, so one public client per resource with an audience mapper is enough.
 - `allowed_users` applies as usual and defaults to deny, so set it (for example `["*"]`). The token needs a `preferred_username` claim.
+- The token needs a `sub` claim; the user ID passed upstream is built from it. On Keycloak 25 and later, `sub` comes from the `basic` client scope, so assign `basic` to the MCP client as a Default scope. Without it every token is rejected with `error_description="token has no sub claim"`.
 
 | Case | Status | `WWW-Authenticate` |
 |---|---|---|
 | ambiguous path under `path` | 400 | none |
 | no bearer token | 401 | `Bearer resource_metadata="https://<host>/.well-known/oauth-protected-resource/mcp"` |
-| invalid, expired or wrong `aud` | 401 | the same plus `, error="invalid_token"` |
+| invalid, expired or wrong `aud`, no `sub` | 401 | the same plus `, error="invalid_token", error_description="<reason>"` |
 | user not in `allowed_users` | 403 | none |
 | provider down | 503 | none |
 | valid | forwarded with the usual identity headers | - |
+
+`error_description` names only the class of the failure: `token verification failed` (signature, issuer, expiry or `aud`), `token claims could not be decoded`, or `token has no sub claim`.
+
+Every refused request on the MCP path logs one `MCP request rejected` line: at Info for a request without a token (the normal first step of the sign-in), at Warn otherwise. Its fields are `host`, `path`, `status`, `reason` (`no_token`, `verify_failed`, `claims_decode`, `no_subject`, `user_not_allowed`, `ambiguous_path`, `provider_down`), `error`, and the token's `azp`, `iss` and `aud` when they are known. The token itself and other claims are never logged. Read them with `docker logs envoy 2>&1 | grep "MCP request rejected"`.
 
 The metadata URL is built from `resource`, never from request headers. With the xDS server, the client must use `prefix: /` (the default) so the well-known path routes to it, and the host of `resource` must be one of the entries in the client's `domain` list (ports ignored, `*` and `*.suffix` match).
 

@@ -250,7 +250,11 @@ the realm.
   Fetch the metadata, sign in at its `authorization_servers` entry
   (authorization code + PKCE, requesting the resource), retry with the
   token.
-- Token rejected: `401` with the same header plus `error="invalid_token"`.
+- Token rejected: `401` with the same header plus `error="invalid_token"`
+  and `error_description` naming the class: `token verification failed`
+  (signature, issuer, expiry or `aud`), `token claims could not be
+  decoded`, or `token has no sub claim` (on Keycloak 25+, assign the
+  `basic` client scope to the client).
 - User not permitted by `allowed_users`: `403`, no challenge.
 - Success: forwarded with the identity headers from section 6.
 

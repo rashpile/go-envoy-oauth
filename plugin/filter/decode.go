@@ -57,9 +57,7 @@ func (f *Filter) DecodeHeaders(header api.RequestHeaderMap, endStream bool) api.
 			return f.handleMCPMetadata(header, mcp)
 		}
 		if isAmbiguousMCPPath(path, mcp) {
-			f.logger.Debug("Rejecting ambiguous path under the MCP path",
-				zap.String("path", sanitizePathForLogging(path)),
-				zap.String("trace_id", traceID))
+			f.logMCPRejection(header, mcpRejection{status: 400, reason: mcpReasonAmbiguousPath}, traceID)
 			return f.recordAndSendLocalReply(400, "Bad Request",
 				map[string][]string{"content-type": {"text/plain"}}, -1, "mcp_ambiguous_path")
 		}

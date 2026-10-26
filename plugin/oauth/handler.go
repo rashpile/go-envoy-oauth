@@ -797,7 +797,7 @@ func (h *OAuthHandlerImpl) ValidateBearerTokenForResource(ctx context.Context, t
 	claims, err := tv.ValidateTokenForAudience(ctx, token, resource)
 	if err != nil {
 		metrics.RecordTokenValidation(h.providerName, "invalid")
-		return nil, fmt.Errorf("token validation failed: %v", err)
+		return nil, fmt.Errorf("token validation failed: %w", err)
 	}
 	metrics.RecordTokenValidation(h.providerName, "valid")
 

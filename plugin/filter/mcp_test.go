@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -12,6 +14,9 @@ import (
 	"github.com/rashpile/go-envoy-oauth/plugin/metrics"
 	"github.com/rashpile/go-envoy-oauth/plugin/oauth"
 	"github.com/rashpile/go-envoy-oauth/plugin/session"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 const testMCPResource = "https://romanian.example/mcp"
@@ -201,13 +206,18 @@ func newMCPGuardFilter(t *testing.T, h oauth.OAuthHandler) (*Filter, *captureDec
 
 func TestMCPChallengeHeaders(t *testing.T) {
 	const url = "https://romanian.example/.well-known/oauth-protected-resource/mcp"
-	got := mcpChallengeHeaders(url, false)["www-authenticate"]
-	if len(got) != 1 || got[0] != `Bearer resource_metadata="`+url+`"` {
-		t.Errorf("no token: www-authenticate = %v", got)
+	base := `Bearer resource_metadata="` + url + `"`
+	cases := map[string]string{
+		"":                       base,
+		oauth.ReasonVerifyFailed: base + `, error="invalid_token", error_description="token verification failed"`,
+		oauth.ReasonClaimsDecode: base + `, error="invalid_token", error_description="token claims could not be decoded"`,
+		oauth.ReasonNoSubject:    base + `, error="invalid_token", error_description="token has no sub claim"`,
 	}
-	got = mcpChallengeHeaders(url, true)["www-authenticate"]
-	if len(got) != 1 || got[0] != `Bearer resource_metadata="`+url+`", error="invalid_token"` {
-		t.Errorf("token sent: www-authenticate = %v", got)
+	for reason, want := range cases {
+		got := mcpChallengeHeaders(url, reason)["www-authenticate"]
+		if len(got) != 1 || got[0] != want {
+			t.Errorf("reason %q: www-authenticate = %v, want %q", reason, got, want)
+		}
 	}
 }
 
@@ -237,7 +247,7 @@ func TestMatchesMCPPath(t *testing.T) {
 func TestDecodeHeadersMCPGuard(t *testing.T) {
 	const metadataURL = "https://romanian.example/.well-known/oauth-protected-resource/mcp"
 	challenge := `Bearer resource_metadata="` + metadataURL + `"`
-	invalidChallenge := challenge + `, error="invalid_token"`
+	invalidChallenge := challenge + `, error="invalid_token", error_description="token verification failed"`
 
 	cases := []struct {
 		name          string
@@ -508,6 +518,126 @@ func TestDecodeHeadersMCPAmbiguousPathRejected(t *testing.T) {
 			}
 			if h.validateCalls != 0 || h.getSessionCookieCalls != 0 {
 				t.Errorf("token validations = %d, cookie lookups = %d, want 0", h.validateCalls, h.getSessionCookieCalls)
+			}
+		})
+	}
+}
+
+// TestDecodeHeadersMCPRejectionLog verifies that every rejected /mcp request
+// leaves one "MCP request rejected" line an operator can read at Info, with
+// the reason class and never the token.
+func TestDecodeHeadersMCPRejectionLog(t *testing.T) {
+	const token = "secret-token-value"
+	tokenErr := func(reason string) error {
+		return fmt.Errorf("token validation failed: %w", &oauth.ResourceTokenError{
+			Reason: reason,
+			Azp:    "personal-mcp",
+			Iss:    "https://sso.example/realms/pl",
+			Aud:    []string{testMCPResource},
+			Err:    errors.New("detail for " + reason),
+		})
+	}
+	denied := aliceSession()
+	denied.Claims["azp"] = "personal-mcp"
+	denied.Claims["iss"] = "https://sso.example/realms/pl"
+	denied.Claims["aud"] = []string{testMCPResource}
+
+	cases := []struct {
+		name      string
+		path      string
+		auth      string
+		handler   oauth.OAuthHandler
+		configure func(f *Filter)
+		reason    string
+		status    int
+		level     zapcore.Level
+		wantError bool
+		wantAzp   bool
+	}{
+		{name: "no token", reason: "no_token", status: 401, level: zapcore.InfoLevel, handler: &mcpStubHandler{}},
+		{name: "verify failed", auth: "Bearer " + token, reason: oauth.ReasonVerifyFailed, status: 401, level: zapcore.WarnLevel,
+			handler: &mcpStubHandler{err: tokenErr(oauth.ReasonVerifyFailed)}, wantError: true, wantAzp: true},
+		{name: "no subject", auth: "Bearer " + token, reason: oauth.ReasonNoSubject, status: 401, level: zapcore.WarnLevel,
+			handler: &mcpStubHandler{err: tokenErr(oauth.ReasonNoSubject)}, wantError: true, wantAzp: true},
+		{name: "claims decode", auth: "Bearer " + token, reason: oauth.ReasonClaimsDecode, status: 401, level: zapcore.WarnLevel,
+			handler: &mcpStubHandler{err: tokenErr(oauth.ReasonClaimsDecode)}, wantError: true, wantAzp: true},
+		{name: "unclassified validation error", auth: "Bearer " + token, reason: oauth.ReasonVerifyFailed, status: 401, level: zapcore.WarnLevel,
+			handler: &mcpStubHandler{err: errors.New("bearer token validation not available")}, wantError: true},
+		{name: "user not allowed", auth: "Bearer " + token, reason: "user_not_allowed", status: 403, level: zapcore.WarnLevel,
+			handler: &mcpStubHandler{sess: denied}, wantAzp: true,
+			configure: func(f *Filter) {
+				cc := f.config.Clusters["pack"]
+				cc.AllowedUsers = []string{"bob"}
+				f.config.Clusters["pack"] = cc
+			}},
+		{name: "ambiguous path", path: "/mcp/..;/admin", auth: "Bearer " + token, reason: "ambiguous_path", status: 400, level: zapcore.WarnLevel,
+			handler: &mcpStubHandler{}},
+		{name: "provider down", auth: "Bearer " + token, reason: "provider_down", status: 503, level: zapcore.WarnLevel,
+			handler: &oauth.DownHandler{ProviderName: "keycloak"}, wantError: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f, _ := newMCPGuardFilter(t, tc.handler)
+			core, logs := observer.New(zapcore.DebugLevel)
+			f.logger = zap.New(core)
+			if tc.configure != nil {
+				tc.configure(f)
+			}
+			path := tc.path
+			if path == "" {
+				path = "/mcp"
+			}
+			hdr := &capturingHeaderMap{headers: map[string]string{":path": path, ":authority": "personal.example"}}
+			if tc.auth != "" {
+				hdr.headers["authorization"] = tc.auth
+			}
+
+			f.DecodeHeaders(hdr, true)
+
+			for _, e := range logs.All() {
+				if strings.Contains(e.Message, token) {
+					t.Errorf("log message %q contains the token", e.Message)
+				}
+				for k, v := range e.ContextMap() {
+					if strings.Contains(fmt.Sprint(v), token) {
+						t.Errorf("log field %s = %v contains the token", k, v)
+					}
+				}
+			}
+
+			lines := logs.FilterMessage("MCP request rejected").All()
+			if len(lines) != 1 {
+				t.Fatalf("got %d rejection lines, want 1 (all logs: %v)", len(lines), logs.All())
+			}
+			e := lines[0]
+			if e.Level != tc.level {
+				t.Errorf("level = %v, want %v", e.Level, tc.level)
+			}
+			fields := e.ContextMap()
+			if fields["reason"] != tc.reason {
+				t.Errorf("reason = %v, want %q", fields["reason"], tc.reason)
+			}
+			if fields["host"] != "personal.example" {
+				t.Errorf("host = %v, want personal.example", fields["host"])
+			}
+			if fields["status"] != int64(tc.status) {
+				t.Errorf("status = %v (%T), want %d", fields["status"], fields["status"], tc.status)
+			}
+			if _, ok := fields["error"]; ok != tc.wantError {
+				t.Errorf("error field present = %v, want %v (%v)", ok, tc.wantError, fields["error"])
+			}
+			if tc.wantAzp {
+				if fields["azp"] != "personal-mcp" || fields["iss"] != "https://sso.example/realms/pl" {
+					t.Errorf("azp/iss = %v/%v, want the token's values", fields["azp"], fields["iss"])
+				}
+				if aud, ok := fields["aud"].([]interface{}); !ok || len(aud) != 1 || aud[0] != testMCPResource {
+					t.Errorf("aud = %#v, want [%q]", fields["aud"], testMCPResource)
+				}
+			}
+			for _, forbidden := range []string{"preferred_username", "email", "user", "sub"} {
+				if _, ok := fields[forbidden]; ok {
+					t.Errorf("rejection line carries claim field %q", forbidden)
+				}
 			}
 		})
 	}

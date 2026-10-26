@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -200,6 +201,101 @@ func TestValidateTokenForAudience(t *testing.T) {
 			}
 			if err == nil {
 				t.Error("ValidateTokenForAudience: expected rejection, got nil error")
+			}
+		})
+	}
+}
+
+// TestValidateTokenForAudienceKeycloakWithoutBasicScope reproduces the token
+// Keycloak 25+ issues to a client without the "basic" client scope: valid
+// signature, issuer and aud, but no sub (basic adds sub and auth_time). It must
+// be rejected as no_subject, and the same token with sub must pass, so sub is
+// the only reason it fails.
+func TestValidateTokenForAudienceKeycloakWithoutBasicScope(t *testing.T) {
+	ti := newTestIssuer(t)
+	v, err := NewTokenValidator(ti.srv.URL, "gateway", zap.NewNop())
+	if err != nil {
+		t.Fatalf("NewTokenValidator: %v", err)
+	}
+	const resource = "https://personal.example/mcp"
+
+	evaluate := func() map[string]interface{} {
+		return map[string]interface{}{
+			"exp":                time.Now().Add(5 * time.Minute).Unix(),
+			"iat":                time.Now().Unix(),
+			"iss":                ti.srv.URL,
+			"aud":                resource, // single audience: a JSON string
+			"typ":                "Bearer",
+			"azp":                "personal-mcp",
+			"sid":                "sid-1",
+			"scope":              "openid profile",
+			"name":               "Alice Example",
+			"preferred_username": "alice",
+			"given_name":         "Alice",
+			"family_name":        "Example",
+		}
+	}
+
+	_, err = v.ValidateTokenForAudience(context.Background(), ti.sign(t, evaluate()), resource)
+	var rte *ResourceTokenError
+	if !errors.As(err, &rte) {
+		t.Fatalf("error = %v, want a *ResourceTokenError", err)
+	}
+	if rte.Reason != ReasonNoSubject {
+		t.Errorf("Reason = %q, want %q (err: %v)", rte.Reason, ReasonNoSubject, err)
+	}
+	if rte.Azp != "personal-mcp" || rte.Iss != ti.srv.URL || len(rte.Aud) != 1 || rte.Aud[0] != resource {
+		t.Errorf("azp/iss/aud = %q/%q/%v, want the token's values", rte.Azp, rte.Iss, rte.Aud)
+	}
+
+	withSub := evaluate()
+	withSub["sub"] = "user-1"
+	if _, err := v.ValidateTokenForAudience(context.Background(), ti.sign(t, withSub), resource); err != nil {
+		t.Errorf("same token with sub: unexpected error %v", err)
+	}
+}
+
+// TestValidateTokenForAudienceReasons pins the reason class of each rejection.
+func TestValidateTokenForAudienceReasons(t *testing.T) {
+	ti := newTestIssuer(t)
+	v, err := NewTokenValidator(ti.srv.URL, "gateway", zap.NewNop())
+	if err != nil {
+		t.Fatalf("NewTokenValidator: %v", err)
+	}
+	const resource = "https://personal.example/mcp"
+	valid := func(extra map[string]interface{}) map[string]interface{} {
+		c := map[string]interface{}{
+			"iss": ti.srv.URL, "sub": "user-1", "aud": resource, "azp": "personal-mcp",
+			"exp": time.Now().Add(5 * time.Minute).Unix(), "iat": time.Now().Unix(),
+		}
+		for k, val := range extra {
+			if val == nil {
+				delete(c, k)
+				continue
+			}
+			c[k] = val
+		}
+		return c
+	}
+
+	cases := []struct {
+		name   string
+		token  string
+		reason string
+	}{
+		{"malformed token", "x", ReasonVerifyFailed},
+		{"wrong aud", ti.sign(t, valid(map[string]interface{}{"aud": "https://english.example/mcp"})), ReasonVerifyFailed},
+		{"expired", ti.sign(t, valid(map[string]interface{}{"exp": time.Now().Add(-time.Minute).Unix()})), ReasonVerifyFailed},
+		{"no exp", ti.sign(t, valid(map[string]interface{}{"exp": nil})), ReasonVerifyFailed},
+		{"no sub", ti.sign(t, valid(map[string]interface{}{"sub": nil})), ReasonNoSubject},
+		{"claims of the wrong type", ti.sign(t, valid(map[string]interface{}{"email_verified": "yes"})), ReasonClaimsDecode},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := v.ValidateTokenForAudience(context.Background(), tc.token, resource)
+			var rte *ResourceTokenError
+			if !errors.As(err, &rte) || rte.Reason != tc.reason {
+				t.Errorf("error = %v, want reason %q", err, tc.reason)
 			}
 		})
 	}

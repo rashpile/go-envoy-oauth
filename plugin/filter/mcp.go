@@ -3,10 +3,13 @@ package filter
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 
 	"github.com/envoyproxy/envoy/contrib/golang/common/go/api"
+	"github.com/rashpile/go-envoy-oauth/plugin/oauth"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
 // clusterMCP returns the mcp block of the given cluster, or nil.
@@ -81,17 +84,93 @@ func isAmbiguousMCPPath(path string, mcp *MCPConfig) bool {
 	return strings.HasPrefix(base, mcp.Path) && hasAmbiguousSegments(base)
 }
 
+// Reasons an /mcp request is rejected outside token validation. Token
+// rejections use the oauth.Reason* classes.
+const (
+	mcpReasonNoToken        = "no_token"
+	mcpReasonUserNotAllowed = "user_not_allowed"
+	mcpReasonAmbiguousPath  = "ambiguous_path"
+	mcpReasonProviderDown   = "provider_down"
+)
+
+// mcpErrorDescriptions are the fixed error_description texts sent to the
+// client (RFC 6750 section 3). They name the reason class only; the
+// validator's error text stays in the gateway log.
+var mcpErrorDescriptions = map[string]string{
+	oauth.ReasonVerifyFailed: "token verification failed",
+	oauth.ReasonClaimsDecode: "token claims could not be decoded",
+	oauth.ReasonNoSubject:    "token has no sub claim",
+}
+
 // mcpChallengeHeaders builds the RFC 9728 401 challenge pointing MCP clients
-// at the protected resource metadata.
-func mcpChallengeHeaders(metadataURL string, tokenSent bool) map[string][]string {
+// at the protected resource metadata. reason is empty when no token was sent,
+// otherwise the class the token was rejected with.
+func mcpChallengeHeaders(metadataURL, reason string) map[string][]string {
 	challenge := `Bearer resource_metadata="` + metadataURL + `"`
-	if tokenSent {
-		challenge += `, error="invalid_token"`
+	if reason != "" {
+		desc, ok := mcpErrorDescriptions[reason]
+		if !ok {
+			desc = mcpErrorDescriptions[oauth.ReasonVerifyFailed]
+		}
+		challenge += `, error="invalid_token", error_description="` + desc + `"`
 	}
 	return map[string][]string{
 		"content-type":     {"text/plain"},
 		"www-authenticate": {challenge},
 	}
+}
+
+// mcpRejection describes a refused /mcp request for the operator log.
+// azp, iss and aud are the only token claims it may carry.
+type mcpRejection struct {
+	status int
+	reason string
+	err    error
+	azp    string
+	iss    string
+	aud    []string
+}
+
+// tokenRejection classifies a token validation error.
+func tokenRejection(err error) mcpRejection {
+	r := mcpRejection{status: 401, reason: oauth.ReasonVerifyFailed, err: err}
+	var rte *oauth.ResourceTokenError
+	if errors.As(err, &rte) {
+		r.reason, r.azp, r.iss, r.aud = rte.Reason, rte.Azp, rte.Iss, rte.Aud
+	}
+	return r
+}
+
+// logMCPRejection writes the one line per refused /mcp request that tells an
+// operator why it got 400/401/403/503. A request without a token is the
+// normal first step of the MCP sign-in, so it logs at Info; the rest at Warn.
+func (f *Filter) logMCPRejection(header api.RequestHeaderMap, r mcpRejection, traceID string) {
+	host, _ := header.Get(":authority")
+	path, _ := header.Get(":path")
+	fields := []zap.Field{
+		zap.String("host", host),
+		zap.String("path", sanitizePathForLogging(path)),
+		zap.Int("status", r.status),
+		zap.String("reason", r.reason),
+		zap.String("trace_id", traceID),
+	}
+	if r.err != nil {
+		fields = append(fields, zap.Error(r.err))
+	}
+	if r.azp != "" {
+		fields = append(fields, zap.String("azp", r.azp))
+	}
+	if r.iss != "" {
+		fields = append(fields, zap.String("iss", r.iss))
+	}
+	if len(r.aud) > 0 {
+		fields = append(fields, zap.Strings("aud", r.aud))
+	}
+	level := zapcore.WarnLevel
+	if r.reason == mcpReasonNoToken {
+		level = zapcore.InfoLevel
+	}
+	f.logger.Log(level, "MCP request rejected", fields...)
 }
 
 // handleMCPAuth authenticates a request to the MCP path with a bearer token
@@ -101,18 +180,15 @@ func mcpChallengeHeaders(metadataURL string, tokenSent bool) map[string][]string
 func (f *Filter) handleMCPAuth(header api.RequestHeaderMap, mcp *MCPConfig, traceID string) api.StatusType {
 	token := f.extractBearerToken(header)
 	if token == "" {
-		f.logger.Debug("MCP request without bearer token",
-			zap.String("trace_id", traceID))
+		f.logMCPRejection(header, mcpRejection{status: 401, reason: mcpReasonNoToken}, traceID)
 		f.recordClusterAuthFailure()
 		return f.recordAndSendLocalReply(401, "Unauthorized",
-			mcpChallengeHeaders(mcp.MetadataURL, false), -1, "mcp_unauthorized")
+			mcpChallengeHeaders(mcp.MetadataURL, ""), -1, "mcp_unauthorized")
 	}
 
 	h, err := f.getProviderHandler()
 	if err != nil {
-		f.logger.Error("Failed to resolve provider handler for MCP token validation",
-			zap.String("trace_id", traceID),
-			zap.Error(err))
+		f.logMCPRejection(header, mcpRejection{status: 503, reason: mcpReasonProviderDown, err: err}, traceID)
 		f.recordClusterAuthFailure()
 		return f.recordAndSendLocalReply(503, "Identity provider unavailable",
 			map[string][]string{"content-type": {"text/plain"}}, -1, "provider_unavailable")
@@ -120,22 +196,19 @@ func (f *Filter) handleMCPAuth(header api.RequestHeaderMap, mcp *MCPConfig, trac
 
 	sess, err := h.ValidateBearerTokenForResource(context.Background(), token, mcp.Resource)
 	if err != nil {
-		f.logger.Debug("MCP bearer token rejected",
-			zap.String("resource", mcp.Resource),
-			zap.String("trace_id", traceID),
-			zap.Error(err))
+		r := tokenRejection(err)
+		f.logMCPRejection(header, r, traceID)
 		f.recordClusterAuthFailure()
 		return f.recordAndSendLocalReply(401, "Unauthorized",
-			mcpChallengeHeaders(mcp.MetadataURL, true), -1, "mcp_invalid_token")
+			mcpChallengeHeaders(mcp.MetadataURL, r.reason), -1, "mcp_invalid_token")
 	}
 
 	if !f.isUserPermitted(sess) {
-		username, _ := sess.Claims["preferred_username"].(string)
-		f.logger.Info("Access denied: user not permitted",
-			zap.String("user", strings.ToLower(strings.TrimSpace(username))),
-			zap.String("cluster", f.cluster),
-			zap.String("trace_id", traceID),
-			zap.String("action", "DENY"))
+		r := mcpRejection{status: 403, reason: mcpReasonUserNotAllowed}
+		r.azp, _ = sess.Claims["azp"].(string)
+		r.iss, _ = sess.Claims["iss"].(string)
+		r.aud, _ = sess.Claims["aud"].([]string)
+		f.logMCPRejection(header, r, traceID)
 		return f.recordAndSendLocalReply(403, "Forbidden",
 			map[string][]string{"content-type": {"text/plain"}}, -1, "mcp_forbidden")
 	}

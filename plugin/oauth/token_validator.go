@@ -184,13 +184,35 @@ func (v *TokenValidator) ValidateAccessToken(ctx context.Context, token string) 
 	return claims, nil
 }
 
+// Reason classes of a rejected resource token, for logs and the
+// WWW-Authenticate error_description.
+const (
+	ReasonVerifyFailed = "verify_failed" // signature, issuer, expiry or aud
+	ReasonClaimsDecode = "claims_decode" // a claim has an unexpected type
+	ReasonNoSubject    = "no_subject"    // no sub claim (Keycloak 25+: client lacks the "basic" scope)
+)
+
+// ResourceTokenError explains why ValidateTokenForAudience rejected a token.
+// Azp, Iss and Aud are set once the signature has been verified; they are the
+// only token claims meant to be logged.
+type ResourceTokenError struct {
+	Reason string
+	Azp    string
+	Iss    string
+	Aud    []string
+	Err    error
+}
+
+func (e *ResourceTokenError) Error() string { return e.Reason + ": " + e.Err.Error() }
+func (e *ResourceTokenError) Unwrap() error { return e.Err }
+
 // ValidateTokenForAudience verifies signature, issuer and expiry, and
 // requires aud to contain audience. Used for OAuth protected resources
 // (RFC 9728) whose tokens are issued to other clients of the realm, so the
-// gateway's own client ID is not checked.
+// gateway's own client ID is not checked. Rejections are *ResourceTokenError.
 func (v *TokenValidator) ValidateTokenForAudience(ctx context.Context, token, audience string) (*TokenClaims, error) {
 	if audience == "" {
-		return nil, fmt.Errorf("no audience configured")
+		return nil, &ResourceTokenError{Reason: ReasonVerifyFailed, Err: fmt.Errorf("no audience configured")}
 	}
 
 	v.checkRefresh(ctx)
@@ -202,20 +224,22 @@ func (v *TokenValidator) ValidateTokenForAudience(ctx context.Context, token, au
 	// go-oidc rejects the token unless aud contains ClientID.
 	idToken, err := provider.Verifier(&oidc.Config{ClientID: audience}).Verify(ctx, token)
 	if err != nil {
-		v.logger.Debug("Resource token verification failed",
-			zap.String("audience", audience),
-			zap.Error(err))
-		return nil, fmt.Errorf("token verification failed: %v", err)
+		return nil, &ResourceTokenError{Reason: ReasonVerifyFailed, Err: err}
 	}
 
 	claims := &TokenClaims{
 		Extra: make(map[string]interface{}),
 	}
-	if err := idToken.Claims(claims); err != nil {
-		return nil, fmt.Errorf("failed to parse token claims: %v", err)
+	claimsErr := idToken.Claims(claims)
+	rejected := func(reason string, err error) *ResourceTokenError {
+		return &ResourceTokenError{Reason: reason, Azp: claims.AuthorizedParty, Iss: idToken.Issuer, Aud: idToken.Audience, Err: err}
 	}
+	if claimsErr != nil {
+		return nil, rejected(ReasonClaimsDecode, claimsErr)
+	}
+	// The session's UserID is built from sub, so a token without it is refused.
 	if idToken.Subject == "" {
-		return nil, fmt.Errorf("token does not contain subject claim")
+		return nil, rejected(ReasonNoSubject, fmt.Errorf("token has no sub claim"))
 	}
 
 	claims.Subject = idToken.Subject

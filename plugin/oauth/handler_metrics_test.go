@@ -2,6 +2,7 @@ package oauth
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -183,8 +184,10 @@ func TestValidateBearerTokenForResource(t *testing.T) {
 		t.Errorf("valid count = %v, want 1", got)
 	}
 
-	if _, err := h.ValidateBearerTokenForResource(context.Background(), ti.sign(t, claims("https://english.example/mcp")), resource); err == nil {
-		t.Error("token for another resource must be rejected")
+	_, err = h.ValidateBearerTokenForResource(context.Background(), ti.sign(t, claims("https://english.example/mcp")), resource)
+	var rte *ResourceTokenError
+	if !errors.As(err, &rte) || rte.Reason != ReasonVerifyFailed {
+		t.Errorf("token for another resource: error = %v, want a verify_failed *ResourceTokenError", err)
 	}
 	if got := tokenValidationCount(t, reg, "keycloak", "invalid"); got != 1 {
 		t.Errorf("invalid count = %v, want 1", got)
