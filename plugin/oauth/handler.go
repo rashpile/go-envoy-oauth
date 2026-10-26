@@ -542,7 +542,7 @@ func (h *OAuthHandlerImpl) ValidateSession(session *session.Session) error {
 
 // getUserInfo retrieves user information from the OpenID Connect provider
 func (h *OAuthHandlerImpl) getUserInfo(accessToken string) (map[string]interface{}, error) {
-	client := &http.Client{}
+	client := &http.Client{Timeout: oidcHTTPTimeout}
 	req, err := http.NewRequest("GET", h.getProvider().UserInfoEndpoint, nil)
 	if err != nil {
 		return nil, err

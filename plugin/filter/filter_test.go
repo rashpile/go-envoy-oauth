@@ -915,6 +915,29 @@ type captureDecoderCallbacks struct {
 	headers    map[string][]string
 	details    string
 	called     bool
+	continued  bool
+	panicked   interface{}
+	// done, when set, is signalled after a reply, a Continue or a recovered
+	// panic, so tests can wait for handlers that run off the request thread.
+	done chan struct{}
+}
+
+func (c *captureDecoderCallbacks) signal() {
+	if c.done != nil {
+		c.done <- struct{}{}
+	}
+}
+
+func (c *captureDecoderCallbacks) Continue(api.StatusType) {
+	c.continued = true
+	c.signal()
+}
+
+func (c *captureDecoderCallbacks) RecoverPanic() {
+	if r := recover(); r != nil {
+		c.panicked = r
+		c.signal()
+	}
 }
 
 func (c *captureDecoderCallbacks) SendLocalReply(code int, body string,
@@ -924,6 +947,7 @@ func (c *captureDecoderCallbacks) SendLocalReply(code int, body string,
 	c.body = body
 	c.headers = headers
 	c.details = details
+	c.signal()
 }
 
 // buildCallbackFilter returns a minimal Filter wired for handleCallback and DecodeHeaders tests:

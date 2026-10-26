@@ -3,6 +3,7 @@ package oauth
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"slices"
 	"sync"
 	"time"
@@ -11,6 +12,16 @@ import (
 	"go.uber.org/zap"
 	"golang.org/x/oauth2"
 )
+
+// oidcHTTPTimeout bounds every request to the issuer (discovery, JWKS,
+// userinfo). Without it a stalled issuer blocks token validation forever.
+var oidcHTTPTimeout = 10 * time.Second
+
+// oidcClientContext carries the bounded HTTP client to go-oidc. The provider
+// keeps it for its remote key set, so JWKS fetches use it too.
+func oidcClientContext() context.Context {
+	return oidc.ClientContext(context.Background(), &http.Client{Timeout: oidcHTTPTimeout})
+}
 
 // TokenValidator validates JWT bearer tokens using OIDC discovery
 type TokenValidator struct {
@@ -46,7 +57,7 @@ type TokenClaims struct {
 
 // NewTokenValidator creates a new token validator
 func NewTokenValidator(issuerURL, clientID string, logger *zap.Logger) (*TokenValidator, error) {
-	ctx := context.Background()
+	ctx := oidcClientContext()
 
 	// Create OIDC provider which handles discovery
 	provider, err := oidc.NewProvider(ctx, issuerURL)
@@ -280,7 +291,7 @@ func (v *TokenValidator) checkRefresh(ctx context.Context) {
 	}
 
 	// Try to refresh the provider (this will refresh JWKS)
-	provider, err := oidc.NewProvider(ctx, v.issuerURL)
+	provider, err := oidc.NewProvider(oidcClientContext(), v.issuerURL)
 	if err != nil {
 		v.logger.Error("Failed to refresh OIDC provider", zap.Error(err))
 		return

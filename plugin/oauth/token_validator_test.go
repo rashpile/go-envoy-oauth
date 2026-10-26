@@ -21,8 +21,9 @@ import (
 
 // testIssuer is a minimal OIDC issuer: discovery document, JWKS, and RS256 signing.
 type testIssuer struct {
-	srv *httptest.Server
-	key *rsa.PrivateKey
+	srv       *httptest.Server
+	key       *rsa.PrivateKey
+	jwksDelay time.Duration // set before the first validation to stall /jwks
 }
 
 func newTestIssuer(t *testing.T) *testIssuer {
@@ -42,7 +43,14 @@ func newTestIssuer(t *testing.T) *testIssuer {
 			"id_token_signing_alg_values_supported": []string{"RS256"},
 		})
 	})
-	mux.HandleFunc("/jwks", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("/jwks", func(w http.ResponseWriter, r *http.Request) {
+		if ti.jwksDelay > 0 {
+			select {
+			case <-time.After(ti.jwksDelay):
+			case <-r.Context().Done():
+				return
+			}
+		}
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
 			"keys": []map[string]string{{
 				"kty": "RSA", "alg": "RS256", "use": "sig", "kid": "k1",
@@ -298,5 +306,40 @@ func TestValidateTokenForAudienceReasons(t *testing.T) {
 				t.Errorf("error = %v, want reason %q", err, tc.reason)
 			}
 		})
+	}
+}
+
+// TestValidateTokenForAudienceTimesOutOnStalledIssuer verifies that a JWKS
+// fetch that never answers fails after the HTTP timeout instead of blocking the
+// caller forever.
+func TestValidateTokenForAudienceTimesOutOnStalledIssuer(t *testing.T) {
+	old := oidcHTTPTimeout
+	oidcHTTPTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { oidcHTTPTimeout = old })
+
+	ti := newTestIssuer(t)
+	v, err := NewTokenValidator(ti.srv.URL, "gateway", zap.NewNop())
+	if err != nil {
+		t.Fatalf("NewTokenValidator: %v", err)
+	}
+	ti.jwksDelay = time.Minute
+	const resource = "https://personal.example/mcp"
+	token := ti.sign(t, map[string]interface{}{
+		"iss": ti.srv.URL, "sub": "user-1", "aud": resource,
+		"exp": time.Now().Add(5 * time.Minute).Unix(), "iat": time.Now().Unix(),
+	})
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := v.ValidateTokenForAudience(context.Background(), token, resource)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Error("validation against a stalled JWKS endpoint must fail")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("validation still blocked after 5s: the JWKS fetch has no timeout")
 	}
 }

@@ -62,6 +62,12 @@ func (f *Filter) DecodeHeaders(header api.RequestHeaderMap, endStream bool) api.
 				map[string][]string{"content-type": {"text/plain"}}, -1, "mcp_ambiguous_path")
 		}
 		if matchesMCPPath(path, mcp) {
+			if f.extractBearerToken(header) != "" {
+				return f.handleAsyncDecodeHeaders(header, path, traceID,
+					func(h api.RequestHeaderMap, _ string, t string) api.StatusType {
+						return f.handleMCPAuth(h, mcp, t)
+					})
+			}
 			return f.handleMCPAuth(header, mcp, traceID)
 		}
 	}
@@ -92,6 +98,9 @@ func (f *Filter) DecodeHeaders(header api.RequestHeaderMap, endStream bool) api.
 		// For WebSocket, we authenticate but handle failures differently
 		// Browsers cannot follow redirects during WebSocket handshake,
 		// so we return 401 instead of redirecting to login
+		if f.hasBearerToken(header) {
+			return f.handleAsyncDecodeHeaders(header, path, traceID, f.handleWebSocketAuth)
+		}
 		return f.handleWebSocketAuth(header, path, traceID)
 	}
 
@@ -102,8 +111,16 @@ func (f *Filter) DecodeHeaders(header api.RequestHeaderMap, endStream bool) api.
 		return f.recordAndSendLocalReply(503, "Identity provider unavailable",
 			createAuthErrorHeaders(), -1, "provider_unavailable")
 	}
-	if f.config.EnableAPIKey && f.config.EnableBearerToken && f.extractAPIToken(header) != "" {
+	if f.hasBearerToken(header) || (f.config.EnableAPIKey && f.config.EnableBearerToken && f.extractAPIToken(header) != "") {
 		return f.handleAsyncDecodeHeaders(header, path, traceID, f.handleDecodeHeaders)
 	}
 	return f.handleDecodeHeaders(header, path, traceID)
+}
+
+// hasBearerToken reports whether the request carries a bearer token the
+// filter would validate. Validation may fetch JWKS from an issuer that is
+// served through this same Envoy, so it must never run on the worker thread:
+// a worker blocked on a request it would have to serve itself hangs Envoy.
+func (f *Filter) hasBearerToken(header api.RequestHeaderMap) bool {
+	return f.config.EnableBearerToken && f.extractBearerToken(header) != ""
 }

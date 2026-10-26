@@ -34,7 +34,7 @@ func testMCPConfig(t *testing.T) *MCPConfig {
 // carrying an mcp block and provider "keycloak" registered with h.
 func newMCPTestFilter(t *testing.T, h *recordingHandler) (*Filter, *captureDecoderCallbacks) {
 	t.Helper()
-	dec := &captureDecoderCallbacks{}
+	dec := &captureDecoderCallbacks{done: make(chan struct{}, 4)}
 	f := buildCallbackFilter(&captureCallbacks{decoder: dec, cluster: "pack"})
 	f.providerRegistry.Register("keycloak", h)
 	f.config.DefaultProvider = "keycloak"
@@ -107,7 +107,7 @@ func TestDecodeHeadersServesMCPMetadata(t *testing.T) {
 		f, dec := newMCPTestFilter(t, h)
 		hdr := &capturingHeaderMap{headers: map[string]string{":path": metadataPath, ":method": "GET"}}
 
-		if result := f.DecodeHeaders(hdr, true); result != api.LocalReply {
+		if result := decodeAndWait(t, f, hdr, dec); result != api.LocalReply {
 			t.Fatalf("DecodeHeaders = %v, want LocalReply", result)
 		}
 		if dec.statusCode != 200 {
@@ -125,7 +125,7 @@ func TestDecodeHeadersServesMCPMetadata(t *testing.T) {
 		f.config.Clusters["pack"] = cc
 		hdr := &capturingHeaderMap{headers: map[string]string{":path": metadataPath, ":method": "GET"}}
 
-		if result := f.DecodeHeaders(hdr, true); result != api.LocalReply || dec.statusCode != 200 {
+		if result := decodeAndWait(t, f, hdr, dec); result != api.LocalReply || dec.statusCode != 200 {
 			t.Errorf("DecodeHeaders = %v status %d, want LocalReply 200", result, dec.statusCode)
 		}
 	})
@@ -136,7 +136,7 @@ func TestDecodeHeadersServesMCPMetadata(t *testing.T) {
 		f.config.Clusters["pack"] = ClusterConfig{ProviderName: "keycloak"}
 		hdr := &capturingHeaderMap{headers: map[string]string{":path": metadataPath, ":method": "GET"}}
 
-		f.DecodeHeaders(hdr, true)
+		decodeAndWait(t, f, hdr, dec)
 		if dec.statusCode != 401 {
 			t.Errorf("status = %d, want 401 from normal auth", dec.statusCode)
 		}
@@ -188,7 +188,7 @@ func aliceSession() *session.Session {
 // newMCPGuardFilter is newMCPTestFilter with an mcpStubHandler and alice allowed.
 func newMCPGuardFilter(t *testing.T, h oauth.OAuthHandler) (*Filter, *captureDecoderCallbacks) {
 	t.Helper()
-	dec := &captureDecoderCallbacks{}
+	dec := &captureDecoderCallbacks{done: make(chan struct{}, 4)}
 	f := buildCallbackFilter(&captureCallbacks{decoder: dec, cluster: "pack"})
 	f.providerRegistry.Register("keycloak", h)
 	f.config.DefaultProvider = "keycloak"
@@ -373,7 +373,7 @@ func TestDecodeHeadersMCPGuard(t *testing.T) {
 				hdr.headers[k] = v
 			}
 
-			if result := f.DecodeHeaders(hdr, true); result != tc.wantResult {
+			if result := decodeAndWait(t, f, hdr, dec); result != tc.wantResult {
 				t.Fatalf("DecodeHeaders = %v, want %v (status %d)", result, tc.wantResult, dec.statusCode)
 			}
 			if tc.wantResult == api.LocalReply && dec.statusCode != tc.wantStatus {
@@ -417,7 +417,7 @@ func TestDecodeHeadersMCPProviderDown(t *testing.T) {
 	f, dec := newMCPGuardFilter(t, &oauth.DownHandler{ProviderName: "keycloak"})
 	hdr := &capturingHeaderMap{headers: map[string]string{":path": "/mcp", "authorization": "Bearer ok"}}
 
-	if result := f.DecodeHeaders(hdr, true); result != api.LocalReply || dec.statusCode != 503 {
+	if result := decodeAndWait(t, f, hdr, dec); result != api.LocalReply || dec.statusCode != 503 {
 		t.Fatalf("DecodeHeaders = %v status %d, want LocalReply 503", result, dec.statusCode)
 	}
 	if got := dec.headers["www-authenticate"]; len(got) != 0 {
@@ -430,7 +430,7 @@ func TestDecodeHeadersMCPOtherPathUnchanged(t *testing.T) {
 	f, dec := newMCPGuardFilter(t, h)
 	hdr := &capturingHeaderMap{headers: map[string]string{":path": "/lessons", "accept": "application/json"}}
 
-	f.DecodeHeaders(hdr, true)
+	decodeAndWait(t, f, hdr, dec)
 	if dec.statusCode != 401 {
 		t.Errorf("status = %d, want 401 from normal auth", dec.statusCode)
 	}
@@ -472,12 +472,12 @@ func TestDecodeHeadersMCPClusterAuthMetrics(t *testing.T) {
 	metrics.RegisterAuthMetrics(reg)
 
 	run := func(h oauth.OAuthHandler, headers map[string]string) {
-		f, _ := newMCPGuardFilter(t, h)
+		f, dec := newMCPGuardFilter(t, h)
 		hdr := &capturingHeaderMap{headers: map[string]string{":path": "/mcp"}}
 		for k, v := range headers {
 			hdr.headers[k] = v
 		}
-		f.DecodeHeaders(hdr, true)
+		decodeAndWait(t, f, hdr, dec)
 	}
 
 	run(&mcpStubHandler{}, nil)
@@ -524,7 +524,7 @@ func TestDecodeHeadersMCPAmbiguousPathRejected(t *testing.T) {
 			f, dec := newMCPGuardFilter(t, h)
 			hdr := &capturingHeaderMap{headers: map[string]string{":path": path, "authorization": "Bearer ok"}}
 
-			if result := f.DecodeHeaders(hdr, true); result != api.LocalReply || dec.statusCode != 400 {
+			if result := decodeAndWait(t, f, hdr, dec); result != api.LocalReply || dec.statusCode != 400 {
 				t.Fatalf("DecodeHeaders = %v status %d, want LocalReply 400", result, dec.statusCode)
 			}
 			if h.validateCalls != 0 || h.getSessionCookieCalls != 0 {
@@ -588,7 +588,7 @@ func TestDecodeHeadersMCPRejectionLog(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			f, _ := newMCPGuardFilter(t, tc.handler)
+			f, dec := newMCPGuardFilter(t, tc.handler)
 			core, logs := observer.New(zapcore.DebugLevel)
 			f.logger = zap.New(core)
 			if tc.configure != nil {
@@ -603,7 +603,7 @@ func TestDecodeHeadersMCPRejectionLog(t *testing.T) {
 				hdr.headers["authorization"] = tc.auth
 			}
 
-			f.DecodeHeaders(hdr, true)
+			decodeAndWait(t, f, hdr, dec)
 
 			for _, e := range logs.All() {
 				if strings.Contains(e.Message, token) {
@@ -714,13 +714,108 @@ func TestDecodeHeadersMCPScopeOnlyOn401(t *testing.T) {
 				hdr.headers["authorization"] = tc.auth
 			}
 
-			f.DecodeHeaders(hdr, true)
+			decodeAndWait(t, f, hdr, dec)
 			if dec.statusCode != tc.status {
 				t.Fatalf("status = %d, want %d", dec.statusCode, tc.status)
 			}
 			got := strings.Join(dec.headers["www-authenticate"], "\n")
 			if strings.Contains(got, scopeParam) != tc.wantScope {
 				t.Errorf("www-authenticate = %q, want scope present = %v", got, tc.wantScope)
+			}
+		})
+	}
+}
+
+// decodeAndWait runs DecodeHeaders and, when it went asynchronous, waits for
+// the reply and reports the final status the way Envoy would see it.
+func decodeAndWait(t *testing.T, f *Filter, hdr api.RequestHeaderMap, dec *captureDecoderCallbacks) api.StatusType {
+	t.Helper()
+	status := f.DecodeHeaders(hdr, true)
+	if status != api.Running {
+		return status
+	}
+	select {
+	case <-dec.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("asynchronous DecodeHeaders did not reply within 5s")
+	}
+	if dec.panicked != nil {
+		t.Fatalf("async handler panicked: %v", dec.panicked)
+	}
+	if dec.continued {
+		return api.Continue
+	}
+	return api.LocalReply
+}
+
+// blockingHandler holds token validation until release is closed, standing in
+// for a JWKS fetch that has to go through this same Envoy.
+type blockingHandler struct {
+	mockOAuthHandler
+	release chan struct{}
+	sess    *session.Session
+}
+
+func (h *blockingHandler) ValidateBearerTokenForResource(_ context.Context, _, _ string) (*session.Session, error) {
+	<-h.release
+	return h.sess, nil
+}
+
+func (h *blockingHandler) ValidateBearerToken(_ context.Context, _ string) (*session.Session, error) {
+	<-h.release
+	return h.sess, nil
+}
+
+// TestDecodeHeadersValidatesTokensOffTheRequestThread reproduces the production
+// hang: token validation may fetch JWKS from an issuer served by this Envoy, so
+// it must not run on the worker thread that calls DecodeHeaders. DecodeHeaders
+// has to return api.Running while validation is still waiting.
+func TestDecodeHeadersValidatesTokensOffTheRequestThread(t *testing.T) {
+	cases := []struct {
+		name      string
+		path      string
+		configure func(f *Filter)
+	}{
+		{name: "mcp path", path: "/mcp"},
+		{name: "plain bearer path", path: "/lessons", configure: func(f *Filter) {
+			f.config.EnableBearerToken = true
+			cc := f.config.Clusters["pack"]
+			cc.MCP = nil
+			f.config.Clusters["pack"] = cc
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := &blockingHandler{release: make(chan struct{}), sess: aliceSession()}
+			f, dec := newMCPGuardFilter(t, h)
+			if tc.configure != nil {
+				tc.configure(f)
+			}
+			hdr := &capturingHeaderMap{headers: map[string]string{":path": tc.path, "authorization": "Bearer ok"}}
+
+			returned := make(chan api.StatusType, 1)
+			go func() { returned <- f.DecodeHeaders(hdr, true) }()
+			select {
+			case status := <-returned:
+				if status != api.Running {
+					t.Fatalf("DecodeHeaders = %v, want api.Running", status)
+				}
+			case <-time.After(time.Second):
+				close(h.release)
+				t.Fatal("DecodeHeaders blocked on token validation: it must run off the request thread")
+			}
+
+			close(h.release)
+			select {
+			case <-dec.done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("no reply after validation finished")
+			}
+			if !dec.continued {
+				t.Errorf("request not continued after successful validation (status %d)", dec.statusCode)
+			}
+			if got, _ := hdr.Get("X-User-Username"); got != "alice" {
+				t.Errorf("X-User-Username = %q, want alice", got)
 			}
 		})
 	}
